@@ -14,7 +14,12 @@ const envSchema = z.object({
   MONGODB_URI: z.string().min(1),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900000),
-  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100)
+  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
+  JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
+  JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
+  JWT_ACCESS_EXPIRES_IN: z.string().min(1).default('15m'),
+  JWT_REFRESH_EXPIRES_IN: z.string().min(1).default('7d'),
+  BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12)
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

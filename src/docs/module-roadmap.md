@@ -1,15 +1,9 @@
 # Module Roadmap
 
-This foundation intentionally implements only health checks.
+This foundation now implements health checks plus the first data/security foundation modules: Auth, Anonymous Sessions, RBAC, Consent, Profile, Reports, and Audit logging.
 
 Future module candidates:
 
-- Auth
-- Anonymous Session
-- RBAC
-- Consent
-- Profile
-- Reports
 - Evidence Vault
 - AI legal-information support
 - RAG

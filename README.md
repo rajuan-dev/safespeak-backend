@@ -3,6 +3,7 @@
 SafeSpeak Backend is the Node.js, Express, TypeScript, and MongoDB foundation for a trauma-informed, multilingual triage and intelligence platform for racism, hate speech, online abuse, scams, discrimination, and related harms in Australia.
 
 This repository currently contains foundation setup only. It intentionally does not implement auth, reports, evidence, AI/RAG, ScamShield, admin APIs, analytics, or business workflows.
+Auth, anonymous sessions, RBAC, consent, profile, report foundation, and audit logging are now available as the first data/security foundation modules.
 
 ## Tech Stack
 
@@ -63,6 +64,11 @@ Required variables:
 - `LOG_LEVEL`
 - `RATE_LIMIT_WINDOW_MS`
 - `RATE_LIMIT_MAX`
+- `JWT_ACCESS_SECRET`
+- `JWT_REFRESH_SECRET`
+- `JWT_ACCESS_EXPIRES_IN`
+- `JWT_REFRESH_EXPIRES_IN`
+- `BCRYPT_SALT_ROUNDS`
 
 ## Scripts
 
@@ -100,6 +106,14 @@ Services:
 
 Health responses include service status, service name, environment, timestamp, uptime, and version.
 
+## Foundation API Endpoints
+
+- Auth: `/api/v1/auth/register`, `/api/v1/auth/login`, `/api/v1/auth/admin/login`, `/api/v1/auth/refresh`, `/api/v1/auth/logout`, `/api/v1/auth/me`
+- Sessions: `/api/v1/sessions/anonymous`, `/api/v1/sessions/current`, `/api/v1/sessions/convert-to-user`
+- Consent: `/api/v1/consents/current`, `/api/v1/consents/update`, `/api/v1/consents/withdraw`, `/api/v1/consents/history`
+- Profile: `/api/v1/profile`, `/api/v1/languages`, `/api/v1/cultural-profiles`, `/api/v1/faith-profiles`, `/api/v1/community-profiles`
+- Reports: `/api/v1/reports` plus report status, timeline, withdraw, delete request, and information-only actions
+
 ## Development Standards
 
 - Keep modules isolated under `src/modules`.
@@ -107,7 +121,7 @@ Health responses include service status, service name, environment, timestamp, u
 - Use `ApiError` and centralized error middleware for operational errors.
 - Validate environment through `src/config/env.ts`.
 - Avoid `console.log`; use the Pino logger.
-- Do not introduce business modules until explicitly requested.
+- Do not introduce AI/RAG, evidence vault, ScamShield, external integrations, analytics, or admin dashboard APIs until explicitly requested.
 - Keep SafeSpeak trauma-informed, consent-first, and privacy-aware in language and data handling.
 
 ## Future Module Roadmap

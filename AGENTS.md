@@ -1,140 +1,271 @@
-# AGENTS.md
+# AGENTS.md - SafeSpeak Backend
 
 ## Project Identity
 
 Project: SafeSpeak Backend  
-Stack: Node.js, Express.js, TypeScript, MongoDB/Mongoose, Zod, Pino  
-Purpose: backend foundation for a trauma-informed, multilingual triage and intelligence platform for racism, hate speech, online abuse, scams, discrimination, and related harms in Australia.
+Stack: Node.js, Express.js, TypeScript, MongoDB, future Redis/BullMQ, future S3, future AI/RAG.
 
-SafeSpeak is not a crisis service, not legal advice, not counselling, and not a case-management system.
+SafeSpeak is a trauma-informed, multilingual triage and intelligence platform for racism, hate speech, online abuse, scams, discrimination, and related harms in Australia.
+
+SafeSpeak is not:
+
+- a crisis service
+- legal advice
+- counselling
+- a case-management system
+- an automatic reporting service
+
+All future AI/legal-style outputs must be information-only and must use disclaimers.
 
 ## Current Phase
 
-Foundation setup only.
+Current phase: backend foundation setup only.
 
-Do not implement business modules unless the user explicitly requests them. This includes Auth, Reports, Evidence, AI, RAG, ScamShield, Admin, Analytics, Privacy workflows, routing engines, or fake business data.
+Do not implement business modules unless the user explicitly asks.
 
-## Efficient Inspection
+Do not implement:
 
-Avoid repeated full-project scans. Start with:
+- Auth
+- Reports
+- Evidence Vault
+- AI/RAG
+- ScamShield
+- Admin APIs
+- Analytics
+- External integrations
 
-- `package.json` for scripts and dependencies
-- `src/app.ts` for Express composition
-- `src/server.ts` for bootstrapping
-- `src/config/env.ts` for environment rules
-- `src/routes/index.ts` for versioned routes
-- `src/modules/<module>` for module-specific behavior
-- `README.md` for setup and project standards
+Only health check and project foundation are allowed during the initial setup phase.
 
-Use `rg --files` and targeted `rg` searches instead of broad recursive reads.
+## Token-Saving Rules for AI Agents
 
-## Module Placement
+To reduce token usage:
 
-Future modules go in `src/modules/<module-name>/`.
+1. Do not scan the whole repository unless necessary.
+2. First inspect:
+   - `README.md`
+   - `package.json`
+   - `src/routes/index.ts`
+   - `src/app.ts`
+   - related module folder only
+3. When modifying a module, inspect only that module and its shared dependencies.
+4. Do not rewrite unrelated files.
+5. Do not restate the full project context in every response.
+6. Summarize changes shortly after each task.
+7. Prefer small, focused edits over large rewrites.
+8. Ask no unnecessary questions if the user already gave enough instructions.
+9. Do not generate long explanations unless requested.
+10. Keep implementation aligned with existing project structure.
 
-Recommended module files:
+## Folder Rules
 
-- `<module>.routes.ts`
-- `<module>.controller.ts`
-- `<module>.service.ts`
-- `<module>.schema.ts` for Zod validation
-- `<module>.model.ts` for Mongoose schemas only when needed
-- `<module>.types.ts` for module-specific types
+Main source folder:
 
-Register public module routes in `src/routes/index.ts`.
+```txt
+src/
+├── config/
+├── common/
+├── modules/
+├── routes/
+├── workers/
+└── docs/
+```
+
+Recommended module shape:
+
+```txt
+src/modules/module-name/
+├── module-name.routes.ts
+├── module-name.controller.ts
+├── module-name.service.ts
+├── module-name.model.ts
+├── module-name.schema.ts
+├── module-name.types.ts
+└── module-name.constants.ts
+```
+
+Only create files that are actually needed.
 
 ## Naming Conventions
 
-- Files use kebab-case or clear dot suffixes, for example `request-id.middleware.ts`.
-- Classes use PascalCase.
-- Functions and variables use camelCase.
-- Environment variables use UPPER_SNAKE_CASE.
-- API paths use kebab-case nouns.
+Use:
+
+- kebab-case for filenames
+- camelCase for variables/functions
+- PascalCase for classes/types/interfaces
+- UPPER_SNAKE_CASE for constants
+- RESTful route naming
+- `/api/v1` as the API prefix
 
 ## API Response Standard
 
-Success:
+All success responses must follow:
 
 ```json
 {
   "success": true,
-  "message": "Human-readable message",
+  "message": "Request completed successfully",
   "data": {},
   "meta": {}
 }
 ```
 
-Error:
+All error responses must follow:
 
 ```json
 {
   "success": false,
-  "message": "Human-readable message",
-  "requestId": "uuid",
+  "message": "Error message",
+  "requestId": "request-id",
   "errors": []
 }
 ```
 
-Use `successResponse()` and `errorResponse()` from `src/common/responses/api-response.ts`.
+## Error Handling Rules
 
-## Error Handling Standard
-
-- Throw `ApiError` for operational errors.
-- Use `asyncHandler()` for async controllers.
-- Let `error.middleware.ts` produce the final JSON error response.
-- Include validation details in `errors`; do not leak secrets or stack traces in production.
+- Use centralized error handling.
+- Do not throw raw strings.
+- Use `ApiError` for operational errors.
+- Controllers should use async handlers.
+- Never leak stack traces in production responses.
 
 ## Environment Rules
 
-- `.env.example` is tracked and is the source of truth for local setup.
-- `.env` and `.env.*` are ignored.
-- Validate env vars with Zod in `src/config/env.ts`.
-- Never hardcode secrets, production tokens, API keys, private credentials, or client secrets.
+- Never hardcode secrets.
+- Never commit `.env`.
+- Keep `.env.example` updated when new env variables are added.
+- Use Zod validation for environment variables.
 
 ## Security Rules
 
-- Keep Helmet, CORS, rate limiting, request IDs, and structured logging active.
-- Redact tokens, cookies, passwords, and secrets from logs.
-- Do not store unnecessary sensitive data.
-- Future sensitive workflows must be consent-first and privacy-aware.
+Always consider:
 
-## Commit and Change Rules
+- consent-first data storage
+- no data storage without permission
+- no PII leakage in logs
+- no raw secrets in code
+- no fake production credentials
+- no unsafe CORS wildcard in production
+- rate limiting for public APIs
+- helmet/security headers
+- input validation with Zod
 
-- Keep changes scoped to the user request.
-- Do not revert unrelated user changes.
-- Do not add business endpoints unless explicitly requested.
-- Run `npm run typecheck` and `npm run lint` after meaningful code changes when dependencies are installed.
-- Summaries should list what changed, verification performed, and any known follow-up.
+## SafeSpeak Domain Rules for Future Work
+
+Future modules must respect:
+
+- Safety gate before sensitive flow.
+- Explicit consent before cloud sync, AI processing, analytics, or external sharing.
+- No automatic reporting to agencies.
+- AI output must be information-only, not legal advice.
+- Admins must not access raw PII unless explicit permission and audit reason exist.
+- Evidence must be hashed and audited.
+- Analytics must be anonymised and threshold-protected.
+- Legal/RAG sources must be official, public, and legally approved.
 
 ## Postman MCP Policy
 
-- The target Postman workspace name is "iam.rajuan_safespeak".
-- Do not create or modify Postman collections unless the user explicitly asks.
-- If the user asks to create API docs/requests in Postman and a Postman MCP server is available, use MCP to create or update the collection.
-- Collection name should be "SafeSpeak Backend API".
-- Organize requests by module folders, for example Health, Auth, Consent, Reports, Evidence, AI, RAG, ScamShield, Admin, Analytics, Privacy.
-- For each endpoint, include method, URL, headers, example request body, example success response, and example error response.
-- Use environment variables:
-  - `base_url = http://localhost:5000`
-  - `api_prefix = /api/v1`
-  - `access_token = empty by default`
-- Use `Authorization: Bearer {{access_token}}` only for protected routes.
-- Never store real secrets, production tokens, API keys, or client credentials in Postman.
-- If MCP is not available, create or update `docs/postman-mcp-guide.md` with the exact collection structure and request definitions so the user can manually import or later sync with MCP.
+Target Postman workspace:
 
-## Avoid Token Waste
+```txt
+iam.rajuan_safespeak
+```
 
-- Read only files relevant to the current task.
-- Prefer targeted searches over opening entire directories.
-- Do not restate the full architecture unless the user asks.
-- Reuse existing conventions from nearby files.
-- Keep final summaries concise and action-oriented.
+Collection name:
 
-## Change Summary Format
+```txt
+SafeSpeak Backend API
+```
 
-After each task, summarize:
+Do not create or modify Postman collections unless the user explicitly asks.
 
-- What changed
-- Files touched or created
-- Verification run
-- Known limitations or next recommended prompt
+If the user asks to create API requests in Postman and a Postman MCP server is available:
+
+- Use MCP to create or update the collection.
+- Use workspace `iam.rajuan_safespeak`.
+- Use collection `SafeSpeak Backend API`.
+- Organize requests by module folders:
+  - Health
+  - Auth
+  - Sessions
+  - Consent
+  - Profile
+  - Reports
+  - Evidence
+  - AI
+  - RAG
+  - ScamShield
+  - Support
+  - Education
+  - Admin
+  - Analytics
+  - Privacy
+  - Audit
+
+Use Postman environment variables:
+
+```txt
+base_url = http://localhost:5000
+api_prefix = /api/v1
+access_token =
+refresh_token =
+```
+
+For public endpoints:
+
+- Do not add Authorization header.
+
+For protected endpoints:
+
+- Use `Authorization: Bearer {{access_token}}`.
+
+Never store:
+
+- real production tokens
+- API keys
+- passwords
+- client secrets
+- private certificates
+
+If Postman MCP is not available:
+
+- Do not fail the task.
+- Create or update `docs/postman-mcp-guide.md`.
+- Include method, URL, headers, request body, success response, and error response.
+- Tell the user MCP was not available and the guide was created for later import/sync.
+
+## Current Postman Endpoints
+
+Initial foundation endpoints:
+
+```txt
+GET {{base_url}}/health
+GET {{base_url}}{{api_prefix}}/health
+```
+
+## Change Rules
+
+Before editing:
+
+- Identify the smallest relevant files.
+- Do not modify unrelated code.
+
+After editing:
+
+- Run typecheck if available.
+- Run lint if available.
+- Summarize changed files and what changed.
+
+## Response Style for AI Agents
+
+Keep responses concise and technical.
+
+Include:
+
+- what was changed
+- files created/updated
+- commands to run
+- any warnings or next steps
+
+Do not include unnecessary long explanations unless the user asks.
+
+Use this as the first setup prompt. After Codex completes this, the next prompt should be for: **Auth + Anonymous Session + RBAC + Consent + Profile + Report foundation**.
