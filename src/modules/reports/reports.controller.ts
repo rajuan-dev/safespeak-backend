@@ -1,8 +1,7 @@
 import type { Request, Response } from 'express';
-import { StatusCodes } from 'http-status-codes';
 
 import { asyncHandler } from '@common/errors/asyncHandler';
-import { successResponse } from '@common/responses/api-response';
+import { ApiResponse } from '@common/responses/api-response';
 
 import {
   createReport,
@@ -27,19 +26,19 @@ export const createReportController = asyncHandler(async (req: Request, res: Res
   const input = req.body as unknown as CreateReportInput;
   const report = await createReport(getOwner(req), input, req.ip, req.get('user-agent'));
 
-  res.status(StatusCodes.CREATED).json(successResponse('Report created', { report }));
+  ApiResponse.created(res, 'Report created', { report });
 });
 
 export const listReportsController = asyncHandler(async (req: Request, res: Response) => {
   const reports = await listReports(getOwner(req));
 
-  res.status(StatusCodes.OK).json(successResponse('Reports retrieved', { reports }));
+  ApiResponse.success(res, 'Reports retrieved', { reports });
 });
 
 export const getReportController = asyncHandler(async (req: Request, res: Response) => {
   const report = await getReportById(getOwner(req), req.params.id);
 
-  res.status(StatusCodes.OK).json(successResponse('Report retrieved', { report }));
+  ApiResponse.success(res, 'Report retrieved', { report });
 });
 
 export const updateReportController = asyncHandler(async (req: Request, res: Response) => {
@@ -52,13 +51,13 @@ export const updateReportController = asyncHandler(async (req: Request, res: Res
     req.get('user-agent')
   );
 
-  res.status(StatusCodes.OK).json(successResponse('Report updated', { report }));
+  ApiResponse.success(res, 'Report updated', { report });
 });
 
 export const deleteReportController = asyncHandler(async (req: Request, res: Response) => {
   await softDeleteReport(getOwner(req), req.params.id, req.ip, req.get('user-agent'));
 
-  res.status(StatusCodes.OK).json(successResponse('Report deleted', {}));
+  ApiResponse.success(res, 'Report deleted', null);
 });
 
 export const markInfoOnlyController = asyncHandler(async (req: Request, res: Response) => {
@@ -69,13 +68,13 @@ export const markInfoOnlyController = asyncHandler(async (req: Request, res: Res
     req.get('user-agent')
   );
 
-  res.status(StatusCodes.OK).json(successResponse('Report marked information-only', { report }));
+  ApiResponse.success(res, 'Report marked information-only', { report });
 });
 
 export const withdrawReportController = asyncHandler(async (req: Request, res: Response) => {
   const report = await withdrawReport(getOwner(req), req.params.id, req.ip, req.get('user-agent'));
 
-  res.status(StatusCodes.OK).json(successResponse('Report withdrawn', { report }));
+  ApiResponse.success(res, 'Report withdrawn', { report });
 });
 
 export const requestDeleteController = asyncHandler(async (req: Request, res: Response) => {
@@ -86,17 +85,17 @@ export const requestDeleteController = asyncHandler(async (req: Request, res: Re
     req.get('user-agent')
   );
 
-  res.status(StatusCodes.OK).json(successResponse('Report deletion requested', { report }));
+  ApiResponse.success(res, 'Report deletion requested', { report });
 });
 
 export const getReportStatusController = asyncHandler(async (req: Request, res: Response) => {
   const status = await getReportStatus(getOwner(req), req.params.id);
 
-  res.status(StatusCodes.OK).json(successResponse('Report status retrieved', { status }));
+  ApiResponse.success(res, 'Report status retrieved', { status });
 });
 
 export const getReportTimelineController = asyncHandler(async (req: Request, res: Response) => {
   const timeline = await getReportTimeline(getOwner(req), req.params.id);
 
-  res.status(StatusCodes.OK).json(successResponse('Report timeline retrieved', { timeline }));
+  ApiResponse.success(res, 'Report timeline retrieved', { timeline });
 });

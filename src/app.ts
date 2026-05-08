@@ -10,6 +10,7 @@ import { errorMiddleware } from '@common/middleware/error.middleware';
 import { notFoundMiddleware } from '@common/middleware/not-found.middleware';
 import { requestIdMiddleware } from '@common/middleware/request-id.middleware';
 import { requestLoggerMiddleware } from '@common/middleware/request-logger.middleware';
+import { responseBodyLoggerMiddleware } from '@common/middleware/response-body-logger.middleware';
 import { healthRoutes } from '@modules/health/health.routes';
 import { apiRouter } from '@routes/index';
 
@@ -20,6 +21,7 @@ export const createApp = (): express.Application => {
   app.set('trust proxy', 1);
 
   app.use(requestIdMiddleware);
+  app.use(responseBodyLoggerMiddleware);
   app.use(requestLoggerMiddleware);
   app.use(helmetMiddleware);
   app.use(cors(corsOptions));

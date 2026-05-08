@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import { authRoutes } from '@modules/auth/auth.routes';
 import { consentRoutes } from '@modules/consent/consent.routes';
+import { evidenceRoutes } from '@modules/evidence/evidence.routes';
 import { healthRoutes } from '@modules/health/health.routes';
 import { profileRoutes } from '@modules/profile/profile.routes';
 import { reportsRoutes } from '@modules/reports/reports.routes';
@@ -15,3 +16,4 @@ apiRouter.use('/sessions', sessionsRoutes);
 apiRouter.use('/consents', consentRoutes);
 apiRouter.use('/', profileRoutes);
 apiRouter.use('/reports', reportsRoutes);
+apiRouter.use('/', evidenceRoutes);

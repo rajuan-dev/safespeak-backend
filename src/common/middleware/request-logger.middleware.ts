@@ -1,11 +1,62 @@
+import type { Request, Response } from 'express';
 import pinoHttp from 'pino-http';
 
 import { logger } from '@common/utils/logger';
+import { redactSensitive, truncateForLog } from '@common/utils/sanitize';
+
+const REQUEST_BODY_LOG_LIMIT = 10_000;
+
+const getFileMetadata = (file?: Express.Multer.File) => {
+  if (!file) {
+    return undefined;
+  }
+
+  return {
+    fieldname: file.fieldname,
+    originalname: file.originalname,
+    encoding: file.encoding,
+    mimetype: file.mimetype,
+    size: file.size
+  };
+};
+
+const getFilesMetadata = (
+  files?: Express.Multer.File[] | { [fieldname: string]: Express.Multer.File[] }
+) => {
+  if (!files) {
+    return undefined;
+  }
+
+  if (Array.isArray(files)) {
+    return files.map(getFileMetadata);
+  }
+
+  return Object.fromEntries(
+    Object.entries(files).map(([fieldname, fieldFiles]) => [
+      fieldname,
+      fieldFiles.map(getFileMetadata)
+    ])
+  );
+};
+
+const getRequestLogData = (req: Request) => ({
+  requestId: req.requestId,
+  method: req.method,
+  url: req.originalUrl,
+  ip: req.ip,
+  userAgent: req.get('user-agent'),
+  body: truncateForLog(redactSensitive(req.body as unknown), REQUEST_BODY_LOG_LIMIT),
+  query: redactSensitive(req.query),
+  params: redactSensitive(req.params),
+  file: getFileMetadata(req.file),
+  files: getFilesMetadata(req.files)
+});
 
 export const requestLoggerMiddleware = pinoHttp({
   logger,
-  customProps: (req) => ({
-    requestId: (req as typeof req & { requestId?: string }).requestId
+  customProps: (req, res) => ({
+    ...getRequestLogData(req as Request),
+    responseBody: (res as Response).locals.responseBody as unknown
   }),
   customSuccessMessage: (req, res) => `${req.method} ${req.url} ${res.statusCode}`,
   customErrorMessage: (req, res) => `${req.method} ${req.url} ${res.statusCode}`

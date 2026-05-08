@@ -7,7 +7,30 @@ export const logger = pino({
   base: undefined,
   timestamp: pino.stdTimeFunctions.isoTime,
   redact: {
-    paths: ['req.headers.authorization', 'req.headers.cookie', '*.password', '*.token', '*.secret'],
+    paths: [
+      'req.headers.authorization',
+      'req.headers.cookie',
+      'headers.authorization',
+      'headers.cookie',
+      '*.password',
+      '*.token',
+      '*.accessToken',
+      '*.refreshToken',
+      '*.authorization',
+      '*.cookie',
+      '*.otp',
+      '*.secret',
+      'body.password',
+      'body.token',
+      'body.accessToken',
+      'body.refreshToken',
+      'body.authorization',
+      'body.cookie',
+      'body.otp',
+      'body.secret',
+      'responseBody.data.accessToken',
+      'responseBody.data.refreshToken'
+    ],
     censor: '[REDACTED]'
   },
   transport:

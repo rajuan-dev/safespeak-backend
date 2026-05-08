@@ -3,7 +3,7 @@ import { StatusCodes } from 'http-status-codes';
 
 import { ApiError } from '@common/errors/ApiError';
 import { asyncHandler } from '@common/errors/asyncHandler';
-import { successResponse } from '@common/responses/api-response';
+import { ApiResponse } from '@common/responses/api-response';
 
 import {
   getSafeUserById,
@@ -18,34 +18,34 @@ export const registerController = asyncHandler(async (req: Request, res: Respons
   const input = req.body as unknown as RegisterInput;
   const result = await registerUser(input, req.ip, req.get('user-agent'));
 
-  res.status(StatusCodes.CREATED).json(successResponse('User registered successfully', result));
+  ApiResponse.created(res, 'User registered successfully', result);
 });
 
 export const loginController = asyncHandler(async (req: Request, res: Response) => {
   const input = req.body as unknown as LoginInput;
   const result = await loginUser(input, false, req.ip, req.get('user-agent'));
 
-  res.status(StatusCodes.OK).json(successResponse('Login successful', result));
+  ApiResponse.success(res, 'Login successful', result);
 });
 
 export const adminLoginController = asyncHandler(async (req: Request, res: Response) => {
   const input = req.body as unknown as LoginInput;
   const result = await loginUser(input, true, req.ip, req.get('user-agent'));
 
-  res.status(StatusCodes.OK).json(successResponse('Admin login successful', result));
+  ApiResponse.success(res, 'Admin login successful', result);
 });
 
 export const refreshController = asyncHandler(async (req: Request, res: Response) => {
   const input = req.body as unknown as RefreshTokenInput;
   const result = await refreshUserToken(input.refreshToken);
 
-  res.status(StatusCodes.OK).json(successResponse('Token refreshed successfully', result));
+  ApiResponse.success(res, 'Token refreshed successfully', result);
 });
 
 export const logoutController = asyncHandler(async (req: Request, res: Response) => {
   await logoutUser(req.user?.id);
 
-  res.status(StatusCodes.OK).json(successResponse('Logout successful', {}));
+  ApiResponse.success(res, 'Logout successful', null);
 });
 
 export const meController = asyncHandler(async (req: Request, res: Response) => {
@@ -55,5 +55,5 @@ export const meController = asyncHandler(async (req: Request, res: Response) => 
 
   const user = await getSafeUserById(req.user.id);
 
-  res.status(StatusCodes.OK).json(successResponse('Current user retrieved successfully', { user }));
+  ApiResponse.success(res, 'Current user retrieved successfully', { user });
 });
