@@ -7,7 +7,7 @@ Collection UID: `41974181-f21adef9-9ed7-46f2-bcb3-6f0353eacbe7`
 Environment: `SafeSpeak Local`  
 Environment UID: `41974181-de5bd717-f6d6-4940-800b-450b1197c518`
 
-Postman MCP was available and was used to recreate the collection module-wise and update the local environment. This guide mirrors the collection structure for manual verification or future MCP sync.
+Postman MCP was available and was used to recreate the existing collection module-wise and update the local environment. The collection was rebuilt through Postman's folder/request APIs so the workspace now contains real module folders with requests under each folder. This guide mirrors the collection structure for manual verification or future MCP sync.
 
 ## Environment
 
@@ -19,9 +19,9 @@ Postman MCP was available and was used to recreate the collection module-wise an
 - `user_id =`
 - `report_id =`
 - `evidence_id =`
-- `sha256_hash =`
+- `sha256_hash = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`
 
-Use `Authorization: Bearer {{access_token}}` for protected user/admin endpoints. For anonymous flows, use `X-SafeSpeak-Session: {{anonymous_session_token}}`. Never store real production tokens, secrets, passwords, private keys, or client credentials in Postman.
+Use `Authorization: Bearer {{access_token}}` for protected user/admin endpoints. For anonymous flows, use `X-SafeSpeak-Session: {{anonymous_session_token}}`. The protected requests include both patterns where anonymous access is allowed; keep the anonymous header enabled when testing anonymous flows. Never store real production tokens, secrets, passwords, private keys, or client credentials in Postman.
 
 ## Response Pattern
 
@@ -42,16 +42,23 @@ Error:
 {
   "success": false,
   "message": "Error message",
+  "data": null,
+  "meta": null,
+  "errorCode": "VALIDATION_ERROR",
   "requestId": "request-id",
-  "errors": []
+  "errors": [],
+  "timestamp": "2026-05-09T00:00:00.000Z"
 }
 ```
+
+Every Postman request has an endpoint-specific description that names the expected success payload shape and common error responses such as `400` validation failures, `401` missing or invalid identity, `403` role/permission failures, `404` missing resources, and `409` duplicate registration.
 
 ## Frontend/Admin Notes
 
 - `safespeak-frontend/src/lib/auth.ts` currently posts `email` and `password` to `/auth/login`.
 - The frontend register form collects `fullName`, `email`, `password`, `confirmPassword`, and terms acceptance. Backend register accepts only `fullName`, `email`, and `password`.
 - `safespeak-admin` login form currently collects `email`, `password`, and `rememberPassword`, but does not call the backend yet. It should map to `/auth/admin/login` with `email` and `password`.
+- `safespeak-admin` forgot-password, OTP, reset-password, create-admin, and profile forms are UI-only right now. Their admin/support endpoints are intentionally excluded from this collection until those backend modules are implemented.
 - Dashboard/report submission views are UI-state driven at this stage, so backend payload examples follow the implemented Zod schemas.
 
 ## Health
@@ -172,6 +179,8 @@ Error:
 ## RBAC
 
 RBAC is implemented as backend middleware/utilities for user/admin role enforcement. No standalone RBAC API endpoints are currently implemented.
+
+Postman folder: `RBAC` exists as a documentation-only folder with no requests.
 
 ## Consent
 
@@ -410,15 +419,164 @@ Protected by either `Authorization` or `X-SafeSpeak-Session`. Evidence upload re
 }
 ```
 
+## AI
+
+Folder description: `AI module for incident extraction, triage, translation, and RAG knowledge retrieval with citations. All outputs are information-only.`
+
+All AI/RAG endpoints accept either `Authorization: Bearer {{access_token}}` or `X-SafeSpeak-Session: {{anonymous_session_token}}`. Any OpenAI-backed operation requires current consent flag `process_with_ai: true`; otherwise the API returns a forbidden error. Outputs are information-only, include guardrail metadata, and remain `pending_human_review`.
+
+Environment variables:
+
+- `base_url = http://localhost:5000`
+- `api_prefix = /api/v1`
+- `access_token =`
+- `refresh_token =`
+- `anonymous_session_token =`
+- `knowledge_source_id =`
+
+### AI Processing
+
+- `POST {{base_url}}{{api_prefix}}/ai/extract-incident-fields`
+- `POST {{base_url}}{{api_prefix}}/ai/triage-report`
+- `POST {{base_url}}{{api_prefix}}/ai/clarifying-questions`
+- `POST {{base_url}}{{api_prefix}}/ai/generate-summary`
+- `POST {{base_url}}{{api_prefix}}/ai/translate`
+- `POST {{base_url}}{{api_prefix}}/ai/redact-pii`
+
+Example extract body:
+
+```json
+{
+  "reportId": "{{report_id}}",
+  "language": "en",
+  "jurisdiction": "NSW",
+  "narrative": "I want to describe what happened and keep this information-only."
+}
+```
+
+Example translation body:
+
+```json
+{
+  "text": "I need this translated.",
+  "sourceLanguage": "English",
+  "targetLanguage": "Arabic"
+}
+```
+
+### RAG
+
+- `POST {{base_url}}{{api_prefix}}/rag/search`
+- `POST {{base_url}}{{api_prefix}}/rag/answer`
+- `GET  {{base_url}}{{api_prefix}}/rag/knowledge-sources`
+- `POST {{base_url}}{{api_prefix}}/rag/knowledge-sources`
+- `PATCH {{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}`
+- `DELETE {{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}`
+- `POST {{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/ingest`
+- `POST {{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/approve`
+- `POST {{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/reject`
+- `POST {{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/reindex`
+
+Example RAG search body:
+
+```json
+{
+  "query": "What information-only support resources are relevant?",
+  "topK": 5,
+  "language": "en",
+  "jurisdiction": "NSW"
+}
+```
+
+Example knowledge source create body:
+
+```json
+{
+  "title": "NSW Information-only Support Resource",
+  "description": "Example knowledge source for RAG.",
+  "sourceType": "safety_resource",
+  "jurisdiction": "NSW",
+  "language": "en",
+  "url": "https://example.org/resource",
+  "metadata": {
+    "owner": "SafeSpeak"
+  }
+}
+```
+
+Example ingestion body:
+
+```json
+{
+  "content": "This is approved information-only support content. It is not legal advice and should cite its source.",
+  "expectedSha256": "optional-64-character-sha256",
+  "metadata": {
+    "version": "2026-05"
+  }
+}
+```
+
+Example success response:
+
+```json
+{
+  "success": true,
+  "message": "RAG answer generated",
+  "data": {
+    "result": {
+      "interactionId": "...",
+      "output": {
+        "answer": "Information-only answer...",
+        "citations": [],
+        "reviewStatus": "pending_human_review"
+      },
+      "citations": [],
+      "guardrails": {
+        "informationOnly": true,
+        "requiresHumanReview": true,
+        "legalAdviceDisclaimer": "This output is information-only and must not be treated as prescriptive legal advice.",
+        "language": "en"
+      },
+      "reviewStatus": "pending_human_review"
+    }
+  },
+  "meta": {
+    "informationOnly": true
+  },
+  "timestamp": "2026-05-09T00:00:00.000Z"
+}
+```
+
+Example error response:
+
+```json
+{
+  "success": false,
+  "message": "process_with_ai consent is required for AI processing",
+  "data": null,
+  "meta": null,
+  "errorCode": "AUTH_ERROR",
+  "requestId": "request-id",
+  "timestamp": "2026-05-09T00:00:00.000Z"
+}
+```
+
+Local setup notes:
+
+- Add `OPENAI_API_KEY` to `.env`.
+- Optional model overrides: `OPENAI_MODEL`, `OPENAI_EMBEDDING_MODEL`.
+- MongoDB Atlas Vector Search must have an index matching `RAG_VECTOR_INDEX` on collection `ragchunks`, vector path `embedding`, dimensions for the configured embedding model, and filter support for `sourceId`.
+
 ## Collection Summary
 
 - Health: 2 endpoints
 - Auth: 6 endpoints
 - Sessions: 3 endpoints
-- RBAC: no standalone endpoints
+- RBAC: documentation-only folder, no standalone endpoints
 - Consent: 4 endpoints
 - Profile: 6 endpoints
 - Reports: 10 endpoints
 - Evidence: 7 endpoints
+- AI/RAG: 16 endpoints
 
-Modules intentionally not added yet: AI/RAG, ScamShield, Support, Analytics, and future Admin APIs.
+Modules intentionally not added yet: ScamShield, Support, Analytics, and future Admin APIs.
