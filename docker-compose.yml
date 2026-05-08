@@ -1,0 +1,46 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: safespeak-api
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      PORT: 5000
+      MONGODB_URI: mongodb://mongodb:27017/safespeak
+    ports:
+      - '5000:5000'
+    depends_on:
+      - mongodb
+    networks:
+      - safespeak-network
+
+  mongodb:
+    image: mongo:7
+    container_name: safespeak-mongodb
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongodb-data:/data/db
+    networks:
+      - safespeak-network
+
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: safespeak-redis
+  #   ports:
+  #     - '6379:6379'
+  #   volumes:
+  #     - redis-data:/data
+  #   networks:
+  #     - safespeak-network
+
+volumes:
+  mongodb-data:
+  # redis-data:
+
+networks:
+  safespeak-network:
+    driver: bridge

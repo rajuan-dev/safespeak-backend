@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+build/
+.next/
+out/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Coverage and test artifacts
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+junit.xml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker local state
+.docker/
+docker-data/
+mongo-data/
+redis-data/
+
+# Local uploads and generated assets
+uploads/
+local-uploads/
+generated/
