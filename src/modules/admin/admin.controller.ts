@@ -18,6 +18,7 @@ import {
   createAdminUser,
   createDestination,
   createTaxonomy,
+  getEducationalContentOverview,
   getAdminAnalyticsOverview,
   getAdminDashboard,
   listDestinations,
@@ -115,6 +116,16 @@ export const adminKnowledgeSourcesController = asyncHandler(async (req: Request,
     .status(StatusCodes.OK)
     .json(successResponse('Admin knowledge sources retrieved', { knowledgeSources }));
 });
+
+export const adminEducationalContentController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const educationalContent = await getEducationalContentOverview(getContext(req));
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin educational content overview retrieved', { educationalContent }));
+  }
+);
 
 export const adminPrivacyRequestsController = asyncHandler(async (req: Request, res: Response) => {
   const privacyRequests = await listPrivacyRequests(

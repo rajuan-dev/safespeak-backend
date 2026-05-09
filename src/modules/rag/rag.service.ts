@@ -121,6 +121,14 @@ export const createKnowledgeSource = async (
   input: CreateKnowledgeSourceInput
 ): Promise<unknown> => {
   ownerFilter(context.owner);
+
+  if (input.status === 'approved') {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Knowledge sources must be approved through the review workflow'
+    );
+  }
+
   const source = await RagKnowledgeSourceModel.create({ ...input, createdBy: context.owner.userId });
 
   await auditRagAction(context, RAG_ACTIONS.sourceCreate, source._id.toString(), {
@@ -137,6 +145,14 @@ export const updateKnowledgeSource = async (
   input: UpdateKnowledgeSourceInput
 ): Promise<unknown> => {
   ownerFilter(context.owner);
+
+  if (input.status === 'approved') {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Use the approval endpoint to approve a knowledge source'
+    );
+  }
+
   const source = await getSource(sourceId);
   source.set(input);
   await source.save();
@@ -222,8 +238,16 @@ export const ingestKnowledgeSource = async (
 };
 
 export const approveKnowledgeSource = async (context: RagServiceContext, sourceId: string): Promise<unknown> => {
-  ownerFilter(context.owner);
+  const owner = ownerFilter(context.owner);
   const source = await getSource(sourceId);
+
+  if (source.createdBy && owner.userId && source.createdBy.toString() === owner.userId) {
+    throw new ApiError(
+      StatusCodes.FORBIDDEN,
+      'Knowledge sources must be approved by a different admin'
+    );
+  }
+
   source.status = 'approved';
   source.approvedBy = context.owner.userId as never;
   source.approvedAt = new Date();

@@ -11,6 +11,7 @@ import type { LoginInput, RegisterInput } from './auth.schema';
 import type { AuthTokens, SafeUser } from './auth.types';
 import {
   buildAuthTokens,
+  deriveFullNameFromEmail,
   hashPassword,
   hashRefreshToken,
   verifyPassword,
@@ -53,7 +54,8 @@ export const registerUser = async (
   ip?: string,
   userAgent?: string
 ): Promise<{ user: SafeUser; tokens: AuthTokens }> => {
-  const existingUser = await UserModel.findOne({ email: input.email.toLowerCase() });
+  const email = input.email.toLowerCase();
+  const existingUser = await UserModel.findOne({ email });
 
   if (existingUser) {
     throw new ApiError(StatusCodes.CONFLICT, 'Email is already registered');
@@ -61,8 +63,8 @@ export const registerUser = async (
 
   const passwordHash = await hashPassword(input.password);
   const user = await UserModel.create({
-    email: input.email,
-    fullName: input.fullName,
+    email,
+    fullName: input.fullName ?? deriveFullNameFromEmail(email),
     passwordHash,
     role: 'public_user',
     status: 'active'

@@ -9,6 +9,7 @@ export const ADMIN_ACTIONS = {
   destinationCreate: 'admin.destinations.create',
   destinationUpdate: 'admin.destinations.update',
   knowledgeSourcesList: 'admin.knowledge_sources.list',
+  educationalContentOverview: 'admin.educational_content.overview',
   privacyRequestsList: 'admin.privacy_requests.list',
   privacyRequestUpdate: 'admin.privacy_requests.update',
   analyticsOverview: 'admin.analytics.overview'

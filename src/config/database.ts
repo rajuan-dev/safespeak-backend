@@ -1,3 +1,5 @@
+import dns from 'node:dns';
+
 import mongoose from 'mongoose';
 
 import { logger } from '@common/utils/logger';
@@ -6,6 +8,17 @@ import { env } from './env';
 
 export const connectDatabase = async (): Promise<typeof mongoose> => {
   try {
+    if (env.MONGODB_DNS_SERVERS) {
+      const servers = env.MONGODB_DNS_SERVERS.split(',')
+        .map(server => server.trim())
+        .filter(Boolean);
+
+      if (servers.length > 0) {
+        dns.setServers(servers);
+        logger.info({ servers }, 'Custom MongoDB DNS servers configured');
+      }
+    }
+
     const connection = await mongoose.connect(env.MONGODB_URI, {
       autoIndex: env.NODE_ENV !== 'production'
     });

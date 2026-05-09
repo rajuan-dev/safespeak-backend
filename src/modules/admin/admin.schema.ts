@@ -22,7 +22,7 @@ export const usersQuerySchema = z.object({
 
 export const createAdminUserSchema = z.object({
   email: z.string().trim().email().max(320),
-  fullName: z.string().trim().min(1).max(200),
+  fullName: z.string().trim().min(1).max(200).optional(),
   password: z.string().min(12).max(200),
   role: z.enum(ADMIN_ROLES).default('admin')
 });

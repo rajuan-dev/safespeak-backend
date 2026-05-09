@@ -39,3 +39,17 @@ export const buildAuthTokens = (payload: AuthenticatedUserPayload): AuthTokens =
   accessToken: signAccessToken(payload),
   refreshToken: signRefreshToken(payload)
 });
+
+export const deriveFullNameFromEmail = (email: string): string => {
+  const localPart = email.split('@')[0]?.trim();
+
+  if (!localPart) {
+    return 'SafeSpeak User';
+  }
+
+  return localPart
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+};

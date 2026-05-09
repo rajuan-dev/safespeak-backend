@@ -6,6 +6,7 @@ import { validate } from '@common/middleware/validate.middleware';
 import {
   adminDashboardController,
   adminDestinationsController,
+  adminEducationalContentController,
   adminKnowledgeSourcesController,
   adminPrivacyRequestsController,
   adminTaxonomiesController,
@@ -66,6 +67,7 @@ adminRoutes.patch(
   updateAdminDestinationController
 );
 adminRoutes.get('/knowledge-sources', adminKnowledgeSourcesController);
+adminRoutes.get('/educational-content', adminEducationalContentController);
 adminRoutes.get(
   '/privacy-requests',
   validate({ query: privacyRequestQuerySchema }),

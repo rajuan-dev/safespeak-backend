@@ -40,7 +40,6 @@ export const createKnowledgeSourceSchema = z.object({
   lastUpdated: z.coerce.date().optional(),
   nextReviewAt: z.coerce.date().optional(),
   legalReviewed: z.boolean().default(false),
-  approvedBy: objectIdSchema.optional(),
   status: z.enum(['draft', 'pending_review', 'approved', 'rejected', 'expired']).default('draft'),
   version: z.number().int().min(1).default(1),
   metadata: z.record(z.unknown()).default({})

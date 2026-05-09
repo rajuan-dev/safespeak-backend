@@ -27,6 +27,7 @@ const envSchema = z
     CLIENT_URL: z.string().url().default('http://localhost:3000'),
     ADMIN_URL: z.string().url().default('http://localhost:5173'),
     MONGODB_URI: z.string().min(1),
+    MONGODB_DNS_SERVERS: optionalString(z.string().min(1)),
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),
@@ -41,6 +42,10 @@ const envSchema = z
     EVIDENCE_ENCRYPTION_KEY: optionalString(z.string().min(32)),
     EVIDENCE_AUDIT_SIGNING_KEY: optionalString(z.string().min(32)),
     EVIDENCE_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(10485760),
+    CONTENT_RESOURCE_STORAGE_PATH: z.string().min(1).default('./storage/content-resources'),
+    CONTENT_RESOURCE_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(52428800),
+    MEDIA_ASSET_STORAGE_PATH: z.string().min(1).default('./storage/media-assets'),
+    MEDIA_ASSET_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(2097152),
     OPENAI_API_KEY: optionalString(z.string().min(1)),
     OPENAI_MODEL: z.string().min(1).default('gpt-4.1-mini'),
     OPENAI_EMBEDDING_MODEL: z.string().min(1).default('text-embedding-3-small'),
