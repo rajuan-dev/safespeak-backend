@@ -6,7 +6,12 @@ export const RAG_SOURCE_STATUSES = [
   'archived'
 ] as const;
 
-export const RAG_SOURCE_TYPES = ['policy', 'service_directory', 'legal_info', 'safety_resource'] as const;
+export const RAG_SOURCE_TYPES = [
+  'policy',
+  'service_directory',
+  'legal_info',
+  'safety_resource'
+] as const;
 
 export const RAG_ACTIONS = {
   search: 'rag.search',

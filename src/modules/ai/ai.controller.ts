@@ -30,18 +30,16 @@ const getContext = (req: Request) => ({
   userAgent: req.get('user-agent')
 });
 
-export const extractIncidentFieldsController = asyncHandler(
-  async (req: Request, res: Response) => {
-    const result = await extractIncidentFields(
-      getContext(req),
-      req.body as ExtractIncidentFieldsInput
-    );
+export const extractIncidentFieldsController = asyncHandler(async (req: Request, res: Response) => {
+  const result = await extractIncidentFields(
+    getContext(req),
+    req.body as ExtractIncidentFieldsInput
+  );
 
-    res
-      .status(StatusCodes.OK)
-      .json(successResponse('Incident fields extracted', { result }, { informationOnly: true }));
-  }
-);
+  res
+    .status(StatusCodes.OK)
+    .json(successResponse('Incident fields extracted', { result }, { informationOnly: true }));
+});
 
 export const triageReportController = asyncHandler(async (req: Request, res: Response) => {
   const result = await triageReport(getContext(req), req.body as TriageReportInput);
@@ -51,18 +49,16 @@ export const triageReportController = asyncHandler(async (req: Request, res: Res
     .json(successResponse('Report triaged', { result }, { informationOnly: true }));
 });
 
-export const clarifyingQuestionsController = asyncHandler(
-  async (req: Request, res: Response) => {
-    const result = await generateClarifyingQuestions(
-      getContext(req),
-      req.body as ClarifyingQuestionsInput
-    );
+export const clarifyingQuestionsController = asyncHandler(async (req: Request, res: Response) => {
+  const result = await generateClarifyingQuestions(
+    getContext(req),
+    req.body as ClarifyingQuestionsInput
+  );
 
-    res
-      .status(StatusCodes.OK)
-      .json(successResponse('Clarifying questions generated', { result }, { informationOnly: true }));
-  }
-);
+  res
+    .status(StatusCodes.OK)
+    .json(successResponse('Clarifying questions generated', { result }, { informationOnly: true }));
+});
 
 export const generateSummaryController = asyncHandler(async (req: Request, res: Response) => {
   const result = await generateSummary(getContext(req), req.body as GenerateSummaryInput);

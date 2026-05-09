@@ -37,7 +37,10 @@ export const ingestKnowledgeSourceSchema = z
   .object({
     content: z.string().trim().min(1).max(200000).optional(),
     localFilePath: z.string().trim().min(1).max(1000).optional(),
-    expectedSha256: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),
+    expectedSha256: z
+      .string()
+      .regex(/^[0-9a-fA-F]{64}$/)
+      .optional(),
     metadata: z.record(z.unknown()).default({})
   })
   .refine((value) => Boolean(value.content || value.localFilePath), {

@@ -1,7 +1,11 @@
 import type { Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 
-import type { ApiMeta, ApiResponse as ApiResponseBody, PaginationMeta } from '@common/types/common.types';
+import type {
+  ApiMeta,
+  ApiResponse as ApiResponseBody,
+  PaginationMeta
+} from '@common/types/common.types';
 
 export class ApiResponse {
   static successBody<TData>(

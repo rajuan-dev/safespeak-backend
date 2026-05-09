@@ -7,7 +7,7 @@ Collection UID: `41974181-f21adef9-9ed7-46f2-bcb3-6f0353eacbe7`
 Environment: `SafeSpeak Local`  
 Environment UID: `41974181-de5bd717-f6d6-4940-800b-450b1197c518`
 
-Postman MCP was available and was used to recreate the existing collection module-wise and update the local environment. The collection was rebuilt through Postman's folder/request APIs so the workspace now contains real module folders with requests under each folder. This guide mirrors the collection structure for manual verification or future MCP sync.
+Postman MCP was available and was used to update the existing collection module-wise and update the local environment. The collection was updated through Postman's folder/request APIs so the workspace now contains real module folders with requests under each folder. Existing folders and requests were preserved.
 
 ## Environment
 
@@ -16,6 +16,11 @@ Postman MCP was available and was used to recreate the existing collection modul
 - `access_token =`
 - `refresh_token =`
 - `anonymous_session_token =`
+- `scamshield_analysis_id =`
+- `safety_plan_id =`
+- `taxonomy_id =`
+- `destination_id =`
+- `privacy_request_id =`
 - `user_id =`
 - `report_id =`
 - `evidence_id =`
@@ -58,7 +63,7 @@ Every Postman request has an endpoint-specific description that names the expect
 - `safespeak-frontend/src/lib/auth.ts` currently posts `email` and `password` to `/auth/login`.
 - The frontend register form collects `fullName`, `email`, `password`, `confirmPassword`, and terms acceptance. Backend register accepts only `fullName`, `email`, and `password`.
 - `safespeak-admin` login form currently collects `email`, `password`, and `rememberPassword`, but does not call the backend yet. It should map to `/auth/admin/login` with `email` and `password`.
-- `safespeak-admin` forgot-password, OTP, reset-password, create-admin, and profile forms are UI-only right now. Their admin/support endpoints are intentionally excluded from this collection until those backend modules are implemented.
+- `safespeak-admin` forgot-password, OTP, reset-password, create-admin, and profile forms are UI-only right now. The implemented admin/support operational endpoints are now included; auth-recovery and profile-specific admin endpoints remain outside this collection until backend routes exist for those flows.
 - Dashboard/report submission views are UI-state driven at this stage, so backend payload examples follow the implemented Zod schemas.
 
 ## Health
@@ -567,6 +572,73 @@ Local setup notes:
 - Optional model overrides: `OPENAI_MODEL`, `OPENAI_EMBEDDING_MODEL`.
 - MongoDB Atlas Vector Search must have an index matching `RAG_VECTOR_INDEX` on collection `ragchunks`, vector path `embedding`, dimensions for the configured embedding model, and filter support for `sourceId`.
 
+## ScamShield
+
+Protected by either `Authorization` or `X-SafeSpeak-Session`. Analysis and redaction require `process_with_ai` consent. Submitting externally with `consentToShare: true` requires `share_with_agencies` consent.
+
+- `POST {{base_url}}{{api_prefix}}/scamshield/analyze-text`
+- `POST {{base_url}}{{api_prefix}}/scamshield/analyze-email`
+- `POST {{base_url}}{{api_prefix}}/scamshield/analyze-screenshot`
+- `POST {{base_url}}{{api_prefix}}/scamshield/check-url`
+- `GET  {{base_url}}{{api_prefix}}/scamshield/{{scamshield_analysis_id}}`
+- `POST {{base_url}}{{api_prefix}}/scamshield/redact`
+- `POST {{base_url}}{{api_prefix}}/scamshield/generate-report-draft`
+- `POST {{base_url}}{{api_prefix}}/scamshield/submit`
+
+Example analyze-text body:
+
+```json
+{
+  "text": "Urgent: verify your account password at https://example-login.test now.",
+  "reportId": "{{report_id}}",
+  "metadata": {
+    "source": "dashboard_scamshield_intake"
+  }
+}
+```
+
+## Support
+
+Protected by either `Authorization` or `X-SafeSpeak-Session`. Warm referrals require `warm_referral` consent.
+
+- `GET  {{base_url}}{{api_prefix}}/support/services`
+- `GET  {{base_url}}{{api_prefix}}/support/services/1800respect`
+- `POST {{base_url}}{{api_prefix}}/support/recommendations`
+- `POST {{base_url}}{{api_prefix}}/support/warm-referral`
+- `GET  {{base_url}}{{api_prefix}}/support/advocates`
+- `POST {{base_url}}{{api_prefix}}/support/advocate-request`
+- `GET  {{base_url}}{{api_prefix}}/support/safety-plans`
+- `POST {{base_url}}{{api_prefix}}/support/safety-plans`
+- `PATCH {{base_url}}{{api_prefix}}/support/safety-plans/{{safety_plan_id}}`
+
+## Analytics
+
+Admin-only under `/admin/analytics`. RBAC and audit logging are enforced. Aggregations include only reports with `use_anonymised_analytics` consent; heatmap, category, and language outputs suppress cells below 5.
+
+- `GET {{base_url}}{{api_prefix}}/admin/analytics/overview`
+- `GET {{base_url}}{{api_prefix}}/admin/analytics/heatmap`
+- `GET {{base_url}}{{api_prefix}}/admin/analytics/trends`
+- `GET {{base_url}}{{api_prefix}}/admin/analytics/categories`
+- `GET {{base_url}}{{api_prefix}}/admin/analytics/languages`
+- `GET {{base_url}}{{api_prefix}}/admin/analytics/export?format=json`
+
+## Admin
+
+Admin-only under `/admin`. RBAC and audit logging are enforced on every route.
+
+- `GET   {{base_url}}{{api_prefix}}/admin/dashboard`
+- `GET   {{base_url}}{{api_prefix}}/admin/users`
+- `GET   {{base_url}}{{api_prefix}}/admin/taxonomies`
+- `POST  {{base_url}}{{api_prefix}}/admin/taxonomies`
+- `PATCH {{base_url}}{{api_prefix}}/admin/taxonomies/{{taxonomy_id}}`
+- `GET   {{base_url}}{{api_prefix}}/admin/destinations`
+- `POST  {{base_url}}{{api_prefix}}/admin/destinations`
+- `PATCH {{base_url}}{{api_prefix}}/admin/destinations/{{destination_id}}`
+- `GET   {{base_url}}{{api_prefix}}/admin/knowledge-sources`
+- `GET   {{base_url}}{{api_prefix}}/admin/privacy-requests`
+- `PATCH {{base_url}}{{api_prefix}}/admin/privacy-requests/{{privacy_request_id}}`
+- `GET   {{base_url}}{{api_prefix}}/admin/analytics/overview`
+
 ## Collection Summary
 
 - Health: 2 endpoints
@@ -578,5 +650,7 @@ Local setup notes:
 - Reports: 10 endpoints
 - Evidence: 7 endpoints
 - AI/RAG: 16 endpoints
-
-Modules intentionally not added yet: ScamShield, Support, Analytics, and future Admin APIs.
+- ScamShield: 8 endpoints
+- Support: 9 endpoints
+- Analytics: 6 endpoints
+- Admin: 12 endpoints

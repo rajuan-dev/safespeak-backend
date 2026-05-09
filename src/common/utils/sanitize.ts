@@ -4,7 +4,8 @@ export const sanitizeObject = <T extends Record<string, unknown>>(input: T): T =
   return Object.fromEntries(sanitizedEntries) as T;
 };
 
-const sensitiveKeyPattern = /password|token|accesstoken|refreshtoken|authorization|cookie|otp|secret/i;
+const sensitiveKeyPattern =
+  /password|token|accesstoken|refreshtoken|authorization|cookie|otp|secret/i;
 
 export const redactSensitive = <T>(value: T, seen = new WeakSet<object>()): T => {
   if (value === null || typeof value !== 'object') {

@@ -41,7 +41,10 @@ const assertAiConsent = async (owner: RagOwner): Promise<void> => {
   const consent = await getCurrentConsent(owner);
 
   if (!consent.process_with_ai) {
-    throw new ApiError(StatusCodes.FORBIDDEN, 'process_with_ai consent is required for AI processing');
+    throw new ApiError(
+      StatusCodes.FORBIDDEN,
+      'process_with_ai consent is required for AI processing'
+    );
   }
 };
 
@@ -52,7 +55,7 @@ const auditRagAction = async (
   metadata?: Record<string, unknown>
 ): Promise<void> => {
   await createAuditLog({
-    actorType: context.owner.userId ? 'user' : 'anonymous_session',
+    actorType: context.actorType ?? (context.owner.userId ? 'user' : 'anonymous_session'),
     actorId: context.owner.userId,
     sessionId: context.owner.sessionId,
     action,
@@ -168,7 +171,7 @@ export const ingestKnowledgeSource = async (
   sourceId: string,
   input: IngestKnowledgeSourceInput
 ): Promise<unknown> => {
-  await assertAiConsent(context.owner);
+  ownerFilter(context.owner);
   const source = await getSource(sourceId);
   const text = await readIngestionText(input);
   const contentHash = hashText(text);
@@ -394,10 +397,16 @@ export const answerRag = async (
     .map((result, index) => `[${index + 1}] ${result.title} (${result.sourceId}): ${result.text}`)
     .join('\n\n');
 
-  return answerWithContext(context, {
+  const answer = await answerWithContext(context, {
     question: input.question,
     language: input.language,
     citations,
     contextText
   });
+
+  await auditRagAction(context, RAG_ACTIONS.answer, undefined, {
+    citationCount: citations.length
+  });
+
+  return answer;
 };

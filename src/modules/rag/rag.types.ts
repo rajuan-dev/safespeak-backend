@@ -20,6 +20,7 @@ export interface RagSearchResult {
 
 export interface RagServiceContext {
   owner: RagOwner;
+  actorType?: 'user' | 'admin' | 'anonymous_session';
   ip?: string;
   userAgent?: string;
 }

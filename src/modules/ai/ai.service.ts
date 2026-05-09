@@ -20,7 +20,13 @@ import type {
   TranslateInput,
   TriageReportInput
 } from './ai.schema';
-import type { AiAction, AiCitation, AiGuardrailResult, AiOwner, AiServiceContext } from './ai.types';
+import type {
+  AiAction,
+  AiCitation,
+  AiGuardrailResult,
+  AiOwner,
+  AiServiceContext
+} from './ai.types';
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 
@@ -47,7 +53,10 @@ const assertAiConsent = async (owner: AiOwner): Promise<void> => {
   const consent = await getCurrentConsent(owner);
 
   if (!consent.process_with_ai) {
-    throw new ApiError(StatusCodes.FORBIDDEN, 'process_with_ai consent is required for AI processing');
+    throw new ApiError(
+      StatusCodes.FORBIDDEN,
+      'process_with_ai consent is required for AI processing'
+    );
   }
 };
 
@@ -272,7 +281,10 @@ const buildReportContext = async (
   reportId: string | undefined
 ): Promise<{ report: HydratedReportDocument | null; citations: AiCitation[] }> => {
   const report = await getOwnedReport(owner, reportId);
-  const citations = [...reportCitation(report), ...(await getReportEvidenceCitations(owner, report))];
+  const citations = [
+    ...reportCitation(report),
+    ...(await getReportEvidenceCitations(owner, report))
+  ];
 
   return { report, citations };
 };
@@ -307,7 +319,8 @@ export const triageReport = async (
   await assertAiConsent(context.owner);
   const { report, citations } = await buildReportContext(context.owner, input.reportId);
   const language = input.language ?? report?.language ?? DEFAULT_AI_LANGUAGE;
-  const narrative = input.narrative ?? report?.originalNarrative ?? report?.translatedNarrative ?? '';
+  const narrative =
+    input.narrative ?? report?.originalNarrative ?? report?.translatedNarrative ?? '';
   const output = await callOpenAIJson<Record<string, unknown>>(
     systemPrompt(language),
     `Triage this report for information-only support. Return JSON with severitySignal, riskFactors, suggestedSupportCategories, nonLegalSafetyNotes, citations, reviewStatus. Narrative: ${narrative}. Structured fields: ${JSON.stringify(input.structuredFields ?? report?.structuredFields ?? {})}`
@@ -354,7 +367,8 @@ export const generateSummary = async (
   await assertAiConsent(context.owner);
   const { report, citations } = await buildReportContext(context.owner, input.reportId);
   const language = input.language ?? report?.language ?? DEFAULT_AI_LANGUAGE;
-  const narrative = input.narrative ?? report?.originalNarrative ?? report?.translatedNarrative ?? '';
+  const narrative =
+    input.narrative ?? report?.originalNarrative ?? report?.translatedNarrative ?? '';
   const output = await callOpenAIJson<Record<string, unknown>>(
     systemPrompt(language),
     `Create an information-only summary for audience ${input.audience}. Return JSON with summary, keyFacts, uncertaintyNotes, citations, reviewStatus. Narrative: ${narrative}. Structured fields: ${JSON.stringify(input.structuredFields ?? report?.structuredFields ?? {})}`
@@ -381,14 +395,9 @@ export const translateText = async (
     `Translate the text. Preserve meaning and tone. Return JSON with translatedText, sourceLanguage, targetLanguage, reviewStatus. Source language: ${input.sourceLanguage ?? 'auto-detect'}. Text: ${input.text}`
   );
 
-  return recordAiInteraction(
-    context,
-    AI_ACTIONS.translate,
-    input,
-    output,
-    input.targetLanguage,
-    [{ sourceType: 'user_input', excerpt: input.text.slice(0, 400) }]
-  );
+  return recordAiInteraction(context, AI_ACTIONS.translate, input, output, input.targetLanguage, [
+    { sourceType: 'user_input', excerpt: input.text.slice(0, 400) }
+  ]);
 };
 
 export const redactPii = async (
@@ -402,14 +411,9 @@ export const redactPii = async (
     `Redact personally identifiable information. Return JSON with redactedText, detectedEntities, replacementStyle, reviewStatus. Replacement style: ${input.replacementStyle}. Text: ${input.text}`
   );
 
-  return recordAiInteraction(
-    context,
-    AI_ACTIONS.redactPii,
-    input,
-    output,
-    language,
-    [{ sourceType: 'user_input', excerpt: input.text.slice(0, 400) }]
-  );
+  return recordAiInteraction(context, AI_ACTIONS.redactPii, input, output, language, [
+    { sourceType: 'user_input', excerpt: input.text.slice(0, 400) }
+  ]);
 };
 
 export const answerWithContext = async (

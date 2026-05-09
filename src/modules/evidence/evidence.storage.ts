@@ -3,8 +3,11 @@ import path from 'node:path';
 
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { env } from '@config/env';
+import { StatusCodes } from 'http-status-codes';
+
+import { ApiError } from '@common/errors/ApiError';
 import { decryptBuffer, encryptBuffer, generateSecureToken } from '@common/utils/crypto';
+import { env } from '@config/env';
 
 import type { EvidenceDocument } from './evidence.model';
 import type { StoredEvidenceFile } from './evidence.types';
@@ -44,7 +47,7 @@ export const storeEncryptedLocalFile = async (
 
 export const readDecryptedLocalFile = async (evidence: EvidenceDocument): Promise<Buffer> => {
   if (!evidence.localEncryptedPath || !evidence.encryption.iv || !evidence.encryption.authTag) {
-    throw new Error('Encrypted local evidence file is not available');
+    throw new ApiError(StatusCodes.CONFLICT, 'Encrypted local evidence file is not available');
   }
 
   const encrypted = await fs.readFile(evidence.localEncryptedPath);
@@ -71,11 +74,11 @@ export const syncEvidenceToS3 = async (
   syncedAt: Date;
 }> => {
   if (!s3Client || !env.EVIDENCE_S3_BUCKET) {
-    throw new Error('S3 evidence storage is not configured');
+    throw new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'S3 evidence storage is not configured');
   }
 
   if (!evidence.localEncryptedPath || !evidence.sha256Hash) {
-    throw new Error('Evidence is not ready for S3 sync');
+    throw new ApiError(StatusCodes.CONFLICT, 'Evidence is not ready for S3 sync');
   }
 
   const encryptedFile = await fs.readFile(evidence.localEncryptedPath);

@@ -1,0 +1,49 @@
+import { Router } from 'express';
+
+import { authenticateUser, requireAdminRole } from '@common/middleware/auth.middleware';
+import { validate } from '@common/middleware/validate.middleware';
+
+import {
+  analyticsCategoriesController,
+  analyticsExportController,
+  analyticsHeatmapController,
+  analyticsLanguagesController,
+  analyticsOverviewController,
+  analyticsTrendsController
+} from './analytics.controller';
+import { analyticsExportQuerySchema, analyticsQuerySchema } from './analytics.schema';
+
+export const analyticsRoutes = Router();
+
+analyticsRoutes.use(authenticateUser, requireAdminRole());
+
+analyticsRoutes.get(
+  '/overview',
+  validate({ query: analyticsQuerySchema }),
+  analyticsOverviewController
+);
+analyticsRoutes.get(
+  '/heatmap',
+  validate({ query: analyticsQuerySchema }),
+  analyticsHeatmapController
+);
+analyticsRoutes.get(
+  '/trends',
+  validate({ query: analyticsQuerySchema }),
+  analyticsTrendsController
+);
+analyticsRoutes.get(
+  '/categories',
+  validate({ query: analyticsQuerySchema }),
+  analyticsCategoriesController
+);
+analyticsRoutes.get(
+  '/languages',
+  validate({ query: analyticsQuerySchema }),
+  analyticsLanguagesController
+);
+analyticsRoutes.get(
+  '/export',
+  validate({ query: analyticsExportQuerySchema }),
+  analyticsExportController
+);

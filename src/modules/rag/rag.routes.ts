@@ -1,6 +1,10 @@
 import { Router } from 'express';
 
-import { authenticateSessionOrUser } from '@common/middleware/auth.middleware';
+import {
+  authenticateSessionOrUser,
+  authenticateUser,
+  requireAdminRole
+} from '@common/middleware/auth.middleware';
 import { validate } from '@common/middleware/validate.middleware';
 
 import {
@@ -27,10 +31,19 @@ import {
 
 export const ragRoutes = Router();
 
-ragRoutes.use(authenticateSessionOrUser);
-
-ragRoutes.post('/search', validate({ body: ragSearchSchema }), searchRagController);
-ragRoutes.post('/answer', validate({ body: ragAnswerSchema }), answerRagController);
+ragRoutes.post(
+  '/search',
+  authenticateSessionOrUser,
+  validate({ body: ragSearchSchema }),
+  searchRagController
+);
+ragRoutes.post(
+  '/answer',
+  authenticateSessionOrUser,
+  validate({ body: ragAnswerSchema }),
+  answerRagController
+);
+ragRoutes.use('/knowledge-sources', authenticateUser, requireAdminRole());
 ragRoutes.get('/knowledge-sources', listKnowledgeSourcesController);
 ragRoutes.post(
   '/knowledge-sources',
