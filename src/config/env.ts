@@ -61,7 +61,7 @@ const envSchema = z
     EVIDENCE_S3_PREFIX: z.string().min(1).default('evidence-vault'),
     ENABLE_ADMIN_SEED: booleanFromString.default(true),
     DEFAULT_SUPER_ADMIN_EMAIL: optionalString(z.string().email()),
-    DEFAULT_SUPER_ADMIN_PASSWORD: optionalString(z.string().min(12)),
+    DEFAULT_SUPER_ADMIN_PASSWORD: optionalString(z.string().min(8)),
     DEFAULT_SUPER_ADMIN_FULL_NAME: z.string().min(1).default('SafeSpeak Super Admin')
   })
   .superRefine((value, context) => {

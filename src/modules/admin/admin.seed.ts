@@ -2,7 +2,7 @@ import { env } from '@config/env';
 import { logger } from '@common/utils/logger';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { UserModel } from '@modules/auth/auth.model';
-import { hashPassword } from '@modules/auth/auth.utils';
+import { hashPassword, verifyPassword } from '@modules/auth/auth.utils';
 
 export const seedDefaultSuperAdmin = async (): Promise<void> => {
   if (!env.ENABLE_ADMIN_SEED) {
@@ -18,9 +18,23 @@ export const seedDefaultSuperAdmin = async (): Promise<void> => {
     return;
   }
 
-  const existingAdmin = await UserModel.findOne({ email });
+  const existingAdmin = await UserModel.findOne({ email }).select('+passwordHash');
 
   if (existingAdmin) {
+    const passwordMatches = await verifyPassword(password, existingAdmin.passwordHash);
+
+    if (!passwordMatches) {
+      existingAdmin.passwordHash = await hashPassword(password);
+      existingAdmin.role = 'super_admin';
+      existingAdmin.status = 'active';
+      existingAdmin.isEmailVerified = true;
+      existingAdmin.refreshTokenHash = undefined;
+      await existingAdmin.save();
+
+      logger.info({ email }, 'Default super admin password updated');
+      return;
+    }
+
     logger.info({ email }, 'Default super admin already exists');
     return;
   }
