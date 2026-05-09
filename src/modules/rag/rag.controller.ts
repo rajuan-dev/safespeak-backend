@@ -55,9 +55,7 @@ export const searchRagController = asyncHandler(async (req: Request, res: Respon
 export const answerRagController = asyncHandler(async (req: Request, res: Response) => {
   const result = await answerRag(getContext(req), req.body as RagAnswerInput);
 
-  res
-    .status(StatusCodes.OK)
-    .json(successResponse('RAG answer generated', { result }, { informationOnly: true }));
+  res.status(StatusCodes.OK).json(successResponse('RAG answer generated', result, { informationOnly: true }));
 });
 
 export const listKnowledgeSourcesController = asyncHandler(async (_req: Request, res: Response) => {

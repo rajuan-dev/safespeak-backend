@@ -3,14 +3,61 @@ export const RAG_SOURCE_STATUSES = [
   'pending_review',
   'approved',
   'rejected',
+  'expired',
   'archived'
 ] as const;
 
+export const RAG_SOURCE_CATEGORIES = [
+  'internal_product_rule',
+  'official_legal_source',
+  'official_support_source',
+  'admin_content'
+] as const;
+
+export const RAG_JURISDICTIONS = [
+  'Cth',
+  'NSW',
+  'VIC',
+  'QLD',
+  'SA',
+  'WA',
+  'TAS',
+  'NT',
+  'ACT',
+  'AU',
+  'Global',
+  'Internal'
+] as const;
+
+export const RAG_TOPICS = [
+  'discrimination',
+  'racial_hatred',
+  'online_safety',
+  'scam',
+  'privacy',
+  'workplace',
+  'dv',
+  'evidence',
+  'support',
+  'safespeak_policy',
+  'consent',
+  'crisis',
+  'education',
+  'other'
+] as const;
+
 export const RAG_SOURCE_TYPES = [
-  'policy',
-  'service_directory',
-  'legal_info',
-  'safety_resource'
+  'Act',
+  'Regulation',
+  'Guideline',
+  'Form',
+  'Decision',
+  'Report',
+  'Policy',
+  'ProductRequirement',
+  'SupportResource',
+  'FAQ',
+  'WebPage'
 ] as const;
 
 export const RAG_ACTIONS = {

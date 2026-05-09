@@ -15,6 +15,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "rag:ingest:internal": "tsx -r tsconfig-paths/register src/scripts/rag-ingest-internal.ts",
+    "rag:ingest:official": "tsx -r tsconfig-paths/register src/scripts/rag-ingest-official.ts",
     "test": "echo \"No tests configured yet. Add tests with future modules.\""
   },
   "keywords": [

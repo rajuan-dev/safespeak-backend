@@ -1,19 +1,23 @@
 import { z } from 'zod';
 
-import { RAG_SOURCE_TYPES } from './rag.constants';
+import {
+  RAG_JURISDICTIONS,
+  RAG_SOURCE_CATEGORIES,
+  RAG_SOURCE_TYPES,
+  RAG_TOPICS
+} from './rag.constants';
 
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
 
-export const ragParamsSchema = z.object({
-  id: objectIdSchema
-});
+export const ragParamsSchema = z.object({ id: objectIdSchema });
 
 export const ragSearchSchema = z.object({
   query: z.string().trim().min(1).max(2000),
   topK: z.number().int().min(1).max(20).default(5),
   language: z.string().trim().min(2).max(12).optional(),
-  jurisdiction: z.string().trim().max(120).optional(),
-  sourceType: z.enum(RAG_SOURCE_TYPES).optional(),
+  jurisdiction: z.enum(RAG_JURISDICTIONS).optional(),
+  sourceCategory: z.enum(RAG_SOURCE_CATEGORIES).optional(),
+  topic: z.enum(RAG_TOPICS).optional(),
   filters: z.record(z.unknown()).optional()
 });
 
@@ -24,10 +28,21 @@ export const ragAnswerSchema = ragSearchSchema.extend({
 export const createKnowledgeSourceSchema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().trim().max(1000).optional(),
+  sourceCategory: z.enum(RAG_SOURCE_CATEGORIES),
+  jurisdiction: z.enum(RAG_JURISDICTIONS),
+  topic: z.enum(RAG_TOPICS),
   sourceType: z.enum(RAG_SOURCE_TYPES),
-  jurisdiction: z.string().trim().max(120).optional(),
   language: z.string().trim().min(2).max(12).default('en'),
   url: z.string().url().optional(),
+  localFilePath: z.string().trim().max(1000).optional(),
+  publisher: z.string().trim().min(1).max(200),
+  licenseStatus: z.string().trim().min(1).max(200),
+  lastUpdated: z.coerce.date().optional(),
+  nextReviewAt: z.coerce.date().optional(),
+  legalReviewed: z.boolean().default(false),
+  approvedBy: objectIdSchema.optional(),
+  status: z.enum(['draft', 'pending_review', 'approved', 'rejected', 'expired']).default('draft'),
+  version: z.number().int().min(1).default(1),
   metadata: z.record(z.unknown()).default({})
 });
 
@@ -37,10 +52,7 @@ export const ingestKnowledgeSourceSchema = z
   .object({
     content: z.string().trim().min(1).max(200000).optional(),
     localFilePath: z.string().trim().min(1).max(1000).optional(),
-    expectedSha256: z
-      .string()
-      .regex(/^[0-9a-fA-F]{64}$/)
-      .optional(),
+    expectedSha256: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),
     metadata: z.record(z.unknown()).default({})
   })
   .refine((value) => Boolean(value.content || value.localFilePath), {

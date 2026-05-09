@@ -9,6 +9,7 @@ import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
 import { EvidenceModel } from '@modules/evidence/evidence.model';
 import { ReportModel, type ReportDocument } from '@modules/reports/reports.model';
+import { getSafeSpeakSystemPrompt } from './ai-guardrails';
 
 import { AI_ACTIONS, DEFAULT_AI_LANGUAGE } from './ai.constants';
 import { AiInteractionModel } from './ai.model';
@@ -216,17 +217,7 @@ const callOpenAIJson = async <TOutput>(
   }
 };
 
-const systemPrompt = (language: string): string =>
-  [
-    'You support SafeSpeak incident workflows.',
-    'Return only valid JSON.',
-    'All outputs are information-only.',
-    'Cite available source IDs in a citations array when sources are provided.',
-    'Do not give prescriptive legal advice, legal conclusions, or instructions to evade authorities.',
-    'Use trauma-informed, neutral language.',
-    `Respond in language: ${language}.`,
-    'Include reviewStatus: "pending_human_review" in the JSON.'
-  ].join(' ');
+const systemPrompt = (language: string): string => getSafeSpeakSystemPrompt(language);
 
 const recordAiInteraction = async (
   context: AiServiceContext,

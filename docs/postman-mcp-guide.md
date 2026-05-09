@@ -438,6 +438,10 @@ Environment variables:
 - `refresh_token =`
 - `anonymous_session_token =`
 - `knowledge_source_id =`
+- `rag_query =`
+- `jurisdiction =`
+- `source_category =`
+- `topic =`
 
 ### AI Processing
 
