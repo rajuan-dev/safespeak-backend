@@ -658,3 +658,36 @@ Admin-only under `/admin`. RBAC and audit logging are enforced on every route.
 - Support: 9 endpoints
 - Analytics: 6 endpoints
 - Admin: 12 endpoints
+
+## Audio Transcription Additions
+
+These requests should be added under existing `AI` and `Evidence` folders without deleting any existing request.
+
+### AI
+
+- `POST {{base_url}}{{api_prefix}}/ai/transcribe-audio`
+- Headers:
+  - `Authorization: Bearer {{access_token}}` (user flow)
+  - or `X-SafeSpeak-Session: {{anonymous_session_token}}` (anonymous flow)
+- Body type: `form-data`
+  - `audio` as File (required)
+  - `reportId` as Text (optional): `{{report_id}}`
+  - `evidenceId` as Text (optional): `{{evidence_id}}`
+  - `language` as Text (optional): `en`
+  - `saveTranscript` as Text (optional): `true`
+
+### Evidence
+
+- `POST {{base_url}}{{api_prefix}}/evidence/{{evidence_id}}/transcribe`
+- `GET {{base_url}}{{api_prefix}}/evidence/{{evidence_id}}/transcription`
+
+Example transcribe request body:
+
+```json
+{
+  "language": "en",
+  "saveTranscript": true,
+  "reportId": "{{report_id}}",
+  "useAsNarrative": false
+}
+```

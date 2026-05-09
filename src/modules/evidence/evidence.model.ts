@@ -33,6 +33,15 @@ export interface EvidenceDocument {
     syncedAt: Date;
   };
   consentSnapshot: Record<string, unknown>;
+  transcription?: {
+    text: string;
+    language?: string;
+    model?: string;
+    provider?: string;
+    transcribedAt?: Date;
+    transcribedBy?: string;
+    confidence?: number;
+  };
   deletionRequestedAt?: Date;
   deletedAt?: Date;
   createdAt: Date;
@@ -145,6 +154,15 @@ const evidenceSchema = new Schema<EvidenceDocument>(
     consentSnapshot: {
       type: Schema.Types.Mixed,
       default: {}
+    },
+    transcription: {
+      text: { type: String, required: true },
+      language: { type: String, required: false },
+      model: { type: String, required: false },
+      provider: { type: String, required: false },
+      transcribedAt: { type: Date, required: false },
+      transcribedBy: { type: String, required: false },
+      confidence: { type: Number, required: false }
     },
     deletionRequestedAt: {
       type: Date,

@@ -20,5 +20,8 @@ export const EVIDENCE_ACTIONS = {
   download: 'evidence.download',
   deleteRequest: 'evidence.request_delete',
   softDelete: 'evidence.delete',
-  verifyHash: 'evidence.verify_hash'
+  verifyHash: 'evidence.verify_hash',
+  transcribed: 'evidence.transcribed',
+  transcriptionViewed: 'evidence.transcription_viewed',
+  transcriptionCreated: 'evidence.transcription_created'
 } as const;

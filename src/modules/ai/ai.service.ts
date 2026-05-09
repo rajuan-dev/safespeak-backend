@@ -7,6 +7,9 @@ import { ApiError } from '@common/errors/ApiError';
 import { env } from '@config/env';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
+import { transcribeAudioBuffer } from '@modules/ai/ai-transcription.service';
+import { saveTranscriptionToEvidence } from '@modules/evidence/evidence.service';
+import type { EvidenceUploadFile } from '@modules/evidence/evidence.types';
 import { EvidenceModel } from '@modules/evidence/evidence.model';
 import { ReportModel, type ReportDocument } from '@modules/reports/reports.model';
 import { getSafeSpeakSystemPrompt } from './ai-guardrails';
@@ -28,6 +31,7 @@ import type {
   AiOwner,
   AiServiceContext
 } from './ai.types';
+import type { TranscribeAudioBodyInput } from './ai.schema';
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 
@@ -426,4 +430,97 @@ export const answerWithContext = async (
     language,
     input.citations
   );
+};
+
+export const transcribeAudio = async (
+  context: AiServiceContext,
+  input: TranscribeAudioBodyInput,
+  file: EvidenceUploadFile | undefined
+): Promise<Record<string, unknown>> => {
+  if (!file) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'audio file is required');
+  }
+
+  const consent = await getCurrentConsent(ownerFilter(context.owner));
+  if (!consent.process_with_ai && !consent.transcribe_audio) {
+    throw new ApiError(
+      StatusCodes.FORBIDDEN,
+      'process_with_ai or transcribe_audio consent is required for transcription'
+    );
+  }
+
+  const transcription = await transcribeAudioBuffer({
+    buffer: file.buffer,
+    fileName: file.originalname,
+    mimeType: file.mimetype,
+    language: input.language
+  });
+
+  if (input.evidenceId && input.saveTranscript !== false) {
+    await saveTranscriptionToEvidence(
+      ownerFilter(context.owner),
+      input.evidenceId,
+      {
+        text: transcription.transcript,
+        language: transcription.language,
+        model: transcription.model,
+        provider: transcription.provider
+      }
+    );
+  }
+
+  if (input.reportId) {
+    const report = await getOwnedReport(ownerFilter(context.owner), input.reportId);
+    if (!report) {
+      throw new ApiError(StatusCodes.NOT_FOUND, 'Report not found');
+    }
+
+    if (input.useAsNarrative) {
+      if (!(report.consentSnapshot as { cloud_sync?: boolean })?.cloud_sync) {
+        throw new ApiError(
+          StatusCodes.FORBIDDEN,
+          'cloud_sync consent is required to store transcription as report narrative'
+        );
+      }
+      report.originalNarrative = transcription.transcript;
+    } else {
+      report.structuredFields = {
+        ...report.structuredFields,
+        transcription: {
+          available: true,
+          language: transcription.language,
+          model: transcription.model
+        }
+      };
+    }
+
+    await report.save();
+  }
+
+  await createAuditLog({
+    actorType: context.owner.userId ? 'user' : 'anonymous_session',
+    actorId: context.owner.userId,
+    sessionId: context.owner.sessionId,
+    action: AI_ACTIONS.audioTranscriptionRequested,
+    resourceType: 'system',
+    resourceId: input.reportId ?? input.evidenceId,
+    ip: context.ip,
+    userAgent: context.userAgent,
+    metadata: {
+      model: transcription.model,
+      provider: transcription.provider,
+      reportId: input.reportId,
+      evidenceId: input.evidenceId,
+      saved: input.saveTranscript !== false
+    }
+  });
+
+  return {
+    transcript: transcription.transcript,
+    language: transcription.language,
+    model: transcription.model,
+    reportId: input.reportId,
+    evidenceId: input.evidenceId,
+    saved: input.saveTranscript !== false
+  };
 };

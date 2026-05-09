@@ -7,11 +7,20 @@ import { env } from '@config/env';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
 import { ReportModel } from '@modules/reports/reports.model';
+import {
+  assertSupportedTranscriptionMimeType,
+  transcribeAudioBuffer
+} from '@modules/ai/ai-transcription.service';
 
 import { EVIDENCE_ACTIONS } from './evidence.constants';
 import { EvidenceAuditChainModel } from './evidence-audit.model';
 import { EvidenceModel, type EvidenceDocument } from './evidence.model';
-import type { CompleteUploadInput, CreateUploadUrlInput, VerifyHashInput } from './evidence.schema';
+import type {
+  CompleteUploadInput,
+  CreateUploadUrlInput,
+  TranscribeEvidenceInput,
+  VerifyHashInput
+} from './evidence.schema';
 import {
   createS3UploadUrl,
   hasS3Storage,
@@ -169,6 +178,28 @@ const getOwnedEvidence = async (owner: EvidenceOwner, evidenceId: string) => {
   }
 
   return evidence;
+};
+
+const assertTranscriptionConsent = async (owner: EvidenceOwner): Promise<void> => {
+  const consent = await getCurrentConsent(owner);
+
+  if (!consent.process_with_ai && !consent.transcribe_audio) {
+    throw new ApiError(
+      StatusCodes.FORBIDDEN,
+      'process_with_ai or transcribe_audio consent is required for transcription'
+    );
+  }
+};
+
+const assertAudioVideoEvidence = (evidence: EvidenceDocument): void => {
+  if (!evidence.mimeType.startsWith('audio/') && !evidence.mimeType.startsWith('video/')) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Only audio or video evidence can be transcribed'
+    );
+  }
+
+  assertSupportedTranscriptionMimeType(evidence.mimeType);
 };
 
 const buildStorageKey = (reportId: string, fileName: string): string =>
@@ -395,4 +426,156 @@ export const getEvidenceAuditChain = async (
   const evidence = await getOwnedEvidence(owner, evidenceId);
 
   return EvidenceAuditChainModel.find({ evidenceId: evidence._id }).sort({ sequence: 1 }).lean();
+};
+
+export const transcribeEvidenceById = async (
+  owner: EvidenceOwner,
+  evidenceId: string,
+  input: TranscribeEvidenceInput,
+  ip?: string,
+  userAgent?: string
+): Promise<unknown> => {
+  await assertTranscriptionConsent(owner);
+  const evidence = await getOwnedEvidence(owner, evidenceId);
+  assertAudioVideoEvidence(evidence);
+
+  const fileBuffer = await readDecryptedLocalFile(evidence);
+  const result = await transcribeAudioBuffer({
+    buffer: fileBuffer,
+    fileName: evidence.fileName,
+    mimeType: evidence.mimeType,
+    language: input.language
+  });
+
+  if (input.saveTranscript) {
+    evidence.transcription = {
+      text: result.transcript,
+      language: result.language,
+      model: result.model,
+      provider: result.provider,
+      transcribedAt: new Date(),
+      transcribedBy: owner.userId ?? owner.sessionId
+    };
+    await evidence.save();
+  }
+
+  if (input.reportId) {
+    const report = await assertOwnedReport(owner, input.reportId);
+    const nextFields = {
+      ...report.structuredFields,
+      evidenceItems: [
+        ...((report.structuredFields?.evidenceItems as unknown[]) ?? []),
+        {
+          evidenceId: evidence._id.toString(),
+          transcriptionAvailable: input.saveTranscript,
+          transcribedAt: new Date().toISOString()
+        }
+      ]
+    };
+    report.structuredFields = nextFields;
+
+    if (input.useAsNarrative) {
+      if (!(report.consentSnapshot as { cloud_sync?: boolean })?.cloud_sync) {
+        throw new ApiError(
+          StatusCodes.FORBIDDEN,
+          'cloud_sync consent is required to store transcription as report narrative'
+        );
+      }
+
+      report.originalNarrative = result.transcript;
+    }
+
+    await report.save();
+  }
+
+  await appendEvidenceAudit(owner, evidence, EVIDENCE_ACTIONS.transcribed, {
+    reportId: input.reportId,
+    saved: input.saveTranscript
+  });
+  await auditEvidenceChange(owner, EVIDENCE_ACTIONS.transcribed, evidence._id, ip, userAgent, {
+    reportId: evidence.reportId,
+    saved: input.saveTranscript
+  });
+  await createAuditLog({
+    ...actorForOwner(owner),
+    action: 'evidence.transcription_created',
+    resourceType: 'evidence',
+    resourceId: evidence._id,
+    ip,
+    userAgent,
+    metadata: {
+      reportId: evidence.reportId,
+      model: result.model,
+      provider: result.provider
+    }
+  });
+
+  return {
+    transcript: result.transcript,
+    language: result.language,
+    model: result.model,
+    reportId: input.reportId,
+    evidenceId: evidence._id.toString(),
+    saved: input.saveTranscript
+  };
+};
+
+export const getEvidenceTranscription = async (
+  owner: EvidenceOwner,
+  evidenceId: string,
+  ip?: string,
+  userAgent?: string
+): Promise<unknown> => {
+  const evidence = await getOwnedEvidence(owner, evidenceId);
+
+  if (!evidence.transcription?.text) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'No transcription found for this evidence');
+  }
+
+  await createAuditLog({
+    ...actorForOwner(owner),
+    action: EVIDENCE_ACTIONS.transcriptionViewed,
+    resourceType: 'evidence',
+    resourceId: evidence._id,
+    ip,
+    userAgent
+  });
+
+  return {
+    evidenceId: evidence._id.toString(),
+    reportId: evidence.reportId.toString(),
+    transcription: {
+      text: evidence.transcription.text,
+      language: evidence.transcription.language,
+      model: evidence.transcription.model,
+      provider: evidence.transcription.provider,
+      transcribedAt: evidence.transcription.transcribedAt
+    }
+  };
+};
+
+export const saveTranscriptionToEvidence = async (
+  owner: EvidenceOwner,
+  evidenceId: string,
+  transcript: {
+    text: string;
+    language?: string;
+    model?: string;
+    provider?: string;
+  }
+): Promise<void> => {
+  const evidence = await getOwnedEvidence(owner, evidenceId);
+  evidence.transcription = {
+    text: transcript.text,
+    language: transcript.language,
+    model: transcript.model,
+    provider: transcript.provider,
+    transcribedAt: new Date(),
+    transcribedBy: owner.userId ?? owner.sessionId
+  };
+  await evidence.save();
+};
+
+export const assertOwnerCanTranscribe = async (owner: EvidenceOwner): Promise<void> => {
+  await assertTranscriptionConsent(owner);
 };

@@ -5,7 +5,8 @@ export const AI_ACTIONS = {
   generateSummary: 'ai.generate_summary',
   translate: 'ai.translate',
   redactPii: 'ai.redact_pii',
-  ragAnswer: 'ai.rag_answer'
+  ragAnswer: 'ai.rag_answer',
+  audioTranscriptionRequested: 'ai.audio_transcription_requested'
 } as const;
 
 export const AI_REVIEW_STATUSES = ['pending_human_review', 'approved', 'rejected'] as const;

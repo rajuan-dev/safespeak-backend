@@ -27,3 +27,12 @@ export interface AiServiceContext {
   ip?: string;
   userAgent?: string;
 }
+
+export interface AudioTranscriptionOutput {
+  transcript: string;
+  language?: string;
+  model: string;
+  reportId?: string;
+  evidenceId?: string;
+  saved: boolean;
+}

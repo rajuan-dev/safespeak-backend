@@ -48,6 +48,16 @@ export const verifyHashBodySchema = z
   })
   .strict();
 
+export const transcribeEvidenceBodySchema = z
+  .object({
+    language: z.string().trim().min(2).max(40).optional(),
+    saveTranscript: z.boolean().default(true),
+    reportId: objectIdSchema.optional(),
+    useAsNarrative: z.boolean().default(false)
+  })
+  .strict();
+
 export type CreateUploadUrlInput = z.infer<typeof createUploadUrlSchema>;
 export type CompleteUploadInput = z.infer<typeof completeUploadBodySchema>;
 export type VerifyHashInput = z.infer<typeof verifyHashBodySchema>;
+export type TranscribeEvidenceInput = z.infer<typeof transcribeEvidenceBodySchema>;

@@ -12,12 +12,15 @@ import {
   getEvidenceAuditChainController,
   getEvidenceController,
   getEvidenceMetadataController,
+  getEvidenceTranscriptionController,
+  transcribeEvidenceController,
   verifyHashController
 } from './evidence.controller';
 import {
   completeUploadBodySchema,
   createUploadUrlSchema,
   evidenceParamsSchema,
+  transcribeEvidenceBodySchema,
   verifyHashBodySchema
 } from './evidence.schema';
 
@@ -67,4 +70,14 @@ evidenceRoutes.post(
   '/evidence/:id/verify-hash',
   validate({ params: evidenceParamsSchema, body: verifyHashBodySchema }),
   verifyHashController
+);
+evidenceRoutes.post(
+  '/evidence/:id/transcribe',
+  validate({ params: evidenceParamsSchema, body: transcribeEvidenceBodySchema }),
+  transcribeEvidenceController
+);
+evidenceRoutes.get(
+  '/evidence/:id/transcription',
+  validate({ params: evidenceParamsSchema }),
+  getEvidenceTranscriptionController
 );

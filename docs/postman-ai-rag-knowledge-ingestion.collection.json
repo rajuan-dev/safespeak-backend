@@ -1,0 +1,140 @@
+{
+  "info": {
+    "name": "SafeSpeak Backend API - AI RAG Knowledge Ingestion",
+    "_postman_id": "5f22f9b3-3de8-46f1-8d5a-8c1800f5c89a",
+    "description": "Additive import pack for AI/RAG/Knowledge Ingestion endpoints.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "AI",
+      "item": [
+        {
+          "name": "RAG",
+          "item": [
+            {
+              "name": "POST Search",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" },
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"{{rag_query}}\",\n  \"topK\": 5,\n  \"jurisdiction\": \"{{jurisdiction}}\",\n  \"sourceCategory\": \"{{source_category}}\",\n  \"topic\": \"{{topic}}\"\n}"
+                },
+                "url": "{{base_url}}{{api_prefix}}/rag/search"
+              }
+            },
+            {
+              "name": "POST Answer",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" },
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"{{rag_query}}\",\n  \"question\": \"{{rag_query}}\",\n  \"topK\": 5,\n  \"jurisdiction\": \"{{jurisdiction}}\",\n  \"sourceCategory\": \"{{source_category}}\",\n  \"topic\": \"{{topic}}\"\n}"
+                },
+                "url": "{{base_url}}{{api_prefix}}/rag/answer"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Knowledge Ingestion",
+          "item": [
+            {
+              "name": "GET Knowledge Sources",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources"
+              }
+            },
+            {
+              "name": "POST Create Knowledge Source",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" },
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"title\": \"Sample Official Source\",\n  \"sourceCategory\": \"official_legal_source\",\n  \"jurisdiction\": \"Cth\",\n  \"topic\": \"discrimination\",\n  \"sourceType\": \"Act\",\n  \"publisher\": \"Australian Government\",\n  \"licenseStatus\": \"Government copyright\",\n  \"url\": \"https://www.legislation.gov.au/\",\n  \"legalReviewed\": false,\n  \"status\": \"pending_review\"\n}"
+                },
+                "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources"
+              }
+            },
+            {
+              "name": "POST Ingest Knowledge Source",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" },
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"content\": \"This is approved information-only support content.\",\n  \"metadata\": {\n    \"version\": \"2026-05\"\n  }\n}"
+                },
+                "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/ingest"
+              }
+            },
+            {
+              "name": "POST Approve Knowledge Source",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/approve"
+              }
+            },
+            {
+              "name": "POST Reject Knowledge Source",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" },
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"reason\": \"Requires legal review before publication\"\n}"
+                },
+                "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/reject"
+              }
+            },
+            {
+              "name": "POST Reindex Knowledge Source",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/reindex"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:5000" },
+    { "key": "api_prefix", "value": "/api/v1" },
+    { "key": "access_token", "value": "" },
+    { "key": "knowledge_source_id", "value": "" },
+    { "key": "rag_query", "value": "What official legal options may include for racial discrimination in NSW?" },
+    { "key": "jurisdiction", "value": "NSW" },
+    { "key": "source_category", "value": "official_legal_source" },
+    { "key": "topic", "value": "discrimination" }
+  ]
+}

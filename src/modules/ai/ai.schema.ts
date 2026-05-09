@@ -43,9 +43,30 @@ export const redactPiiSchema = z.object({
   replacementStyle: z.enum(['labels', 'mask']).default('labels')
 });
 
+export const transcribeAudioBodySchema = z.object({
+  reportId: objectIdSchema.optional(),
+  evidenceId: objectIdSchema.optional(),
+  language: z.string().trim().min(2).max(40).optional(),
+  saveTranscript: z.preprocess((value) => {
+    if (typeof value === 'string') {
+      return value.toLowerCase() === 'true';
+    }
+
+    return value;
+  }, z.boolean().optional()),
+  useAsNarrative: z.preprocess((value) => {
+    if (typeof value === 'string') {
+      return value.toLowerCase() === 'true';
+    }
+
+    return value;
+  }, z.boolean().optional())
+});
+
 export type ExtractIncidentFieldsInput = z.infer<typeof extractIncidentFieldsSchema>;
 export type TriageReportInput = z.infer<typeof triageReportSchema>;
 export type ClarifyingQuestionsInput = z.infer<typeof clarifyingQuestionsSchema>;
 export type GenerateSummaryInput = z.infer<typeof generateSummarySchema>;
 export type TranslateInput = z.infer<typeof translateSchema>;
 export type RedactPiiInput = z.infer<typeof redactPiiSchema>;
+export type TranscribeAudioBodyInput = z.infer<typeof transcribeAudioBodySchema>;

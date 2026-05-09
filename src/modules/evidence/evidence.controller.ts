@@ -3,14 +3,21 @@ import type { Request, Response } from 'express';
 import { asyncHandler } from '@common/errors/asyncHandler';
 import { ApiResponse } from '@common/responses/api-response';
 
-import type { CompleteUploadInput, CreateUploadUrlInput, VerifyHashInput } from './evidence.schema';
+import type {
+  CompleteUploadInput,
+  CreateUploadUrlInput,
+  TranscribeEvidenceInput,
+  VerifyHashInput
+} from './evidence.schema';
 import {
   completeEvidenceUpload,
   createEvidenceUploadUrl,
   getEvidenceAuditChain,
   getEvidenceById,
   getEvidenceMetadata,
+  getEvidenceTranscription,
   softDeleteEvidence,
+  transcribeEvidenceById,
   verifyEvidenceHash
 } from './evidence.service';
 
@@ -77,3 +84,28 @@ export const getEvidenceAuditChainController = asyncHandler(async (req: Request,
 
   ApiResponse.success(res, 'Evidence audit chain retrieved', { auditChain });
 });
+
+export const transcribeEvidenceController = asyncHandler(async (req: Request, res: Response) => {
+  const result = await transcribeEvidenceById(
+    getOwner(req),
+    req.params.id,
+    req.body as TranscribeEvidenceInput,
+    req.ip,
+    req.get('user-agent')
+  );
+
+  ApiResponse.success(res, 'Evidence transcribed successfully', result);
+});
+
+export const getEvidenceTranscriptionController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await getEvidenceTranscription(
+      getOwner(req),
+      req.params.id,
+      req.ip,
+      req.get('user-agent')
+    );
+
+    ApiResponse.success(res, 'Evidence transcription retrieved', result);
+  }
+);

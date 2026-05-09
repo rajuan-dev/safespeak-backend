@@ -9,6 +9,7 @@ import {
   generateClarifyingQuestions,
   generateSummary,
   redactPii,
+  transcribeAudio,
   translateText,
   triageReport
 } from './ai.service';
@@ -17,6 +18,7 @@ import type {
   ExtractIncidentFieldsInput,
   GenerateSummaryInput,
   RedactPiiInput,
+  TranscribeAudioBodyInput,
   TranslateInput,
   TriageReportInput
 } from './ai.schema';
@@ -82,4 +84,16 @@ export const redactPiiController = asyncHandler(async (req: Request, res: Respon
   res
     .status(StatusCodes.OK)
     .json(successResponse('PII redacted', { result }, { informationOnly: true }));
+});
+
+export const transcribeAudioController = asyncHandler(async (req: Request, res: Response) => {
+  const result = await transcribeAudio(
+    getContext(req),
+    req.body as TranscribeAudioBodyInput,
+    req.file
+  );
+
+  res
+    .status(StatusCodes.OK)
+    .json(successResponse('Audio transcribed successfully', result, {}));
 });
