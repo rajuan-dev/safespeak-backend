@@ -49,7 +49,7 @@ const envSchema = z
     OPENAI_API_KEY: optionalString(z.string().min(1)),
     OPENAI_MODEL: z.string().min(1).default('gpt-4.1-mini'),
     OPENAI_EMBEDDING_MODEL: z.string().min(1).default('text-embedding-3-small'),
-    OPENAI_TRANSCRIPTION_MODEL: z.string().min(1).default('whisper-1'),
+    OPENAI_TRANSCRIPTION_MODEL: z.string().min(1).default('gpt-4o-mini-transcribe'),
     ASR_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(26214400),
     RAG_VECTOR_INDEX: z.string().min(1).default('rag_chunks_vector_index'),
     INTERNAL_KNOWLEDGE_DIR: z.string().min(1).default('knowledge/internal'),

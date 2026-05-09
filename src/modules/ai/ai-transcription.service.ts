@@ -31,11 +31,16 @@ export const SUPPORTED_TRANSCRIPTION_MIME_TYPES = new Set([
 
 export const assertSupportedTranscriptionMimeType = (mimeType: string): void => {
   if (!SUPPORTED_TRANSCRIPTION_MIME_TYPES.has(mimeType)) {
-    throw new ApiError(StatusCodes.BAD_REQUEST, 'Unsupported audio/video file type for transcription');
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Unsupported audio/video file type for transcription'
+    );
   }
 };
 
-export const transcribeAudioBuffer = async (input: TranscriptionInput): Promise<TranscriptionResult> => {
+export const transcribeAudioBuffer = async (
+  input: TranscriptionInput
+): Promise<TranscriptionResult> => {
   if (!env.OPENAI_API_KEY) {
     throw new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'OPENAI_API_KEY is not configured');
   }
