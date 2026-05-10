@@ -455,7 +455,11 @@ export const generateTimelineAssistantTurn = async (
       'Do not pressure the user to continue, report, or name people.',
       'Do not provide legal, medical, therapeutic, or crisis instructions beyond the SafeSpeak information-only guardrails.',
       'Return valid JSON with keys: assistantMessage, nextQuestion, timeline, readyForSubmission, confidence, citations, reviewStatus.',
-      'timeline must be an object with only these keys: who, what, where. Each value should be a concise string or empty string.',
+      'timeline must be a JSON object of concise snake_case field names to concise string values.',
+      'Only include fields that are already known from the conversation or clearly necessary to build a useful incident timeline.',
+      'Prefer these keys when relevant: who, relationship, what, where, when, how, frequency, impact, threats, injuries, witnesses, evidence, actions_taken, unsafe_now.',
+      'Do not include empty fields, duplicate fields, speculative fields, or keys that are not grounded in the conversation.',
+      'Keep each timeline value specific and concise. If the user provides a long detail, summarize it into 1 to 3 short sentences.',
       input.ragUnavailable
         ? 'RAG retrieval was unavailable for this turn; say limitations clearly if needed.'
         : 'Use the RAG context only when it is relevant and cite it in citations.',

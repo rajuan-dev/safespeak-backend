@@ -468,6 +468,39 @@ export const answerRag = async (context: RagServiceContext, input: RagAnswerInpu
 const normalizeTimelineValue = (value: unknown): string =>
   typeof value === 'string' ? value.trim() : '';
 
+const normalizeTimelineKey = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+
+const normalizeTimelineObject = (
+  ...sources: Array<Record<string, unknown> | undefined>
+): Record<string, string> => {
+  const normalized: Record<string, string> = {};
+
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+
+    for (const [rawKey, rawValue] of Object.entries(source)) {
+      const key = normalizeTimelineKey(rawKey);
+      const value = normalizeTimelineValue(rawValue);
+
+      if (!key || !value) {
+        continue;
+      }
+
+      normalized[key] = value;
+    }
+  }
+
+  return normalized;
+};
+
 export const runTimelineAssistant = async (
   context: RagServiceContext,
   input: RagTimelineAssistantInput
@@ -526,11 +559,7 @@ export const runTimelineAssistant = async (
     assistantMessage,
     nextQuestion:
       typeof output.nextQuestion === 'string' ? output.nextQuestion.trim() : '',
-    timeline: {
-      who: normalizeTimelineValue(timelineCandidate.who),
-      what: normalizeTimelineValue(timelineCandidate.what),
-      where: normalizeTimelineValue(timelineCandidate.where)
-    },
+    timeline: normalizeTimelineObject(input.timeline, timelineCandidate),
     readyForSubmission: Boolean(output.readyForSubmission),
     confidence:
       output.confidence === 'high' || output.confidence === 'medium' || output.confidence === 'low'
