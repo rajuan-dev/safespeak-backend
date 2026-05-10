@@ -318,7 +318,20 @@ export const triageReport = async (
     input.narrative ?? report?.originalNarrative ?? report?.translatedNarrative ?? '';
   const output = await callOpenAIJson<Record<string, unknown>>(
     systemPrompt(language),
-    `Triage this report for information-only support. Return JSON with severitySignal, riskFactors, suggestedSupportCategories, nonLegalSafetyNotes, citations, reviewStatus. Narrative: ${narrative}. Structured fields: ${JSON.stringify(input.structuredFields ?? report?.structuredFields ?? {})}`
+    [
+      'Triage this report for information-only support.',
+      'Return valid JSON only.',
+      'Use keys: severitySignal, primarySupportNeed, specialtyTag, summary, assessmentBody, riskFactors, suggestedSupportCategories, recommendedActions, resourceRecommendations, nonLegalSafetyNotes, immediateSafetyFlag, citations, reviewStatus.',
+      'severitySignal should be one of: low, medium, high, urgent.',
+      'primarySupportNeed should be a concise human-readable label such as Mental Health Support or Immediate Safety Support.',
+      'specialtyTag should be a short lowercase tag, 1 to 3 words.',
+      'summary and assessmentBody should be concise and information-only.',
+      'riskFactors, suggestedSupportCategories, recommendedActions, and nonLegalSafetyNotes should be short arrays of strings.',
+      'resourceRecommendations should be an array of objects with title, body, and type.',
+      'immediateSafetyFlag should be true only if the user appears unsafe or at immediate risk.',
+      `Narrative: ${narrative}`,
+      `Structured fields: ${JSON.stringify(input.structuredFields ?? report?.structuredFields ?? {})}`
+    ].join(' ')
   );
 
   return recordAiInteraction(
@@ -451,14 +464,20 @@ export const generateTimelineAssistantTurn = async (
     [
       'You are the SafeSpeak timeline builder for a personal incident report.',
       'Use only the user conversation and supplied RAG context.',
-      'Ask one short trauma-informed follow-up question at a time.',
+      'Support two behaviors in the same flow: a flexible conversational mode and a structured timeline-builder mode.',
+      'If the user greets you, hesitates, expresses emotion, asks for clarification, or responds with something too vague to capture incident details, reply naturally and supportively in assistantMessage first.',
+      'When appropriate, use nextQuestion to guide the user back to one short trauma-informed timeline question at a time.',
+      'If the user already shared concrete incident details, prioritize structured timeline-building and keep the nextQuestion focused on the single most useful missing field.',
       'Do not pressure the user to continue, report, or name people.',
       'Do not provide legal, medical, therapeutic, or crisis instructions beyond the SafeSpeak information-only guardrails.',
       'Return valid JSON with keys: assistantMessage, nextQuestion, timeline, readyForSubmission, confidence, citations, reviewStatus.',
+      'assistantMessage should be able to stand alone as a natural response.',
+      'nextQuestion is optional and should be empty when a follow-up question is not needed on that turn.',
       'timeline must be a JSON object of concise snake_case field names to concise string values.',
       'Only include fields that are already known from the conversation or clearly necessary to build a useful incident timeline.',
       'Prefer these keys when relevant: who, relationship, what, where, when, how, frequency, impact, threats, injuries, witnesses, evidence, actions_taken, unsafe_now.',
       'If the latest user message clearly states the incident type or actor, capture that immediately in timeline on the same turn instead of waiting for a later message.',
+      'Do not force a timeline question immediately after greetings like hi, hello, hey, or similar small talk unless the user also gave incident details.',
       'Do not include empty fields, duplicate fields, speculative fields, or keys that are not grounded in the conversation.',
       'Keep each timeline value specific and concise. If the user provides a long detail, summarize it into 1 to 3 short sentences.',
       input.ragUnavailable
