@@ -32,7 +32,7 @@ const timelineConversationMessageSchema = z.object({
 
 export const ragTimelineAssistantSchema = z.object({
   message: z.string().trim().min(1).max(4000),
-  conversation: z.array(timelineConversationMessageSchema).max(40).default([]),
+  conversation: z.array(timelineConversationMessageSchema).max(100).default([]),
   timeline: z.record(z.unknown()).default({}),
   language: z.string().trim().min(2).max(12).optional(),
   jurisdiction: z.enum(RAG_JURISDICTIONS).optional(),
