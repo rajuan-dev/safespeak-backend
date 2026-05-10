@@ -22,6 +22,7 @@ import type {
   PrivacyRequestQueryInput,
   TaxonomyInput,
   TaxonomyQueryInput,
+  UpdateAdminUserInput,
   UpdateDestinationInput,
   UpdatePrivacyRequestInput,
   UpdateTaxonomyInput,
@@ -117,6 +118,40 @@ export const createAdminUser = async (
 
   await audit(context, ADMIN_ACTIONS.userCreate, user._id.toString(), {
     role: input.role
+  });
+
+  return UserModel.findById(user._id).select('-passwordHash -refreshTokenHash').lean();
+};
+
+export const updateAdminUser = async (
+  context: AdminServiceContext,
+  id: string,
+  input: UpdateAdminUserInput
+): Promise<unknown> => {
+  const user = await UserModel.findOne({
+    _id: id,
+    deletedAt: { $exists: false }
+  });
+
+  if (!user) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Admin user not found');
+  }
+
+  if (input.fullName !== undefined) {
+    user.fullName = input.fullName;
+  }
+
+  if (input.role !== undefined) {
+    user.role = input.role;
+  }
+
+  if (input.status !== undefined) {
+    user.status = input.status;
+  }
+
+  await user.save();
+  await audit(context, ADMIN_ACTIONS.userUpdate, user._id.toString(), {
+    changedFields: Object.keys(input)
   });
 
   return UserModel.findById(user._id).select('-passwordHash -refreshTokenHash').lean();

@@ -3,7 +3,7 @@
 ## Project Identity
 
 Project: SafeSpeak Backend  
-Stack: Node.js, Express.js, TypeScript, MongoDB, future Redis/BullMQ, future S3, future AI/RAG.
+Stack: Node.js, Express.js, TypeScript, MongoDB, AI/RAG, audio transcription, support routing, analytics, admin APIs.
 
 SafeSpeak is a trauma-informed, multilingual triage and intelligence platform for racism, hate speech, online abuse, scams, discrimination, and related harms in Australia.
 
@@ -19,22 +19,26 @@ All future AI/legal-style outputs must be information-only and must use disclaim
 
 ## Current Phase
 
-Current phase: backend foundation setup only.
+Current phase: frontend/admin integration and flow hardening.
 
-Do not implement business modules unless the user explicitly asks.
-
-Do not implement:
+Core backend modules are already implemented and should be treated as live integration surfaces:
 
 - Auth
+- Anonymous Sessions
+- RBAC
+- Consent
+- Profile
 - Reports
 - Evidence Vault
 - AI/RAG
+- Audio Transcription
 - ScamShield
-- Admin APIs
+- Support
 - Analytics
-- External integrations
+- Admin APIs
 
-Only health check and project foundation are allowed during the initial setup phase.
+Do not remove or replace existing modules when the task is an integration fix.
+Prefer contract alignment, consent hardening, and smallest-safe backend extensions where the frontend flow is blocked.
 
 ## Token-Saving Rules for AI Agents
 
@@ -149,14 +153,16 @@ Always consider:
 - helmet/security headers
 - input validation with Zod
 
-## SafeSpeak Domain Rules for Future Work
+## SafeSpeak Domain Rules for Current Work
 
-Future modules must respect:
+All current and future work must respect:
 
 - Safety gate before sensitive flow.
 - Explicit consent before cloud sync, AI processing, analytics, or external sharing.
 - No automatic reporting to agencies.
 - AI output must be information-only, not legal advice.
+- Domestic violence or imminent danger flows must surface `000` and `1800RESPECT`.
+- Quick Exit and covert/neutral escape paths must remain available in safety-sensitive flows.
 - Admins must not access raw PII unless explicit permission and audit reason exist.
 - Evidence must be hashed and audited.
 - Analytics must be anonymised and threshold-protected.
@@ -233,14 +239,29 @@ If Postman MCP is not available:
 - Include method, URL, headers, request body, success response, and error response.
 - Tell the user MCP was not available and the guide was created for later import/sync.
 
-## Current Postman Endpoints
+## Current Backend Surface
 
-Initial foundation endpoints:
+Important active route groups:
 
 ```txt
-GET {{base_url}}/health
-GET {{base_url}}{{api_prefix}}/health
+/auth
+/sessions
+/consents
+/profile
+/reports
+/evidence
+/ai
+/rag
+/scamshield
+/support
+/microeducation
+/content-resources
+/media-assets
+/admin
+/admin/analytics
 ```
+
+When changing contracts, update `docs/frontend-admin-api-contract.md` in the same task.
 
 ## Change Rules
 
@@ -268,4 +289,4 @@ Include:
 
 Do not include unnecessary long explanations unless the user asks.
 
-Use this as the first setup prompt. After Codex completes this, the next prompt should be for: **Auth + Anonymous Session + RBAC + Consent + Profile + Report foundation**.
+Use this file as the operating guide for incremental backend work. The primary focus is no longer foundation setup; it is safe integration, consent enforcement, and contract stability across frontend and admin clients.

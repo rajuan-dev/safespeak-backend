@@ -14,6 +14,7 @@ import {
   createAdminUserController,
   createAdminDestinationController,
   createAdminTaxonomyController,
+  updateAdminUserController,
   updateAdminDestinationController,
   updateAdminPrivacyRequestController,
   updateAdminTaxonomyController
@@ -26,6 +27,7 @@ import {
   privacyRequestQuerySchema,
   taxonomyQuerySchema,
   taxonomySchema,
+  updateAdminUserSchema,
   updateDestinationSchema,
   updatePrivacyRequestSchema,
   updateTaxonomySchema,
@@ -43,6 +45,12 @@ adminRoutes.post(
   requireAdminRole('super_admin'),
   validate({ body: createAdminUserSchema }),
   createAdminUserController
+);
+adminRoutes.patch(
+  '/users/:id',
+  requireAdminRole('super_admin'),
+  validate({ params: adminParamsSchema, body: updateAdminUserSchema }),
+  updateAdminUserController
 );
 adminRoutes.get('/taxonomies', validate({ query: taxonomyQuerySchema }), adminTaxonomiesController);
 adminRoutes.post('/taxonomies', validate({ body: taxonomySchema }), createAdminTaxonomyController);

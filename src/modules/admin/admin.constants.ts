@@ -2,6 +2,7 @@ export const ADMIN_ACTIONS = {
   dashboard: 'admin.dashboard',
   usersList: 'admin.users.list',
   userCreate: 'admin.users.create',
+  userUpdate: 'admin.users.update',
   taxonomiesList: 'admin.taxonomies.list',
   taxonomyCreate: 'admin.taxonomies.create',
   taxonomyUpdate: 'admin.taxonomies.update',

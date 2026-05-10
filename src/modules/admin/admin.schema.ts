@@ -27,6 +27,12 @@ export const createAdminUserSchema = z.object({
   role: z.enum(ADMIN_ROLES).default('admin')
 });
 
+export const updateAdminUserSchema = z.object({
+  fullName: z.string().trim().min(1).max(200).optional(),
+  role: z.enum(ADMIN_ROLES).optional(),
+  status: z.enum(['active', 'inactive', 'suspended', 'deleted']).optional()
+});
+
 export const taxonomyQuerySchema = z.object({
   type: z.enum(ADMIN_TAXONOMY_TYPES).optional(),
   isActive: z.coerce.boolean().optional()
@@ -70,6 +76,7 @@ export const updatePrivacyRequestSchema = z.object({
 
 export type UsersQueryInput = z.infer<typeof usersQuerySchema>;
 export type CreateAdminUserInput = z.infer<typeof createAdminUserSchema>;
+export type UpdateAdminUserInput = z.infer<typeof updateAdminUserSchema>;
 export type TaxonomyQueryInput = z.infer<typeof taxonomyQuerySchema>;
 export type TaxonomyInput = z.infer<typeof taxonomySchema>;
 export type UpdateTaxonomyInput = z.infer<typeof updateTaxonomySchema>;

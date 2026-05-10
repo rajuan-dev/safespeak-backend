@@ -9,6 +9,7 @@ import type {
   DestinationInput,
   PrivacyRequestQueryInput,
   TaxonomyInput,
+  UpdateAdminUserInput,
   UpdateDestinationInput,
   UpdatePrivacyRequestInput,
   UpdateTaxonomyInput,
@@ -26,6 +27,7 @@ import {
   listPrivacyRequests,
   listTaxonomies,
   listUsers,
+  updateAdminUser,
   updateDestination,
   updatePrivacyRequest,
   updateTaxonomy
@@ -55,6 +57,12 @@ export const createAdminUserController = asyncHandler(async (req: Request, res: 
   const user = await createAdminUser(getContext(req), req.body as CreateAdminUserInput);
 
   res.status(StatusCodes.CREATED).json(successResponse('Admin user created', { user }));
+});
+
+export const updateAdminUserController = asyncHandler(async (req: Request, res: Response) => {
+  const user = await updateAdminUser(getContext(req), req.params.id, req.body as UpdateAdminUserInput);
+
+  res.status(StatusCodes.OK).json(successResponse('Admin user updated', { user }));
 });
 
 export const adminTaxonomiesController = asyncHandler(async (req: Request, res: Response) => {
