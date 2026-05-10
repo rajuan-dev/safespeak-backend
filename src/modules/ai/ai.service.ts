@@ -432,6 +432,50 @@ export const answerWithContext = async (
   );
 };
 
+export const generateTimelineAssistantTurn = async (
+  context: AiServiceContext,
+  input: {
+    message: string;
+    conversation: Array<{ role: 'assistant' | 'user'; content: string }>;
+    timeline: Record<string, unknown>;
+    language?: string;
+    contextText: string;
+    citations: AiCitation[];
+    ragUnavailable?: boolean;
+  }
+): Promise<Record<string, unknown>> => {
+  await assertAiConsent(context.owner);
+  const language = input.language ?? DEFAULT_AI_LANGUAGE;
+  const output = await callOpenAIJson<Record<string, unknown>>(
+    systemPrompt(language),
+    [
+      'You are the SafeSpeak timeline builder for a personal incident report.',
+      'Use only the user conversation and supplied RAG context.',
+      'Ask one short trauma-informed follow-up question at a time.',
+      'Do not pressure the user to continue, report, or name people.',
+      'Do not provide legal, medical, therapeutic, or crisis instructions beyond the SafeSpeak information-only guardrails.',
+      'Return valid JSON with keys: assistantMessage, nextQuestion, timeline, readyForSubmission, confidence, citations, reviewStatus.',
+      'timeline must be an object with only these keys: who, what, where. Each value should be a concise string or empty string.',
+      input.ragUnavailable
+        ? 'RAG retrieval was unavailable for this turn; say limitations clearly if needed.'
+        : 'Use the RAG context only when it is relevant and cite it in citations.',
+      `Latest user message: ${input.message}`,
+      `Existing conversation: ${JSON.stringify(input.conversation)}`,
+      `Existing timeline: ${JSON.stringify(input.timeline)}`,
+      `RAG context: ${input.contextText || 'No approved RAG context was retrieved.'}`
+    ].join('\n')
+  );
+
+  return recordAiInteraction(
+    context,
+    AI_ACTIONS.timelineAssistant,
+    input,
+    output,
+    language,
+    input.citations
+  );
+};
+
 export const transcribeAudio = async (
   context: AiServiceContext,
   input: TranscribeAudioBodyInput,

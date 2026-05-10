@@ -6,6 +6,7 @@ export const AI_ACTIONS = {
   translate: 'ai.translate',
   redactPii: 'ai.redact_pii',
   ragAnswer: 'ai.rag_answer',
+  timelineAssistant: 'ai.timeline_assistant',
   audioTranscriptionRequested: 'ai.audio_transcription_requested'
 } as const;
 

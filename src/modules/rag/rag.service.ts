@@ -13,7 +13,11 @@ import {
   enforceAiOutputGuardrails,
   shouldRequireHumanReview
 } from '@modules/ai/ai-guardrails';
-import { answerWithContext, createEmbedding } from '@modules/ai/ai.service';
+import {
+  answerWithContext,
+  createEmbedding,
+  generateTimelineAssistantTurn
+} from '@modules/ai/ai.service';
 import type { AiCitation } from '@modules/ai/ai.types';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
@@ -34,6 +38,7 @@ import type {
   IngestKnowledgeSourceInput,
   RagAnswerInput,
   RagSearchInput,
+  RagTimelineAssistantInput,
   RejectKnowledgeSourceInput,
   UpdateKnowledgeSourceInput
 } from './rag.schema';
@@ -457,5 +462,97 @@ export const answerRag = async (context: RagServiceContext, input: RagAnswerInpu
     confidence: results.length >= 4 ? 'high' : results.length >= 2 ? 'medium' : 'low',
     pendingHumanReview,
     safetyFlags: { crisisRisk, legalAdviceRisk, insufficientSources }
+  };
+};
+
+const normalizeTimelineValue = (value: unknown): string =>
+  typeof value === 'string' ? value.trim() : '';
+
+export const runTimelineAssistant = async (
+  context: RagServiceContext,
+  input: RagTimelineAssistantInput
+): Promise<Record<string, unknown>> => {
+  await assertAiConsent(context.owner);
+
+  let results: RagSearchResult[] = [];
+  let ragUnavailable = false;
+
+  try {
+    results = await searchRag(context, {
+      query: input.message,
+      topK: input.topK,
+      language: input.language,
+      jurisdiction: input.jurisdiction
+    });
+  } catch {
+    ragUnavailable = true;
+  }
+
+  const contextText = results
+    .map((result, index) => `[${index + 1}] ${result.title}: ${result.text}`)
+    .join('\n\n');
+  const citations: AiCitation[] = results.map((result) => ({
+    sourceType: 'knowledge_source',
+    sourceId: result.sourceId,
+    title: result.title,
+    excerpt: result.text.slice(0, 500)
+  }));
+
+  const modelResponse = await generateTimelineAssistantTurn(context, {
+    message: input.message,
+    conversation: input.conversation,
+    timeline: input.timeline,
+    language: input.language,
+    contextText,
+    citations,
+    ragUnavailable
+  });
+  const output = (modelResponse.output ?? {}) as Record<string, unknown>;
+  const timelineCandidate = (output.timeline ?? {}) as Record<string, unknown>;
+  const assistantMessage =
+    typeof output.assistantMessage === 'string' && output.assistantMessage.trim()
+      ? enforceAiOutputGuardrails(output.assistantMessage)
+      : enforceAiOutputGuardrails(
+          'Thank you. Can you share one more detail that feels safe to add?'
+        );
+
+  await auditRagAction(context, RAG_ACTIONS.answer, undefined, {
+    mode: 'timeline_assistant',
+    citationCount: results.length,
+    ragUnavailable
+  });
+
+  return {
+    assistantMessage,
+    nextQuestion:
+      typeof output.nextQuestion === 'string' ? output.nextQuestion.trim() : '',
+    timeline: {
+      who: normalizeTimelineValue(timelineCandidate.who),
+      what: normalizeTimelineValue(timelineCandidate.what),
+      where: normalizeTimelineValue(timelineCandidate.where)
+    },
+    readyForSubmission: Boolean(output.readyForSubmission),
+    confidence:
+      output.confidence === 'high' || output.confidence === 'medium' || output.confidence === 'low'
+        ? output.confidence
+        : results.length >= 2
+          ? 'medium'
+          : 'low',
+    disclaimer: buildInformationOnlyDisclaimer(),
+    citations: results.map((result) => ({
+      title: result.title,
+      publisher: result.publisher,
+      url: result.citationUrl,
+      jurisdiction: result.jurisdiction,
+      sectionRef: result.sectionRef,
+      lastUpdated: result.lastUpdated
+    })),
+    rag: {
+      used: results.length > 0,
+      unavailable: ragUnavailable,
+      resultCount: results.length
+    },
+    reviewStatus: modelResponse.reviewStatus,
+    interactionId: modelResponse.interactionId
   };
 };

@@ -17,6 +17,7 @@ import {
   rejectKnowledgeSourceController,
   reindexKnowledgeSourceController,
   searchRagController,
+  timelineAssistantController,
   updateKnowledgeSourceController
 } from './rag.controller';
 import {
@@ -25,6 +26,7 @@ import {
   ragAnswerSchema,
   ragParamsSchema,
   ragSearchSchema,
+  ragTimelineAssistantSchema,
   rejectKnowledgeSourceSchema,
   updateKnowledgeSourceSchema
 } from './rag.schema';
@@ -42,6 +44,12 @@ ragRoutes.post(
   authenticateSessionOrUser,
   validate({ body: ragAnswerSchema }),
   answerRagController
+);
+ragRoutes.post(
+  '/timeline-assistant',
+  authenticateSessionOrUser,
+  validate({ body: ragTimelineAssistantSchema }),
+  timelineAssistantController
 );
 ragRoutes.use('/knowledge-sources', authenticateUser, requireAdminRole());
 ragRoutes.get('/knowledge-sources', listKnowledgeSourcesController);

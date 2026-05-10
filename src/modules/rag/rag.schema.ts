@@ -25,6 +25,20 @@ export const ragAnswerSchema = ragSearchSchema.extend({
   question: z.string().trim().min(1).max(2000)
 });
 
+const timelineConversationMessageSchema = z.object({
+  role: z.enum(['assistant', 'user']),
+  content: z.string().trim().min(1).max(4000)
+});
+
+export const ragTimelineAssistantSchema = z.object({
+  message: z.string().trim().min(1).max(4000),
+  conversation: z.array(timelineConversationMessageSchema).max(40).default([]),
+  timeline: z.record(z.unknown()).default({}),
+  language: z.string().trim().min(2).max(12).optional(),
+  jurisdiction: z.enum(RAG_JURISDICTIONS).optional(),
+  topK: z.number().int().min(1).max(8).default(4)
+});
+
 export const createKnowledgeSourceSchema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().trim().max(1000).optional(),
@@ -64,6 +78,7 @@ export const rejectKnowledgeSourceSchema = z.object({
 
 export type RagSearchInput = z.infer<typeof ragSearchSchema>;
 export type RagAnswerInput = z.infer<typeof ragAnswerSchema>;
+export type RagTimelineAssistantInput = z.infer<typeof ragTimelineAssistantSchema>;
 export type CreateKnowledgeSourceInput = z.infer<typeof createKnowledgeSourceSchema>;
 export type UpdateKnowledgeSourceInput = z.infer<typeof updateKnowledgeSourceSchema>;
 export type IngestKnowledgeSourceInput = z.infer<typeof ingestKnowledgeSourceSchema>;

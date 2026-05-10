@@ -14,6 +14,7 @@ import {
   listKnowledgeSources,
   rejectKnowledgeSource,
   reindexKnowledgeSource,
+  runTimelineAssistant,
   searchRag,
   updateKnowledgeSource
 } from './rag.service';
@@ -23,6 +24,7 @@ import type {
   IngestKnowledgeSourceInput,
   RagAnswerInput,
   RagSearchInput,
+  RagTimelineAssistantInput,
   RejectKnowledgeSourceInput,
   UpdateKnowledgeSourceInput
 } from './rag.schema';
@@ -56,6 +58,14 @@ export const answerRagController = asyncHandler(async (req: Request, res: Respon
   const result = await answerRag(getContext(req), req.body as RagAnswerInput);
 
   res.status(StatusCodes.OK).json(successResponse('RAG answer generated', result, { informationOnly: true }));
+});
+
+export const timelineAssistantController = asyncHandler(async (req: Request, res: Response) => {
+  const result = await runTimelineAssistant(getContext(req), req.body as RagTimelineAssistantInput);
+
+  res
+    .status(StatusCodes.OK)
+    .json(successResponse('Timeline assistant response generated', result, { informationOnly: true }));
 });
 
 export const listKnowledgeSourcesController = asyncHandler(async (_req: Request, res: Response) => {
