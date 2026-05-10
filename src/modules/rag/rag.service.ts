@@ -501,6 +501,122 @@ const normalizeTimelineObject = (
   return normalized;
 };
 
+const INCIDENT_TYPE_PATTERNS: Array<{ value: string; patterns: RegExp[] }> = [
+  {
+    value: 'harassment',
+    patterns: [/\bharass(?:ment|ing|ed)?\b/i, /\bharras(?:ment|ing|ed)?\b/i]
+  },
+  {
+    value: 'bullying',
+    patterns: [/\bbully(?:ing|ied)?\b/i]
+  },
+  {
+    value: 'discrimination',
+    patterns: [/\bdiscriminat(?:ion|e|ed|ing)\b/i, /\bracis[tm]\b/i]
+  },
+  {
+    value: 'assault',
+    patterns: [/\bassault(?:ed|ing)?\b/i, /\battacked?\b/i]
+  },
+  {
+    value: 'abuse',
+    patterns: [/\babus(?:e|ed|ing)\b/i, /\bdomestic violence\b/i]
+  },
+  {
+    value: 'threats',
+    patterns: [/\bthreat(?:s|ened|ening)?\b/i, /\bintimidat(?:e|ed|ion|ing)\b/i]
+  },
+  {
+    value: 'scam',
+    patterns: [/\bscam(?:med|ming)?\b/i, /\bfraud\b/i, /\bphishing\b/i]
+  },
+  {
+    value: 'stalking',
+    patterns: [/\bstalk(?:ed|ing)?\b/i]
+  },
+  {
+    value: 'coercion',
+    patterns: [/\bcoerc(?:e|ion|ed|ing)\b/i, /\bblackmail(?:ed|ing)?\b/i]
+  }
+];
+
+const RELATIONSHIP_PATTERNS: Array<{ value: string; patterns: RegExp[] }> = [
+  { value: 'wife', patterns: [/\bmy wife\b/i, /\bwife\b/i] },
+  { value: 'husband', patterns: [/\bmy husband\b/i, /\bhusband\b/i] },
+  { value: 'partner', patterns: [/\bmy partner\b/i, /\bpartner\b/i] },
+  { value: 'boyfriend', patterns: [/\bmy boyfriend\b/i, /\bboyfriend\b/i] },
+  { value: 'girlfriend', patterns: [/\bmy girlfriend\b/i, /\bgirlfriend\b/i] },
+  { value: 'ex-partner', patterns: [/\bex[- ]?(partner|boyfriend|girlfriend|husband|wife)\b/i] },
+  { value: 'boss', patterns: [/\bmy boss\b/i, /\bboss\b/i, /\bmanager\b/i] },
+  { value: 'coworker', patterns: [/\bcoworker\b/i, /\bcolleague\b/i] },
+  { value: 'teacher', patterns: [/\bteacher\b/i, /\bprofessor\b/i] },
+  { value: 'neighbor', patterns: [/\bneighbou?r\b/i] },
+  { value: 'friend', patterns: [/\bmy friend\b/i, /\bfriend\b/i] },
+  { value: 'family member', patterns: [/\bfamily member\b/i, /\brelative\b/i] },
+  { value: 'stranger', patterns: [/\bstranger\b/i] }
+];
+
+const LOCATION_PATTERNS: Array<{ value: string; patterns: RegExp[] }> = [
+  { value: 'at home', patterns: [/\bat home\b/i, /\bin my house\b/i, /\bin my home\b/i] },
+  { value: 'at work', patterns: [/\bat work\b/i, /\bin the office\b/i, /\bat the office\b/i] },
+  { value: 'at school', patterns: [/\bat school\b/i, /\bon campus\b/i, /\bin class\b/i] }
+];
+
+const detectPatternValue = (
+  text: string,
+  definitions: Array<{ value: string; patterns: RegExp[] }>
+): string => {
+  for (const definition of definitions) {
+    if (definition.patterns.some((pattern) => pattern.test(text))) {
+      return definition.value;
+    }
+  }
+
+  return '';
+};
+
+const buildTimelineFallback = (
+  input: Pick<RagTimelineAssistantInput, 'message' | 'conversation' | 'timeline'>,
+  timelineCandidate: Record<string, unknown>
+): Record<string, string> => {
+  const combinedTimeline = normalizeTimelineObject(input.timeline, timelineCandidate);
+  const fallback: Record<string, string> = {};
+  const latestMessage = input.message.trim();
+  const conversationText = input.conversation.map((entry) => entry.content).join(' ');
+  const combinedText = `${latestMessage} ${conversationText}`.trim();
+
+  if (!combinedTimeline.what) {
+    const incidentType = detectPatternValue(latestMessage || combinedText, INCIDENT_TYPE_PATTERNS)
+      || detectPatternValue(combinedText, INCIDENT_TYPE_PATTERNS);
+
+    if (incidentType) {
+      fallback.what = incidentType;
+    }
+  }
+
+  if (!combinedTimeline.relationship) {
+    const relationship = detectPatternValue(combinedText, RELATIONSHIP_PATTERNS);
+
+    if (relationship) {
+      fallback.relationship = relationship;
+    }
+  }
+
+  if (!combinedTimeline.who && fallback.relationship) {
+    fallback.who = fallback.relationship;
+  }
+
+  if (!combinedTimeline.where) {
+    const location = detectPatternValue(combinedText, LOCATION_PATTERNS);
+
+    if (location) {
+      fallback.where = location;
+    }
+  }
+
+  return fallback;
+};
+
 export const runTimelineAssistant = async (
   context: RagServiceContext,
   input: RagTimelineAssistantInput
@@ -542,6 +658,7 @@ export const runTimelineAssistant = async (
   });
   const output = (modelResponse.output ?? {}) as Record<string, unknown>;
   const timelineCandidate = (output.timeline ?? {}) as Record<string, unknown>;
+  const timelineFallback = buildTimelineFallback(input, timelineCandidate);
   const assistantMessage =
     typeof output.assistantMessage === 'string' && output.assistantMessage.trim()
       ? enforceAiOutputGuardrails(output.assistantMessage)
@@ -559,7 +676,7 @@ export const runTimelineAssistant = async (
     assistantMessage,
     nextQuestion:
       typeof output.nextQuestion === 'string' ? output.nextQuestion.trim() : '',
-    timeline: normalizeTimelineObject(input.timeline, timelineCandidate),
+    timeline: normalizeTimelineObject(input.timeline, timelineCandidate, timelineFallback),
     readyForSubmission: Boolean(output.readyForSubmission),
     confidence:
       output.confidence === 'high' || output.confidence === 'medium' || output.confidence === 'low'

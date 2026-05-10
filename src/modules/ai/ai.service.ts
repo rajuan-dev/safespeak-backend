@@ -458,6 +458,7 @@ export const generateTimelineAssistantTurn = async (
       'timeline must be a JSON object of concise snake_case field names to concise string values.',
       'Only include fields that are already known from the conversation or clearly necessary to build a useful incident timeline.',
       'Prefer these keys when relevant: who, relationship, what, where, when, how, frequency, impact, threats, injuries, witnesses, evidence, actions_taken, unsafe_now.',
+      'If the latest user message clearly states the incident type or actor, capture that immediately in timeline on the same turn instead of waiting for a later message.',
       'Do not include empty fields, duplicate fields, speculative fields, or keys that are not grounded in the conversation.',
       'Keep each timeline value specific and concise. If the user provides a long detail, summarize it into 1 to 3 short sentences.',
       input.ragUnavailable
