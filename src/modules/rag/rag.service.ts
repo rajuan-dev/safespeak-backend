@@ -10,6 +10,9 @@ import {
   buildInformationOnlyDisclaimer,
   detectCrisisRisk,
   detectLegalAdviceRisk,
+  detectPoliceReportingRequest,
+  detectSafeSpeakProductQuestion,
+  detectTrainingDataRequest,
   enforceAiOutputGuardrails,
   shouldRequireHumanReview
 } from '@modules/ai/ai-guardrails';
@@ -305,19 +308,138 @@ const classifySourceCategory = (input: RagAnswerInput | RagSearchInput): RagSour
   }
 
   const q = ('question' in input ? input.question : input.query).toLowerCase();
-  if (/(law|legal|legislation|act|rights|court|discrimination)/i.test(q)) return 'official_legal_source';
+  if (/(law|legal|legislation|act|rights|court|discrimination|racial abuse|racial hatred|vilification|harassment|employer|what are my options)/i.test(q)) {
+    return 'official_legal_source';
+  }
   if (/(support|helpline|000|1800respect|lifeline|reportcyber|scamwatch)/i.test(q)) return 'official_support_source';
   return 'internal_product_rule';
 };
 
-const buildSourceFilter = (input: RagSearchInput, category: RagSourceCategory): FilterQuery<RagKnowledgeSourceDocument> => ({
+const buildSourceFilter = (
+  input: RagSearchInput,
+  category: RagSourceCategory
+): FilterQuery<RagKnowledgeSourceDocument> => ({
   status: 'approved',
   deletedAt: { $exists: false },
   sourceCategory: category,
+  ...(category === 'official_legal_source' ? { legalReviewed: true } : {}),
   ...(input.language ? { language: input.language } : {}),
   ...(input.jurisdiction ? { jurisdiction: input.jurisdiction } : {}),
   ...(input.topic ? { topic: input.topic } : {})
 });
+
+const isVectorSearchUnavailable = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return /SearchNotEnabled|vectorSearch|search index|index .*not found/i.test(message);
+};
+
+const buildFallbackAnswer = (
+  question: string,
+  category: RagSourceCategory,
+  flags: { crisisRisk: boolean; legalAdviceRisk: boolean; insufficientSources: boolean },
+  fallbackReason: 'insufficient_sources' | 'vector_unavailable'
+): Record<string, unknown> => {
+  const disclaimer = buildInformationOnlyDisclaimer();
+  const reasonText =
+    fallbackReason === 'vector_unavailable'
+      ? 'SafeSpeak knowledge retrieval is not fully configured yet.'
+      : 'SafeSpeak does not have enough approved authoritative information to answer this confidently right now.';
+  const lowerQuestion = question.toLowerCase();
+  const reportingRequest = detectPoliceReportingRequest(lowerQuestion);
+  const trainingDataRequest = detectTrainingDataRequest(lowerQuestion);
+  const safeSpeakProductQuestion = detectSafeSpeakProductQuestion(lowerQuestion);
+
+  if (flags.crisisRisk) {
+    return {
+      answer: [
+        'If you are in immediate danger, call 000 now.',
+        'If it is safe, contact 1800RESPECT.',
+        'SafeSpeak is not a crisis service and cannot provide emergency response.',
+        'SafeSpeak can only offer general information and triage support.'
+      ].join(' '),
+      disclaimer,
+      citations: [],
+      sourceCategoriesUsed: [],
+      confidence: 'low',
+      pendingHumanReview: true,
+      safetyFlags: flags
+    };
+  }
+
+  if (reportingRequest) {
+    return {
+      answer: [
+        'SafeSpeak does not automatically report to police or agencies for you.',
+        'Any sharing or submission requires your explicit consent.',
+        'If you want to contact police or another service, SafeSpeak can help explain general options only.'
+      ].join(' '),
+      disclaimer,
+      citations: [],
+      sourceCategoriesUsed: [],
+      confidence: 'low',
+      pendingHumanReview: true,
+      safetyFlags: flags
+    };
+  }
+
+  if (trainingDataRequest) {
+    return {
+      answer: [
+        'SafeSpeak does not use user reports, chats, or evidence as RAG training or knowledge-source data.',
+        'Private user content is not ingested into the SafeSpeak knowledge base.'
+      ].join(' '),
+      disclaimer,
+      citations: [],
+      sourceCategoriesUsed: [],
+      confidence: 'low',
+      pendingHumanReview: true,
+      safetyFlags: flags
+    };
+  }
+
+  if (safeSpeakProductQuestion || category === 'internal_product_rule') {
+    return {
+      answer: [
+        'SafeSpeak is an information and triage tool for racism, online abuse, scams, and related harms.',
+        'It is not legal advice, counselling, a crisis service, case management, or automatic reporting.',
+        'It can help explain options, support safer reporting choices, and route people toward relevant services when they choose to share information.',
+        reasonText
+      ].join(' '),
+      disclaimer,
+      citations: [],
+      sourceCategoriesUsed: [],
+      confidence: 'low',
+      pendingHumanReview: true,
+      safetyFlags: flags
+    };
+  }
+
+  if (category === 'official_legal_source') {
+    return {
+      answer: [
+        'SafeSpeak does not have enough approved authoritative legal sources to answer this confidently right now.',
+        'General options may include documenting what happened, considering support services, and seeking information from an official agency or qualified legal support if safe and appropriate.'
+      ].join(' '),
+      disclaimer,
+      citations: [],
+      sourceCategoriesUsed: [],
+      confidence: 'low',
+      pendingHumanReview: true,
+      safetyFlags: flags
+    };
+  }
+
+  return {
+    answer: reasonText,
+    disclaimer,
+    citations: [],
+    sourceCategoriesUsed: [],
+    confidence: 'low',
+    pendingHumanReview: true,
+    safetyFlags: flags
+  };
+};
 
 export const searchRag = async (context: RagServiceContext, input: RagSearchInput): Promise<RagSearchResult[]> => {
   await assertAiConsent(context.owner);
@@ -404,7 +526,19 @@ export const searchRag = async (context: RagServiceContext, input: RagSearchInpu
 
 export const answerRag = async (context: RagServiceContext, input: RagAnswerInput): Promise<Record<string, unknown>> => {
   const category = classifySourceCategory(input);
-  const results = await searchRag(context, { ...input, query: input.question, sourceCategory: category });
+  let results: RagSearchResult[] = [];
+  let fallbackReason: 'insufficient_sources' | 'vector_unavailable' = 'insufficient_sources';
+
+  try {
+    results = await searchRag(context, { ...input, query: input.question, sourceCategory: category });
+  } catch (error) {
+    if (!isVectorSearchUnavailable(error)) {
+      throw error;
+    }
+
+    fallbackReason = 'vector_unavailable';
+  }
+
   const insufficientSources = results.length === 0;
   const citations: AiCitation[] = results.map((result) => ({
     sourceType: 'knowledge_source',
@@ -419,15 +553,12 @@ export const answerRag = async (context: RagServiceContext, input: RagAnswerInpu
   const pendingHumanReview = shouldRequireHumanReview({ legalAdviceRisk, crisisRisk, insufficientSources });
 
   if (insufficientSources) {
-    return {
-      answer: 'SafeSpeak does not have enough approved authoritative information to answer this confidently right now.',
-      disclaimer: buildInformationOnlyDisclaimer(),
-      citations: [],
-      sourceCategoriesUsed: [],
-      confidence: 'low',
-      pendingHumanReview,
-      safetyFlags: { crisisRisk, legalAdviceRisk, insufficientSources }
-    };
+    return buildFallbackAnswer(
+      input.question,
+      category,
+      { crisisRisk, legalAdviceRisk, insufficientSources },
+      fallbackReason
+    );
   }
 
   const contextText = results.map((result, index) => `[${index + 1}] ${result.title}: ${result.text}`).join('\n\n');

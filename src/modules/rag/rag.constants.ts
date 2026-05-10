@@ -60,6 +60,14 @@ export const RAG_SOURCE_TYPES = [
   'WebPage'
 ] as const;
 
+export const RAG_INGESTION_STATUSES = [
+  'metadata_only',
+  'fetched',
+  'chunked',
+  'embedded',
+  'failed'
+] as const;
+
 export const RAG_ACTIONS = {
   search: 'rag.search',
   answer: 'rag.answer',

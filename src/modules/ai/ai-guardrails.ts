@@ -9,10 +9,40 @@ const LEGAL_ADVICE_RISK_PATTERNS = [
 ];
 
 const CRISIS_RISK_PATTERNS = [
+  /\bi am in danger\b/i,
+  /\bi'?m in danger\b/i,
   /\bimmediate danger\b/i,
+  /\bi am unsafe\b/i,
+  /\bi'?m unsafe\b/i,
   /\bunsafe right now\b/i,
+  /\bi need help now\b/i,
+  /\bpartner is threatening me\b/i,
+  /\bmy partner is threatening me\b/i,
+  /\bdomestic violence\b/i,
   /\bthreat to life\b/i,
   /\bviolence now\b/i
+];
+
+const POLICE_REPORTING_REQUEST_PATTERNS = [
+  /\breport (this|it|me)? ?to police\b/i,
+  /\bcontact police for me\b/i,
+  /\bcall police for me\b/i,
+  /\bcan you report\b.*\bpolice\b/i
+];
+
+const TRAINING_DATA_REQUEST_PATTERNS = [
+  /\buse my report as training data\b/i,
+  /\buse this as training data\b/i,
+  /\btrain on my report\b/i,
+  /\btrain on my chat\b/i,
+  /\buse my (report|chat|evidence) for rag\b/i
+];
+
+const SAFESPEAK_PRODUCT_PATTERNS = [
+  /\bwhat is safespeak\b/i,
+  /\bhow does safespeak work\b/i,
+  /\bwhat does safespeak do\b/i,
+  /\bis safespeak\b/i
 ];
 
 export const buildInformationOnlyDisclaimer = (): string => INFORMATION_ONLY_DISCLAIMER;
@@ -37,6 +67,15 @@ export const detectLegalAdviceRisk = (text: string): boolean =>
 
 export const detectCrisisRisk = (text: string): boolean =>
   CRISIS_RISK_PATTERNS.some((pattern) => pattern.test(text));
+
+export const detectPoliceReportingRequest = (text: string): boolean =>
+  POLICE_REPORTING_REQUEST_PATTERNS.some((pattern) => pattern.test(text));
+
+export const detectTrainingDataRequest = (text: string): boolean =>
+  TRAINING_DATA_REQUEST_PATTERNS.some((pattern) => pattern.test(text));
+
+export const detectSafeSpeakProductQuestion = (text: string): boolean =>
+  SAFESPEAK_PRODUCT_PATTERNS.some((pattern) => pattern.test(text));
 
 export const shouldRequireHumanReview = (flags: {
   legalAdviceRisk: boolean;

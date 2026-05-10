@@ -11,11 +11,22 @@ RAG works only after sources are ingested, chunked, embedded, stored, indexed, a
 - `knowledge/internal/safespeak-product-requirements.md`
 - `knowledge/internal/safespeak-ai-rag-policy.md`
 4. Run: `npm run rag:ingest:internal`
+5. This ingester:
+- computes `sha256Hash`
+- skips unchanged files on repeat runs
+- re-ingests changed files and bumps `version`
+- creates `RagKnowledgeSource` records as `sourceCategory=internal_product_rule`
+- creates `RagChunk` records and embeddings with `OPENAI_EMBEDDING_MODEL`
+- never treats internal SafeSpeak docs as legal authority
 
 ## Official source ingestion
 1. Edit `knowledge/official-sources/sources.sample.json` with official URLs only.
 2. Run: `npm run rag:ingest:official`
-3. This currently creates approved-domain source metadata as `pending_review`; URL content fetching is intentionally not auto-enabled.
+3. Official ingestion now does one of two safe paths:
+- HTML/text pages on allowed official domains are fetched, text-extracted, chunked, embedded, and stored.
+- Binary or hard-to-parse sources such as PDF/DOC/DOCX are stored as metadata only with `ingestionStatus=metadata_only` and a clear reason in `ingestionError` or metadata.
+4. Official sources default to `status=pending_review` and `legalReviewed=false`.
+5. Only approved official legal sources with `legalReviewed=true` are used in public legal RAG answers.
 
 ## Approval workflow
 - Only admin endpoints can approve/reject sources.
@@ -24,6 +35,7 @@ RAG works only after sources are ingested, chunked, embedded, stored, indexed, a
 
 ## Vector index
 Follow `docs/mongodb-vector-search-setup.md` and create Atlas Vector Search index before testing retrieval.
+Run `npm run rag:check:index` to verify whether Atlas Search is enabled and whether the named index exists.
 
 ## Test endpoints
 - `POST /api/v1/rag/search`
@@ -40,6 +52,7 @@ Follow `docs/mongodb-vector-search-setup.md` and create Atlas Vector Search inde
 - Secrets or credentials
 
 ## Example commands
+- `npm run rag:check:index`
 - `npm run rag:ingest:internal`
 - `npm run rag:ingest:official`
 - `npm run typecheck`

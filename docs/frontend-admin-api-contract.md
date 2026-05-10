@@ -48,8 +48,8 @@ Error envelope:
 | Audio transcription                                   | `POST /ai/transcribe-audio`, `POST /evidence/:id/transcribe`, `GET /evidence/:id/transcription`                                                                                         | Bearer token or session header        | AI transcribe multipart fields: `audio` file, optional `reportId`, `evidenceId`, `language`, `saveTranscript`, `useAsNarrative`; evidence transcribe JSON: `{ language?, saveTranscript?, reportId?, useAsNarrative? }` | `data.transcript`, `data.language`, `data.model`, `data.saved`        | Requires consent `process_with_ai=true` or `transcribe_audio=true`. Frontend now gates both assistant voice transcription and evidence transcription explicitly. |
 | Assistant report help                                 | `POST /ai/extract-incident-fields`, `/ai/triage-report`, `/ai/clarifying-questions`, `/ai/generate-summary`, `/ai/translate`, `/ai/redact-pii`                                          | Bearer token or session header        | See schema-specific narrative/text fields                                                                                                                                                | `data.result`, meta `{ informationOnly: true }`                      | Requires `process_with_ai` consent and `OPENAI_API_KEY`. Frontend now renders disclaimers, pending-human-review notices, confidence, and citations when returned. |
 | RAG search/answer                                     | `POST /rag/search`, `POST /rag/answer`                                                                                                                                                  | Bearer token or session header        | Search: `{ query, topK?, language?, jurisdiction?, sourceType?, filters? }`; answer adds `question`                                                                                      | `data.results` or `data.result`                                      | Requires `process_with_ai` consent.                                                                                                                           |
-| ScamShield analysis                                   | `POST /scamshield/analyze-text`, `/analyze-email`, `/analyze-screenshot`, `/check-url`, `GET /scamshield/:id`                                                                           | Bearer token or session header        | Text/email/screenshot/url schemas from backend                                                                                                                                           | `data.analysis`                                                      | Analysis requires `process_with_ai` consent.                                                                                                                  |
-| ScamShield redaction/draft/submit                     | `POST /scamshield/redact`, `/generate-report-draft`, `/submit`                                                                                                                          | Bearer token or session header        | Draft: `{ analysisId, notes? }`; submit: `{ analysisId, destination?, consentToShare? }`                                                                                                 | `data.result` or `data.analysis`                                     | ScamShield frontend now calls live analysis, draft generation, and submit flows with explicit consent gates and a static fallback only if backend is unavailable. |
+| ScamShield analysis                                   | `POST /scamshield/analyze-text`, `/analyze-email`, `/analyze-screenshot`, `/check-url`, `GET /scamshield/:id`                                                                           | Bearer token or session header        | Text/email/url JSON schemas. Screenshot accepts JSON `{ imageText?, imageBase64?, mimeType?, metadata? }` or multipart `image` plus optional `imageText`, `metadata`.                     | `data.analysis`                                                      | Analysis requires `process_with_ai` consent. Screenshot upload uses OCR when an image is supplied and `OPENAI_API_KEY` is configured; pasted/corrected OCR text remains supported. |
+| ScamShield redaction/draft/submit                     | `POST /scamshield/redact`, `POST /scamshield/:id/generate-report-draft`, `POST /scamshield/:id/submit`; legacy `POST /scamshield/generate-report-draft`, `/submit` remain available.    | Bearer token or session header        | Draft by id: `{ notes? }`; submit by id: `{ destination?, consentToShare? }`. Legacy body includes `{ analysisId, ... }`.                                                                 | `data.analysis`                                                      | ScamShield frontend preserves the backend `analysis._id`, generates drafts by id, and requires `share_with_agencies` before submit/share. Without sharing consent, the UI keeps the report draft local/prepared. |
 | Support explorer/services                             | `GET /support/services`, `GET /support/services/:id`, `POST /support/recommendations`                                                                                                   | Bearer token or session header        | Recommendations: `{ reportId?, needs?, jurisdiction?, language? }`                                                                                                                       | `data.services`, `data.service`, `data.recommendations`              | Public explorer now loads backend services and recommendations first, then falls back to static cards if the backend is unavailable.                         |
 | Warm referral/advocate/safety plan                    | `POST /support/warm-referral`, `GET /support/advocates`, `POST /support/advocate-request`, `GET /support/safety-plans`, `POST /support/safety-plans`, `PATCH /support/safety-plans/:id` | Bearer token or session header        | Warm referral: `{ serviceId, contactPreference, safeContact, notes? }`; safety plan: `{ title, trustedContacts, safePlaces, warningSigns, copingStrategies, emergencySteps, isActive? }` | `data.referral`, `data.advocates`, `data.request`, `data.safetyPlan` | Warm referral requires `warm_referral` consent.                                                                                                               |
 
@@ -73,6 +73,8 @@ Error envelope:
 ## Integration Notes
 
 - Protected anonymous/public flows should send either `Authorization: Bearer <accessToken>` or `X-SafeSpeak-Session: <sessionToken>`.
+- Protected anonymous/public flows should send either `Authorization: Bearer <accessToken>` or `X-SafeSpeak-Session: <sessionToken>`.
+- Anonymous session tokens are not JWTs. Do not send the anonymous `sessionToken` as a bearer token.
 - Admin flows must use bearer tokens from `POST /auth/admin/login`.
 - Do not call AI/RAG or ScamShield analysis until `process_with_ai=true`.
 - Frontend must present an explicit consent action before calling consent-gated endpoints. Auto-enabling consent is not allowed.
@@ -81,6 +83,55 @@ Error envelope:
 - Do not request warm referrals until `warm_referral=true`.
 - Do not submit/share externally unless `share_with_agencies=true`.
 - The frontend login helper currently uses an older "agent/profile" contract. Update it during frontend integration rather than changing backend response shape.
+
+## Current Frontend Flow Notes
+
+### ScamShield Screenshot Upload
+
+- The intake UI has explicit modes for text/SMS paste, URL check, email analysis, and screenshot upload.
+- Screenshot upload accepts an image file, shows the selected filename/preview, and waits for explicit `process_with_ai` consent before calling the backend.
+- The backend screenshot endpoint accepts multipart field `image` or JSON `imageBase64`; if an image is supplied, OCR is attempted through the configured OpenAI model and the extracted text is scored. If OCR is unavailable, the API returns a clear error and the frontend may show a labelled demo preview instead of presenting a fake result.
+- Results should render backend fields when present: `_id`, `riskScore`, `riskLevel`, `confidence`, `indicators`/`redFlags`, `recommendations`, `metadata.extractedTextLength`, and any `extractedEntities`.
+
+### ScamShield Draft And Submit
+
+- The risk page stores the live ScamShield `_id` in session flow state.
+- The agency page calls `POST /scamshield/:id/generate-report-draft` and displays the returned `analysis.draftReport`.
+- Submit/share calls `POST /scamshield/:id/submit` only after `share_with_agencies` consent is granted and the user has enabled sharing in the UI.
+- If the user declines or has not enabled sharing, SafeSpeak keeps the draft prepared/local and must not imply an external agency received the report.
+
+### Report Review And Success
+
+- If a `report_id` exists, review loads `GET /reports/:id`, `GET /reports/:id/status`, and `GET /reports/:id/timeline`.
+- Review/success pages show the backend report id/ref and current status. Guidance cards are labelled as guidance only.
+- The review continue action saves `status: "ready_for_review"`; it does not claim external submission. Success copy should use prepared/saved language unless a true backend submission action confirms otherwise.
+- Report history uses `GET /reports` and may call `GET /reports/:id/status` for status labels. Static/mock history should be hidden or explicitly labelled as demo only.
+
+### Support Fallback
+
+- Explorer prefers `GET /support/services` and `POST /support/recommendations`.
+- Static resource cards appear only when backend services are unavailable or empty, and they are labelled "Local fallback resources" or "Example resources".
+- Service details prefer `GET /support/services/:id`; local fallback detail copy is labelled when backend detail loading fails.
+
+### Consent Enforcement
+
+- Protected actions call `GET /consents/current` through `ensureConsent` before the protected request.
+- `POST /consents/update` is only called from explicit user actions such as ConsentRequiredCard "Allow and continue" or the settings consent center.
+- "Not now" dismisses the prompt and does not call the blocked backend action.
+
+### RAG Readiness Notes
+
+- Internal SafeSpeak rule documents belong in `knowledge/internal/` and ingest as `internal_product_rule`.
+- Official legal/support sources ingest from approved domains only.
+- Official legal sources remain `pending_review` with `legalReviewed=false` by default.
+- Public legal RAG answers use only `approved` official legal sources with `legalReviewed=true`.
+- If no approved authoritative legal source exists, `/rag/answer` must return a safe insufficient-sources fallback without invented citations.
+- Crisis and core SafeSpeak behavior fallbacks may come from hard guardrails even when vector retrieval is unavailable.
+
+### Remaining TODOs
+
+- Full end-to-end testing still requires the backend, OpenAI configuration for screenshot OCR, and session/auth setup.
+- Admin lint still has broad existing repo-wide style issues; fix only newly introduced admin lint errors unless the lint backlog becomes a separate task.
 
 ## Dashboard Card Launch Flows
 

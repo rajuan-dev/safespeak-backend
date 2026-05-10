@@ -13,3 +13,10 @@ Recommended files:
 - `safespeak-ai-rag-policy.md`
 
 If source files are `.docx` or `.pdf`, export them to markdown/text before ingestion.
+
+Known source documents for this repo:
+- `C:\Users\RAJUAN\Documents\safespeak-docs\Safespeak (2).docx` -> `knowledge/internal/safespeak-product-requirements.md`
+- `C:\Users\RAJUAN\Documents\safespeak-docs\Safespeak ai (1).docx` -> `knowledge/internal/safespeak-ai-rag-policy.md`
+
+After placing or updating the converted files, run:
+- `npm run rag:ingest:internal`

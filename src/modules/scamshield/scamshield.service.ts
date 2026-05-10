@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { StatusCodes } from 'http-status-codes';
 import type { HydratedDocument } from 'mongoose';
 
+import { env } from '@config/env';
 import { ApiError } from '@common/errors/ApiError';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
@@ -36,6 +37,74 @@ const ownerFilter = (owner: ScamShieldOwner): ScamShieldOwner => {
 
 const hashValue = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+const extractTextFromScreenshot = async (input: AnalyzeScreenshotInput): Promise<string> => {
+  if (input.imageText?.trim()) {
+    return input.imageText.trim();
+  }
+
+  if (!input.imageBase64) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Screenshot text or image upload is required');
+  }
+
+  if (!env.OPENAI_API_KEY) {
+    throw new ApiError(
+      StatusCodes.SERVICE_UNAVAILABLE,
+      'Screenshot OCR is unavailable because OPENAI_API_KEY is not configured'
+    );
+  }
+
+  const mimeType = input.mimeType ?? 'image/png';
+  const imageData = input.imageBase64.startsWith('data:')
+    ? input.imageBase64
+    : `data:${mimeType};base64,${input.imageBase64}`;
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: env.OPENAI_MODEL,
+      input: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text:
+                'Extract only the visible text from this screenshot for scam risk analysis. ' +
+                'Return plain text. Do not add advice, scores, or invented content.'
+            },
+            {
+              type: 'input_image',
+              image_url: imageData
+            }
+          ]
+        }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'Screenshot OCR request failed');
+  }
+
+  const payload = (await response.json()) as {
+    output_text?: string;
+    output?: Array<{ content?: Array<{ text?: string }> }>;
+  };
+  const extractedText =
+    payload.output_text ??
+    payload.output?.flatMap((item) => item.content ?? []).find((item) => item.text)?.text;
+
+  if (!extractedText?.trim()) {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'Screenshot OCR response was empty');
+  }
+
+  return extractedText.trim();
+};
 
 const assertAiConsent = async (owner: ScamShieldOwner): Promise<void> => {
   const consent = await getCurrentConsent(owner);
@@ -178,14 +247,26 @@ export const analyzeEmail = async (context: ScamShieldServiceContext, input: Ana
 export const analyzeScreenshot = async (
   context: ScamShieldServiceContext,
   input: AnalyzeScreenshotInput
-) =>
-  createAnalysis(
+): Promise<ScamShieldAnalysisDocument> => {
+  const imageText = await extractTextFromScreenshot(input);
+
+  return createAnalysis(
     context,
     'screenshot',
-    input.imageText,
-    input,
+    imageText,
+    {
+      ...input,
+      imageBase64: input.imageBase64 ? '[redacted-image-data]' : undefined,
+      imageText,
+      metadata: {
+        ...input.metadata,
+        ocrApplied: Boolean(input.imageBase64),
+        extractedTextLength: imageText.length
+      }
+    },
     SCAMSHIELD_ACTIONS.analyzeScreenshot
   );
+};
 
 export const checkUrl = async (context: ScamShieldServiceContext, input: CheckUrlInput) =>
   createAnalysis(context, 'url', input.url, input, SCAMSHIELD_ACTIONS.checkUrl);

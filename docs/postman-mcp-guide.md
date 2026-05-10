@@ -497,6 +497,17 @@ Example RAG search body:
 }
 ```
 
+Example RAG answer body:
+
+```json
+{
+  "question": "I am in danger right now.",
+  "topK": 5,
+  "language": "en",
+  "jurisdiction": "NSW"
+}
+```
+
 Example knowledge source create body:
 
 ```json
@@ -575,6 +586,13 @@ Local setup notes:
 - Add `OPENAI_API_KEY` to `.env`.
 - Optional model overrides: `OPENAI_MODEL`, `OPENAI_EMBEDDING_MODEL`.
 - MongoDB Atlas Vector Search must have an index matching `RAG_VECTOR_INDEX` on collection `ragchunks`, vector path `embedding`, dimensions for the configured embedding model, and filter support for `sourceId`.
+- Run `npm run rag:check:index` before claiming retrieval is ready.
+- Run `npm run rag:ingest:internal` after placing `knowledge/internal/safespeak-product-requirements.md` and `knowledge/internal/safespeak-ai-rag-policy.md`.
+- Run `npm run rag:ingest:official` after updating `knowledge/official-sources/sources.sample.json` with allowed official URLs only.
+- Expected fallbacks:
+  - legal questions without approved official legal sources -> insufficient approved authoritative sources, no invented citations
+  - crisis prompts -> explicit `000` and `1800RESPECT` guidance
+  - police reporting / training-data prompts -> explicit SafeSpeak policy response
 
 ## ScamShield
 
@@ -614,6 +632,9 @@ Protected by either `Authorization` or `X-SafeSpeak-Session`. Warm referrals req
 - `GET  {{base_url}}{{api_prefix}}/support/safety-plans`
 - `POST {{base_url}}{{api_prefix}}/support/safety-plans`
 - `PATCH {{base_url}}{{api_prefix}}/support/safety-plans/{{safety_plan_id}}`
+
+Route note:
+- Support recommendations use `POST /support/recommendations`, not `GET`.
 
 ## Analytics
 

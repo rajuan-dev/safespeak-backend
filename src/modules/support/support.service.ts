@@ -92,7 +92,7 @@ export const getSupportServiceById = async (
     throw new ApiError(StatusCodes.NOT_FOUND, 'Support service not found');
   }
 
-  await audit(context, SUPPORT_ACTIONS.serviceGet, serviceId);
+  await audit(context, SUPPORT_ACTIONS.serviceGet, undefined, { serviceId });
 
   return service;
 };

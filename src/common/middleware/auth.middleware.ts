@@ -21,7 +21,17 @@ const getBearerToken = (req: Request): string | undefined => {
 };
 
 const setUserFromBearerToken = async (req: Request, token: string): Promise<void> => {
-  const payload = verifyAccessToken(token);
+  let payload;
+
+  try {
+    payload = verifyAccessToken(token);
+  } catch {
+    throw new ApiError(
+      StatusCodes.UNAUTHORIZED,
+      `Invalid authentication token. Anonymous access must use ${SAFE_SPEAK_SESSION_HEADER}.`
+    );
+  }
+
   const user = await UserModel.findById(payload.userId);
 
   if (!user || user.status !== 'active') {

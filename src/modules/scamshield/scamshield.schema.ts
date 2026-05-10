@@ -24,10 +24,14 @@ export const analyzeEmailSchema = z.object({
 });
 
 export const analyzeScreenshotSchema = z.object({
-  imageText: contentSchema,
+  imageText: contentSchema.optional(),
+  imageBase64: z.string().trim().min(1).optional(),
+  mimeType: z.string().trim().min(1).max(120).optional(),
   evidenceId: objectIdSchema.optional(),
   reportId: objectIdSchema.optional(),
   metadata: z.record(z.unknown()).default({})
+}).refine((value) => value.imageText || value.imageBase64, {
+  message: 'imageText or imageBase64 is required'
 });
 
 export const checkUrlSchema = z.object({
@@ -46,8 +50,17 @@ export const generateReportDraftSchema = z.object({
   notes: z.string().trim().max(4000).optional()
 });
 
+export const generateReportDraftByIdSchema = z.object({
+  notes: z.string().trim().max(4000).optional()
+});
+
 export const submitScamReportSchema = z.object({
   analysisId: objectIdSchema,
+  destination: z.string().trim().min(1).max(120).default('SafeSpeak review queue'),
+  consentToShare: z.boolean().default(false)
+});
+
+export const submitScamReportByIdSchema = z.object({
   destination: z.string().trim().min(1).max(120).default('SafeSpeak review queue'),
   consentToShare: z.boolean().default(false)
 });
@@ -58,4 +71,6 @@ export type AnalyzeScreenshotInput = z.infer<typeof analyzeScreenshotSchema>;
 export type CheckUrlInput = z.infer<typeof checkUrlSchema>;
 export type RedactScamContentInput = z.infer<typeof redactScamContentSchema>;
 export type GenerateReportDraftInput = z.infer<typeof generateReportDraftSchema>;
+export type GenerateReportDraftByIdInput = z.infer<typeof generateReportDraftByIdSchema>;
 export type SubmitScamReportInput = z.infer<typeof submitScamReportSchema>;
+export type SubmitScamReportByIdInput = z.infer<typeof submitScamReportByIdSchema>;

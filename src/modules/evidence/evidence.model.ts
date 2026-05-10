@@ -156,13 +156,20 @@ const evidenceSchema = new Schema<EvidenceDocument>(
       default: {}
     },
     transcription: {
-      text: { type: String, required: true },
-      language: { type: String, required: false },
-      model: { type: String, required: false },
-      provider: { type: String, required: false },
-      transcribedAt: { type: Date, required: false },
-      transcribedBy: { type: String, required: false },
-      confidence: { type: Number, required: false }
+      type: new Schema(
+        {
+          text: { type: String, required: true },
+          language: { type: String, required: false },
+          model: { type: String, required: false },
+          provider: { type: String, required: false },
+          transcribedAt: { type: Date, required: false },
+          transcribedBy: { type: String, required: false },
+          confidence: { type: Number, required: false }
+        },
+        { _id: false, id: false }
+      ),
+      required: false,
+      default: undefined
     },
     deletionRequestedAt: {
       type: Date,

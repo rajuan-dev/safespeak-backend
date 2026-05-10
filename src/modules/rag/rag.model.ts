@@ -1,6 +1,7 @@
 import { Schema, model, type Types } from 'mongoose';
 
 import {
+  RAG_INGESTION_STATUSES,
   RAG_JURISDICTIONS,
   RAG_SOURCE_CATEGORIES,
   RAG_SOURCE_STATUSES,
@@ -10,6 +11,7 @@ import {
 import type {
   RagJurisdiction,
   RagSourceCategory,
+  RagIngestionStatus,
   RagSourceStatus,
   RagSourceType,
   RagTopic
@@ -32,6 +34,9 @@ export interface RagKnowledgeSourceDocument {
   nextReviewAt?: Date;
   legalReviewed: boolean;
   status: RagSourceStatus;
+  ingestionStatus?: RagIngestionStatus;
+  ingestionError?: string;
+  fetchedAt?: Date;
   sha256Hash?: string;
   version: number;
   rawText?: string;
@@ -83,6 +88,9 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
     nextReviewAt: { type: Date, required: false },
     legalReviewed: { type: Boolean, required: true, default: false, index: true },
     status: { type: String, enum: RAG_SOURCE_STATUSES, required: true, default: 'draft', index: true },
+    ingestionStatus: { type: String, enum: RAG_INGESTION_STATUSES, required: false, index: true },
+    ingestionError: { type: String, required: false },
+    fetchedAt: { type: Date, required: false },
     sha256Hash: { type: String, required: false, index: true },
     version: { type: Number, required: true, default: 1 },
     rawText: { type: String, required: false },

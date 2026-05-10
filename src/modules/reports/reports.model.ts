@@ -80,10 +80,12 @@ const reportSchema = new Schema<ReportDocument>(
     },
     language: {
       type: String,
+      default: 'en',
       required: true
     },
     jurisdiction: {
       type: String,
+      default: 'NSW',
       required: true
     },
     lga: {

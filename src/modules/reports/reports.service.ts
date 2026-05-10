@@ -1,11 +1,16 @@
 import { StatusCodes } from 'http-status-codes';
+import { Error as MongooseError } from 'mongoose';
+import type { HydratedDocument } from 'mongoose';
 
 import { ApiError } from '@common/errors/ApiError';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
+import { UserProfileModel } from '@modules/profile/profile.model';
+import { AnonymousSessionModel } from '@modules/sessions/sessions.model';
 
 import { WITHDRAW_BLOCKED_STATUSES } from './reports.constants';
 import { ReportModel } from './reports.model';
+import type { ReportDocument } from './reports.model';
 import type { CreateReportInput, UpdateReportInput } from './reports.schema';
 import type { ReportOwner, ReportStatus } from './reports.types';
 
@@ -30,6 +35,70 @@ const createStatusHistory = (status: ReportStatus, reason?: string) => [
     reason
   }
 ];
+
+const getValidationErrors = (error: MongooseError.ValidationError): unknown[] =>
+  Object.values(error.errors).map((validationError) => ({
+    path: validationError.path,
+    message: validationError.message,
+    kind: validationError.kind
+  }));
+
+const toValidationApiError = (error: unknown): ApiError | null => {
+  if (error instanceof MongooseError.ValidationError) {
+    return new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Report validation failed',
+      getValidationErrors(error)
+    );
+  }
+
+  return null;
+};
+
+const getOwnerLocaleDefaults = async (
+  owner: ReportOwner
+): Promise<{ language?: string; jurisdiction?: string }> => {
+  const filter = ownerFilter(owner);
+  const profile = await UserProfileModel.findOne(filter)
+    .select({ preferredLanguage: 1, jurisdiction: 1 })
+    .lean();
+
+  if (profile?.preferredLanguage || profile?.jurisdiction) {
+    return {
+      language: profile.preferredLanguage,
+      jurisdiction: profile.jurisdiction
+    };
+  }
+
+  if (!owner.sessionId) {
+    return {};
+  }
+
+  const session = await AnonymousSessionModel.findById(owner.sessionId)
+    .select({ language: 1, jurisdiction: 1 })
+    .lean();
+
+  return {
+    language: session?.language,
+    jurisdiction: session?.jurisdiction
+  };
+};
+
+const normalizeReportRequiredFields = async (
+  report: HydratedDocument<ReportDocument>,
+  owner: ReportOwner,
+  input: UpdateReportInput
+): Promise<void> => {
+  if (report.language && report.jurisdiction) {
+    return;
+  }
+
+  const ownerDefaults = await getOwnerLocaleDefaults(owner);
+
+  report.language = report.language || input.language || ownerDefaults.language || 'en';
+  report.jurisdiction =
+    report.jurisdiction || input.jurisdiction || ownerDefaults.jurisdiction || 'NSW';
+};
 
 const auditReportChange = async (
   owner: ReportOwner,
@@ -85,6 +154,37 @@ const applyConsentStorageRules = (
   };
 };
 
+const applyUpdateConsentStorageRules = (
+  input: UpdateReportInput,
+  hasCloudSyncConsent: boolean
+): Partial<UpdateReportInput> => {
+  if (hasCloudSyncConsent) {
+    return input;
+  }
+
+  const storedInput: Partial<UpdateReportInput> = {
+    structuredFields: {}
+  };
+
+  if (input.language !== undefined) {
+    storedInput.language = input.language;
+  }
+
+  if (input.jurisdiction !== undefined) {
+    storedInput.jurisdiction = input.jurisdiction;
+  }
+
+  if (input.lga !== undefined) {
+    storedInput.lga = input.lga;
+  }
+
+  if (input.status !== undefined) {
+    storedInput.status = input.status;
+  }
+
+  return storedInput;
+};
+
 export const createReport = async (
   owner: ReportOwner,
   input: CreateReportInput,
@@ -136,16 +236,33 @@ export const updateReport = async (
 ): Promise<unknown> => {
   const report = await getOwnedReport(owner, reportId);
   const consentSnapshot = await getCurrentConsent(owner);
-  const storedInput = applyConsentStorageRules(input, consentSnapshot.cloud_sync);
+  const storedInput = applyUpdateConsentStorageRules(input, consentSnapshot.cloud_sync);
 
   report.set(storedInput);
+  await normalizeReportRequiredFields(report, owner, input);
 
-  if (!consentSnapshot.cloud_sync) {
-    report.status = 'local_only';
-    report.statusHistory.push(...createStatusHistory('local_only', 'cloud_sync_not_granted'));
+  if (input.status) {
+    report.statusHistory.push(
+      ...createStatusHistory(
+        input.status,
+        consentSnapshot.cloud_sync ? undefined : 'cloud_sync_not_granted'
+      )
+    );
+  } else if (!consentSnapshot.cloud_sync) {
+    report.statusHistory.push(...createStatusHistory(report.status, 'cloud_sync_not_granted'));
   }
 
-  await report.save();
+  try {
+    await report.save();
+  } catch (error) {
+    const apiError = toValidationApiError(error);
+
+    if (apiError) {
+      throw apiError;
+    }
+
+    throw error;
+  }
   await auditReportChange(owner, 'report.update', report._id.toString(), ip, userAgent, {
     changedFields: Object.keys(input)
   });

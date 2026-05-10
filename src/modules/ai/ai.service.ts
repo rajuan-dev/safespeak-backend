@@ -147,6 +147,19 @@ const extractOutputText = (payload: unknown): string => {
   );
 };
 
+const normalizeJsonCandidate = (text: string): string => {
+  const trimmed = text.trim();
+
+  if (trimmed.startsWith('```')) {
+    return trimmed
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+  }
+
+  return trimmed;
+};
+
 export const createEmbedding = async (input: string): Promise<number[]> => {
   if (!env.OPENAI_API_KEY) {
     throw new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'OPENAI_API_KEY is not configured');
@@ -213,11 +226,12 @@ const callOpenAIJson = async <TOutput>(
   }
 
   const text = extractOutputText(await response.json());
+  const normalizedText = normalizeJsonCandidate(text);
 
   try {
-    return JSON.parse(text) as TOutput;
+    return JSON.parse(normalizedText) as TOutput;
   } catch {
-    return { text } as TOutput;
+    return { text: normalizedText } as TOutput;
   }
 };
 

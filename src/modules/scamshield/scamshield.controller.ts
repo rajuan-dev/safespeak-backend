@@ -9,8 +9,10 @@ import type {
   AnalyzeScreenshotInput,
   AnalyzeTextInput,
   CheckUrlInput,
+  GenerateReportDraftByIdInput,
   GenerateReportDraftInput,
   RedactScamContentInput,
+  SubmitScamReportByIdInput,
   SubmitScamReportInput
 } from './scamshield.schema';
 import {
@@ -33,6 +35,25 @@ const getContext = (req: Request) => ({
   userAgent: req.get('user-agent')
 });
 
+type ScreenshotRequestBody = Partial<{
+  imageText: string;
+  imageBase64: string;
+  mimeType: string;
+  evidenceId: string;
+  reportId: string;
+  metadata: string | Record<string, unknown>;
+}>;
+
+const parseScreenshotMetadata = (
+  metadata: ScreenshotRequestBody['metadata']
+): Record<string, unknown> => {
+  if (typeof metadata === 'string') {
+    return JSON.parse(metadata) as Record<string, unknown>;
+  }
+
+  return metadata ?? {};
+};
+
 export const analyzeTextController = asyncHandler(async (req: Request, res: Response) => {
   const analysis = await analyzeText(getContext(req), req.body as AnalyzeTextInput);
 
@@ -50,7 +71,17 @@ export const analyzeEmailController = asyncHandler(async (req: Request, res: Res
 });
 
 export const analyzeScreenshotController = asyncHandler(async (req: Request, res: Response) => {
-  const analysis = await analyzeScreenshot(getContext(req), req.body as AnalyzeScreenshotInput);
+  const file = req.file;
+  const body = req.body as ScreenshotRequestBody;
+  const input: AnalyzeScreenshotInput = {
+    imageText: body.imageText,
+    imageBase64: file?.buffer.toString('base64') ?? body.imageBase64,
+    mimeType: file?.mimetype ?? body.mimeType,
+    evidenceId: body.evidenceId,
+    reportId: body.reportId,
+    metadata: parseScreenshotMetadata(body.metadata)
+  };
+  const analysis = await analyzeScreenshot(getContext(req), input);
 
   res
     .status(StatusCodes.CREATED)
@@ -85,8 +116,33 @@ export const generateReportDraftController = asyncHandler(async (req: Request, r
     .json(successResponse('ScamShield report draft generated', { analysis }));
 });
 
+export const generateReportDraftByIdController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const body = req.body as GenerateReportDraftByIdInput;
+    const analysis = await generateReportDraft(getContext(req), {
+      analysisId: req.params.id,
+      notes: body.notes
+    });
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('ScamShield report draft generated', { analysis }));
+  }
+);
+
 export const submitController = asyncHandler(async (req: Request, res: Response) => {
   const analysis = await submitScamReport(getContext(req), req.body as SubmitScamReportInput);
+
+  res.status(StatusCodes.OK).json(successResponse('ScamShield report submitted', { analysis }));
+});
+
+export const submitByIdController = asyncHandler(async (req: Request, res: Response) => {
+  const body = req.body as SubmitScamReportByIdInput;
+  const analysis = await submitScamReport(getContext(req), {
+    analysisId: req.params.id,
+    destination: body.destination,
+    consentToShare: body.consentToShare
+  });
 
   res.status(StatusCodes.OK).json(successResponse('ScamShield report submitted', { analysis }));
 });
