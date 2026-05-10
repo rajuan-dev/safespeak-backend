@@ -3,10 +3,17 @@ import { z } from 'zod';
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
 const languageSchema = z.string().trim().min(2).max(12).default('en');
 const narrativeSchema = z.string().trim().min(1).max(12000);
+const incidentCategorySchema = z.enum([
+  'domestic_violence',
+  'racial_abuse',
+  'migrant_challenges',
+  'cyber_scam'
+]);
 
 const baseAiSchema = z.object({
   reportId: objectIdSchema.optional(),
-  language: languageSchema.optional()
+  language: languageSchema.optional(),
+  incidentCategory: incidentCategorySchema.optional()
 });
 
 export const extractIncidentFieldsSchema = baseAiSchema.extend({

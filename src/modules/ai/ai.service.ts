@@ -329,6 +329,9 @@ export const triageReport = async (
       'riskFactors, suggestedSupportCategories, recommendedActions, and nonLegalSafetyNotes should be short arrays of strings.',
       'resourceRecommendations should be an array of objects with title, body, and type.',
       'immediateSafetyFlag should be true only if the user appears unsafe or at immediate risk.',
+      input.incidentCategory
+        ? `The report came from the quick-start category: ${input.incidentCategory}. Use it to tailor support and resources, but do not invent facts not grounded in the narrative or structured fields.`
+        : 'No quick-start category was provided.',
       `Narrative: ${narrative}`,
       `Structured fields: ${JSON.stringify(input.structuredFields ?? report?.structuredFields ?? {})}`
     ].join(' ')
@@ -452,6 +455,7 @@ export const generateTimelineAssistantTurn = async (
     conversation: Array<{ role: 'assistant' | 'user'; content: string }>;
     timeline: Record<string, unknown>;
     language?: string;
+    incidentCategory?: string;
     contextText: string;
     citations: AiCitation[];
     ragUnavailable?: boolean;
@@ -468,6 +472,11 @@ export const generateTimelineAssistantTurn = async (
       'If the user greets you, hesitates, expresses emotion, asks for clarification, or responds with something too vague to capture incident details, reply naturally and supportively in assistantMessage first.',
       'When appropriate, use nextQuestion to guide the user back to one short trauma-informed timeline question at a time.',
       'If the user already shared concrete incident details, prioritize structured timeline-building and keep the nextQuestion focused on the single most useful missing field.',
+      'Keep assistantMessage brief and easy to read.',
+      'Prefer 1 to 2 short sentences total.',
+      'Avoid repeating the same disclaimer or reassurance on every turn.',
+      'Do not restate the full user message unless necessary for clarity.',
+      'If nextQuestion is used, it must be one short direct question.',
       'Do not pressure the user to continue, report, or name people.',
       'Do not provide legal, medical, therapeutic, or crisis instructions beyond the SafeSpeak information-only guardrails.',
       'Return valid JSON with keys: assistantMessage, nextQuestion, timeline, readyForSubmission, confidence, citations, reviewStatus.',
@@ -483,6 +492,9 @@ export const generateTimelineAssistantTurn = async (
       input.ragUnavailable
         ? 'RAG retrieval was unavailable for this turn; say limitations clearly if needed.'
         : 'Use the RAG context only when it is relevant and cite it in citations.',
+      input.incidentCategory
+        ? `The user entered from the quick-start category: ${input.incidentCategory}. Use that as context for tone, likely support needs, and relevant follow-up questions, but do not assume facts the user has not stated.`
+        : 'No quick-start category was provided.',
       `Latest user message: ${input.message}`,
       `Existing conversation: ${JSON.stringify(input.conversation)}`,
       `Existing timeline: ${JSON.stringify(input.timeline)}`,

@@ -652,6 +652,7 @@ export const runTimelineAssistant = async (
     conversation: input.conversation,
     timeline: input.timeline,
     language: input.language,
+    incidentCategory: input.incidentCategory,
     contextText,
     citations,
     ragUnavailable

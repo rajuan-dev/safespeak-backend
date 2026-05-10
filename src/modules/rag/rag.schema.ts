@@ -8,6 +8,12 @@ import {
 } from './rag.constants';
 
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
+const incidentCategorySchema = z.enum([
+  'domestic_violence',
+  'racial_abuse',
+  'migrant_challenges',
+  'cyber_scam'
+]);
 
 export const ragParamsSchema = z.object({ id: objectIdSchema });
 
@@ -35,6 +41,7 @@ export const ragTimelineAssistantSchema = z.object({
   conversation: z.array(timelineConversationMessageSchema).max(100).default([]),
   timeline: z.record(z.unknown()).default({}),
   language: z.string().trim().min(2).max(12).optional(),
+  incidentCategory: incidentCategorySchema.optional(),
   jurisdiction: z.enum(RAG_JURISDICTIONS).optional(),
   topK: z.number().int().min(1).max(8).default(4)
 });
