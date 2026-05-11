@@ -145,5 +145,87 @@ The public dashboard home cards are now expected to launch category-aware fronte
 | Migrant Challenges | `migrant_challenges` | `/dashboard?view=assistant&topic=migrant_challenges&category=migrant_challenges` | Assistant conversation, report details, support explorer | `/consents/current`, `/consents/update`, `/rag/timeline-assistant`, `/ai/triage-report`, `/rag/answer`, `/support/recommendations`, `/reports` | `process_with_ai` before AI/RAG calls | Support explorer may fall back to static cards if backend recommendations are unavailable. |
 | Let’s talk with SafeSpeak | `general_assistant` | `/dashboard?view=assistant&topic=general_assistant` | Assistant conversation with topic chips | `/consents/current`, `/consents/update`, `/rag/timeline-assistant`, `/ai/triage-report` once incident details are provided | `process_with_ai` before AI calls | No incident category is preselected at entry. |
 | ScamShield lower card | `cyber_scam` | `/dashboard?view=scamshieldintake&topic=scamshield&category=cyber_scam` | ScamShield intake flow | `/consents/current`, `/consents/update`, ScamShield analysis endpoints listed above | `process_with_ai` before analysis calls | Same intake behavior as the Cyber Scam hero card. |
-| Resources | N/A | `/dashboard?view=microeducation&topic=resources` | Learn & Resources page | `/content-resources` when frontend resource loading is active | None for static browsing | This is a learning/resource launch, not an AI flow. |
+| Resources | N/A | `/dashboard?view=resources&topic=resources` | Learn & Resources library page | `/content-resources`, `/microeducation` when frontend content loading is active | None for static browsing | Resource Library is now the main learning entry page and links onward to micro-education. |
 | Micro-Cards | N/A | `/dashboard?view=microcards&topic=micro_cards` | Micro-Cards page | None required for static cards | None | Keep existing dashboard layout and learning navigation intact. |
+| Local Intelligence | N/A | `/dashboard?view=localintelligence&topic=local_intelligence` | Privacy-safe local intelligence placeholder | None | None | Shows aggregate-only placeholder copy until a threshold-safe analytics frontend is ready. |
+
+## Final Dashboard Card Routing Map
+
+| Card | Final route |
+| --- | --- |
+| Domestic Violence | `/dashboard?view=assistant&topic=domestic_violence&category=domestic_violence` |
+| Racial Abuse | `/dashboard?view=assistant&topic=racial_abuse&category=racial_abuse` |
+| Cyber Scam | `/dashboard?view=scamshieldintake&topic=cyber_scam&category=cyber_scam` |
+| Migrant Challenges | `/dashboard?view=assistant&topic=migrant_challenges&category=migrant_challenges` |
+| Let’s talk with SafeSpeak | `/dashboard?view=assistant&topic=general_assistant` |
+| ScamShield lower card | `/dashboard?view=scamshieldintake&topic=scamshield&category=cyber_scam` |
+| Resources | `/dashboard?view=resources&topic=resources` |
+| Micro-Cards | `/dashboard?view=microcards&topic=micro_cards` |
+| Local Intelligence | `/dashboard?view=localintelligence&topic=local_intelligence` |
+
+## User Menu Route Map
+
+| User menu label | Route | Notes |
+| --- | --- | --- |
+| Dashboard / Home | `/dashboard` | Includes quick actions, safety toolbar, and recommendation placeholders. |
+| Report Incident | `/dashboard?view=assistant` | Safety-aware assistant/report guidance entry. |
+| ScamShield | `/dashboard?view=scamshieldintake` | Intake, risk, assets, and agency-preparation flow. |
+| Get Support | `/dashboard/explorer` | Backend-first support explorer with labelled fallback resources. |
+| Learn & Resources | `/dashboard?view=resources` | Resource library main page with micro-education links. |
+| My SafeSpeak | `/dashboard/settings` | Profile, language/cultural/faith/community settings, consent center, and report/data-control links. |
+| Reports Center | `/dashboard/reports` | History/detail pages use live backend report ids. |
+| Smart Dialler | `/dashboard?view=smartdialler` | Reachable from dashboard toolbar, safety rail, support page, and report shell. |
+
+## Admin Menu Route Map
+
+| Admin menu group | Primary routes |
+| --- | --- |
+| Dashboard | `/admin/dashboard` |
+| Security & Compliance Center | `/admin/security-compliance/identity-access-management`, `/security-monitoring`, `/data-protection`, `/privacy-controls`, `/legal-compliance` |
+| Platform Intelligence Engine | `/admin/platform-intelligence/taxonomies-management`, `/service-destinations`, `/integration-management`, `/ai-engine-control`, `/cultural-profiles`, `/language-packs` |
+| Analytics & Intelligence Center | `/admin/insights/incident-insights`, `/heatmaps`, `/trends`, `/platform-health` |
+| Crisis & Safety Management | `/admin/crisis-safety/crisis-response-center`, `/content-moderation` |
+| Content & Education Management | `/admin/content-management/educational-content`, `/resource-library`, `/upload-resource`, `/knowledge-sources`, `/micro-education-cards`, `/media-asset` |
+| User & Operations Management | `/admin/users`, `/feedback`, `/create-admin`, `/audit-logs` |
+| Basic Content Management | `/admin/content-management/landing-page`, `/admin/settings` |
+
+## Safety-First Landing Requirements Status
+
+- The global safety rail and safety gate remain active across the public app, including Quick Exit, emergency access, 1800RESPECT access, language toggle, and covert-mode indicator.
+- Landing page internals were not changed in this task because the implementation request conflicted with the explicit instruction not to change anything inside the landing page.
+- Treat landing-page safety copy/button verification as still requiring a manual review against the current hero/navbar implementation before production sign-off.
+
+## Smart Dialler Status
+
+- Smart Dialler now has a dedicated user route at `/dashboard?view=smartdialler`.
+- It is reachable from the dashboard toolbar, persistent safety rail, support explorer, and report flow shell.
+- The page includes 000, 1800RESPECT, Lifeline, Police Assistance Line, TIS guidance, editable script text, and covert-help guidance.
+- It does not auto-call any service.
+
+## Accessibility Basics Implemented
+
+- Dashboard home cards now expose clearer `aria-label`s.
+- Safety-critical controls now expose explicit `aria-label`s for emergency calling, Quick Exit, Smart Dialler, and support calling.
+- Card-like upload surfaces in the evidence flow remain keyboard-activatable with `Enter`/`Space`.
+- Existing reduced-motion support remains in the micro-education motion layer through `useReducedMotion`.
+- Manual NVDA/VoiceOver pass is still required before claiming full accessibility readiness.
+
+## Cultural And Faith Sensitivity Status
+
+- User settings now expose profile management around language, cultural, faith, community, interpreter, and referral-sharing preferences.
+- Smart Dialler scripts use the saved interpreter language when building call-prep text.
+- Backend profile integration is still the source of truth; no fake AI personalization was added where backend output is absent.
+
+## Placeholders Intentionally Left In Place
+
+- Local Intelligence remains a privacy-safe placeholder until threshold-safe aggregate analytics UI is ready.
+- Landing page internal copy/buttons remain untouched in this task because of the explicit no-change constraint.
+- Data export/deletion remains a user-safe placeholder in My SafeSpeak until a full backend self-service workflow exists.
+- Multiple admin modules still operate as scope-aligned placeholders when no live backend endpoint exists.
+
+## Production Blockers
+
+- Production legal corpus is still not fully approved and ingested for authoritative legal RAG answers.
+- End-to-end verification still depends on backend/session/OpenAI configuration for some AI and OCR flows.
+- Admin lint has a large pre-existing repo-wide backlog unrelated to this routing/alignment task.
+- Landing page safety-copy compliance still needs manual sign-off because landing internals were intentionally left unchanged.
