@@ -632,6 +632,231 @@ const normalizeTimelineObject = (
   return normalized;
 };
 
+const TIMELINE_VALUE_WORD_LIMITS: Partial<Record<string, number>> = {
+  who: 8,
+  relationship: 6,
+  what: 12,
+  where: 8,
+  when: 8,
+  how: 10,
+  frequency: 8,
+  impact: 10,
+  threats: 10,
+  injuries: 10,
+  witnesses: 10,
+  evidence: 10,
+  actions_taken: 10,
+  unsafe_now: 6
+};
+
+const TIMELINE_FILLER_PREFIX = new RegExp(
+  [
+    '^\\s*',
+    '(?:hey|hi|hello|okay|ok|so|well|um|uh|like|just|please|basically|actually)',
+    '[,\\s]+'
+  ].join(''),
+  'i'
+);
+
+const HARM_ACTION_PATTERNS = [
+  /\b(?:someone|somebody|a man|a woman|they|he|she|my\s+\w+|the\s+\w+)\s+(?:pulled|grabbed|pushed|hit|slapped|kicked|touched|followed|harassed|abused|threatened|yelled at|shouted at|insulted|spat at|stole|took|snatched)\b[^.?!,;]*/i,
+  /\b(?:pulled|grabbed|pushed|hit|slapped|kicked|touched|followed|harassed|abused|threatened|insulted|stole|took|snatched)\b[^.?!,;]*/i
+];
+
+const ACTIVITY_CONTEXT_PATTERNS = [
+  /\b(?:while|when)\s+i\s+(?:was|am|'m)\s+(?:just\s+)?(?:walking|working|going|standing|waiting|travelling|traveling)\b[^.?!,;]*/i,
+  /\bi\s+(?:was|am|'m)\s+(?:just\s+)?(?:walking|working|going|standing|waiting|travelling|traveling)\b[^.?!,;]*/i
+];
+
+const WHERE_PATTERNS = [
+  /\b(?:on|in|at|near|outside|inside)\s+(?:the\s+)?(?:street|road|bus stop|train station|school|campus|office|workplace|shop|store|market|park|home|house|mosque|mall)\b[^.?!,;]*/i,
+  /\b(?:at home|at work|at school|on the street|in the street)\b/i
+];
+
+const WHEN_PATTERNS = [
+  /\b(?:today|yesterday|last night|last week|this morning|this afternoon|this evening|tonight)\b(?:\s+around\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
+  /\b(?:around|about)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i,
+  /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i
+];
+
+const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
+const trimTimelineValueWords = (value: string, limit: number): string => {
+  const words = collapseWhitespace(value).split(' ');
+
+  if (words.length <= limit) {
+    return value.trim();
+  }
+
+  return words.slice(0, limit).join(' ').trim();
+};
+
+const stripLeadingFiller = (value: string): string => {
+  let nextValue = value.trim();
+
+  while (TIMELINE_FILLER_PREFIX.test(nextValue)) {
+    nextValue = nextValue.replace(TIMELINE_FILLER_PREFIX, '').trim();
+  }
+
+  return nextValue;
+};
+
+const cleanTimelineValue = (value: string): string =>
+  stripLeadingFiller(value)
+    .replace(/\s+/g, ' ')
+    .replace(/^[,.;:!?-]+/, '')
+    .replace(/[.]+$/, '')
+    .trim();
+
+const extractBestPatternMatch = (value: string, patterns: RegExp[]): string => {
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+
+    if (match?.[0]) {
+      return cleanTimelineValue(match[0]);
+    }
+  }
+
+  return '';
+};
+
+const alignTimelineValueToUserVoice = (
+  value: string,
+  latestUserMessage: string
+): string => {
+  const cleanedLatestMessage = cleanTimelineValue(latestUserMessage);
+
+  if (!cleanedLatestMessage) {
+    return value;
+  }
+
+  let alignedValue = value;
+
+  if (/\bmy\b/i.test(cleanedLatestMessage)) {
+    alignedValue = alignedValue.replace(/\byour\b/gi, 'my');
+  }
+
+  if (/\bi was\b/i.test(cleanedLatestMessage)) {
+    alignedValue = alignedValue.replace(/\byou were\b/gi, 'I was');
+  } else if (/\bi am\b/i.test(cleanedLatestMessage)) {
+    alignedValue = alignedValue.replace(/\byou are\b/gi, 'I am');
+  } else if (/\bi'm\b/i.test(cleanedLatestMessage)) {
+    alignedValue = alignedValue.replace(/\byou are\b/gi, "I'm");
+  }
+
+  if (/\bi\b/i.test(cleanedLatestMessage)) {
+    alignedValue = alignedValue.replace(/\byou\b/gi, 'I');
+  }
+
+  return cleanTimelineValue(alignedValue);
+};
+
+const normalizeActivityContext = (value: string): string => {
+  const cleanedValue = cleanTimelineValue(value);
+
+  if (!cleanedValue) {
+    return '';
+  }
+
+  const withoutLead = cleanedValue
+    .replace(/^(?:while|when)\s+/i, '')
+    .replace(/\bjust\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const normalizedActivity = withoutLead
+    .replace(/\bi am\b/i, 'I was')
+    .replace(/\bi'm\b/i, 'I was');
+
+  return normalizedActivity ? `while ${normalizedActivity}` : '';
+};
+
+const buildShortWhatFromUserMessage = (latestUserMessage: string): string => {
+  const cleanedLatestMessage = cleanTimelineValue(latestUserMessage);
+
+  if (!cleanedLatestMessage) {
+    return '';
+  }
+
+  const actionMatch = extractBestPatternMatch(
+    cleanedLatestMessage,
+    HARM_ACTION_PATTERNS
+  );
+
+  if (!actionMatch) {
+    return '';
+  }
+
+  const activityMatch = extractBestPatternMatch(
+    cleanedLatestMessage,
+    ACTIVITY_CONTEXT_PATTERNS
+  );
+  const normalizedActivity = normalizeActivityContext(activityMatch);
+
+  if (!normalizedActivity || actionMatch.toLowerCase().includes(normalizedActivity.toLowerCase())) {
+    return cleanTimelineValue(actionMatch);
+  }
+
+  return cleanTimelineValue(`${actionMatch} ${normalizedActivity}`);
+};
+
+const compactTimelineFieldValue = (
+  key: string,
+  value: string,
+  latestUserMessage = ''
+): string => {
+  const cleanedValue = cleanTimelineValue(value);
+
+  if (!cleanedValue) {
+    return '';
+  }
+
+  if (key === 'what') {
+    const userVoiceWhat = buildShortWhatFromUserMessage(latestUserMessage);
+    const actionMatch = extractBestPatternMatch(cleanedValue, HARM_ACTION_PATTERNS);
+    const compactWhat = userVoiceWhat
+      || alignTimelineValueToUserVoice(actionMatch || cleanedValue, latestUserMessage);
+
+    return trimTimelineValueWords(compactWhat, TIMELINE_VALUE_WORD_LIMITS.what ?? 12);
+  }
+
+  if (key === 'where') {
+    const locationMatch = extractBestPatternMatch(cleanedValue, WHERE_PATTERNS);
+    const compactWhere = locationMatch || cleanedValue;
+
+    return trimTimelineValueWords(compactWhere, TIMELINE_VALUE_WORD_LIMITS.where ?? 8);
+  }
+
+  if (key === 'when') {
+    const whenMatch = extractBestPatternMatch(cleanedValue, WHEN_PATTERNS);
+    const compactWhen = whenMatch || cleanedValue;
+
+    return trimTimelineValueWords(compactWhen, TIMELINE_VALUE_WORD_LIMITS.when ?? 8);
+  }
+
+  return trimTimelineValueWords(
+    alignTimelineValueToUserVoice(cleanedValue, latestUserMessage),
+    TIMELINE_VALUE_WORD_LIMITS[key] ?? 12
+  );
+};
+
+const compactTimelineObject = (
+  timeline: Record<string, string>,
+  latestUserMessage = ''
+): Record<string, string> => {
+  const compactedTimeline: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(timeline)) {
+    const compactValue = compactTimelineFieldValue(key, value, latestUserMessage);
+
+    if (compactValue) {
+      compactedTimeline[key] = compactValue;
+    }
+  }
+
+  return compactedTimeline;
+};
+
 const INCIDENT_TYPE_PATTERNS: Array<{ value: string; patterns: RegExp[] }> = [
   {
     value: 'harassment',
@@ -791,6 +1016,10 @@ export const runTimelineAssistant = async (
   const output = (modelResponse.output ?? {}) as Record<string, unknown>;
   const timelineCandidate = (output.timeline ?? {}) as Record<string, unknown>;
   const timelineFallback = buildTimelineFallback(input, timelineCandidate);
+  const resolvedTimeline = compactTimelineObject(
+    normalizeTimelineObject(input.timeline, timelineCandidate, timelineFallback),
+    input.message
+  );
   const assistantMessage =
     typeof output.assistantMessage === 'string' && output.assistantMessage.trim()
       ? enforceAiOutputGuardrails(output.assistantMessage)
@@ -808,7 +1037,7 @@ export const runTimelineAssistant = async (
     assistantMessage,
     nextQuestion:
       typeof output.nextQuestion === 'string' ? output.nextQuestion.trim() : '',
-    timeline: normalizeTimelineObject(input.timeline, timelineCandidate, timelineFallback),
+    timeline: resolvedTimeline,
     readyForSubmission: Boolean(output.readyForSubmission),
     confidence:
       output.confidence === 'high' || output.confidence === 'medium' || output.confidence === 'low'
