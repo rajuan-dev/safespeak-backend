@@ -1,10 +1,10 @@
 import http from 'node:http';
 
 import { createApp } from './app';
-import { connectDatabase, disconnectDatabase } from './config/database';
+import { bootstrapApp } from './bootstrap';
+import { disconnectDatabase } from './config/database';
 import { env } from './config/env';
 import { logger } from './common/utils/logger';
-import { seedDefaultSuperAdmin } from './modules/admin/admin.seed';
 
 const app = createApp();
 const server = http.createServer(app);
@@ -43,8 +43,7 @@ process.on('uncaughtException', (error) => {
 });
 
 const bootstrap = async (): Promise<void> => {
-  await connectDatabase();
-  await seedDefaultSuperAdmin();
+  await bootstrapApp();
 
   server.listen(env.PORT, () => {
     logger.info(

@@ -75,6 +75,7 @@ Optional but deployment-critical notes:
 - `ENABLE_ADMIN_SEED` defaults to `false`. Turn it on only when you also provide `DEFAULT_SUPER_ADMIN_EMAIL` and `DEFAULT_SUPER_ADMIN_PASSWORD`.
 - For Vercel, set the project Root Directory to `safespeak-backend`.
 - For Vercel, configure at least `MONGODB_URI`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `CLIENT_URL`, and `ADMIN_URL` in the project environment variables before deploying.
+- For Vercel, the deployment entrypoint is `api/index.js`, which bootstraps the database and then forwards requests to the Express app built into `dist/**`.
 
 ## Scripts
 
