@@ -2,11 +2,48 @@ import type { CorsOptions } from 'cors';
 
 import { env } from './env';
 
-const allowedOrigins = new Set([env.CLIENT_URL, env.ADMIN_URL]);
+const KNOWN_PRODUCTION_FRONTEND_ORIGINS = ['https://safespeak-frontend.vercel.app'];
+
+function normalizeOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function parseConfiguredOrigins(value?: string): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((origin) => normalizeOrigin(origin.trim()))
+    .filter((origin): origin is string => Boolean(origin));
+}
+
+const allowedOrigins = new Set(
+  [
+    env.CLIENT_URL,
+    env.ADMIN_URL,
+    ...KNOWN_PRODUCTION_FRONTEND_ORIGINS,
+    ...parseConfiguredOrigins(env.CORS_ALLOWED_ORIGINS)
+  ]
+    .map(normalizeOrigin)
+    .filter((origin): origin is string => Boolean(origin))
+);
 
 export const corsOptions: CorsOptions = {
   origin(origin, callback) {
-    if (!origin || allowedOrigins.has(origin)) {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+
+    const normalizedOrigin = normalizeOrigin(origin);
+
+    if (normalizedOrigin && allowedOrigins.has(normalizedOrigin)) {
       callback(null, true);
       return;
     }

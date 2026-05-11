@@ -26,6 +26,7 @@ const envSchema = z
     API_PREFIX: z.string().startsWith('/').default('/api/v1'),
     CLIENT_URL: z.string().url().default('http://localhost:3000'),
     ADMIN_URL: z.string().url().default('http://localhost:5173'),
+    CORS_ALLOWED_ORIGINS: optionalString(z.string().min(1)),
     MONGODB_URI: z.string().min(1),
     MONGODB_DNS_SERVERS: optionalString(z.string().min(1)),
     LOG_LEVEL: z
