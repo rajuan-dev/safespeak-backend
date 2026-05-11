@@ -59,7 +59,7 @@ const envSchema = z
     AWS_SECRET_ACCESS_KEY: optionalString(z.string().min(1)),
     EVIDENCE_S3_BUCKET: optionalString(z.string().min(1)),
     EVIDENCE_S3_PREFIX: z.string().min(1).default('evidence-vault'),
-    ENABLE_ADMIN_SEED: booleanFromString.default(true),
+    ENABLE_ADMIN_SEED: booleanFromString.default(false),
     DEFAULT_SUPER_ADMIN_EMAIL: optionalString(z.string().email()),
     DEFAULT_SUPER_ADMIN_PASSWORD: optionalString(z.string().min(8)),
     DEFAULT_SUPER_ADMIN_FULL_NAME: z.string().min(1).default('SafeSpeak Super Admin')
