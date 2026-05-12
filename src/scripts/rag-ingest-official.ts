@@ -5,40 +5,32 @@ import path from 'node:path';
 import { logger } from '@common/utils/logger';
 import { connectDatabase, disconnectDatabase } from '@config/database';
 import { createEmbedding } from '@modules/ai/ai.service';
+import { RAG_OFFICIAL_SOURCE_HOSTS } from '@modules/rag/rag.constants';
 import { RagChunkModel, RagKnowledgeSourceModel } from '@modules/rag/rag.model';
-
-const ALLOWED_DOMAINS = [
-  'legislation.gov.au',
-  'austlii.edu.au',
-  'humanrights.gov.au',
-  'ahrc.gov.au',
-  'esafety.gov.au',
-  'oaic.gov.au',
-  'fairwork.gov.au',
-  'accc.gov.au',
-  'cyber.gov.au',
-  'scamwatch.gov.au',
-  'nsw.gov.au',
-  'vic.gov.au',
-  'qld.gov.au',
-  'sa.gov.au',
-  'wa.gov.au',
-  'tas.gov.au',
-  'nt.gov.au',
-  'act.gov.au'
-] as const;
 
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_FETCH_BYTES = 750000;
 const CHUNK_SIZE = 1200;
 const CHUNK_OVERLAP = 150;
+const DEFAULT_REFRESH_DAYS = 90;
 
 type SourceConfig = {
   title: string;
   url: string;
   publisher: string;
   sourceCategory: 'official_legal_source' | 'official_support_source';
-  jurisdiction: 'Cth' | 'NSW' | 'VIC' | 'QLD' | 'SA' | 'WA' | 'TAS' | 'NT' | 'ACT' | 'AU' | 'Global';
+  jurisdiction:
+    | 'Cth'
+    | 'NSW'
+    | 'VIC'
+    | 'QLD'
+    | 'SA'
+    | 'WA'
+    | 'TAS'
+    | 'NT'
+    | 'ACT'
+    | 'AU'
+    | 'Global';
   topic:
     | 'discrimination'
     | 'racial_hatred'
@@ -67,6 +59,17 @@ type SourceConfig = {
   licenseStatus: string;
   legalReviewed?: boolean;
   lastUpdated?: string;
+  lastVerifiedAt?: string;
+  nextReviewAt?: string;
+  nextRefreshAt?: string;
+  reviewNotes?: string;
+};
+
+const addDays = (date: Date, days: number): Date => {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+
+  return next;
 };
 
 const chunkText = (text: string): string[] => {
@@ -87,11 +90,12 @@ const sha256 = (input: string): string => createHash('sha256').update(input).dig
 const isAllowedUrl = (raw: string): boolean => {
   const host = new URL(raw).hostname.toLowerCase();
 
-  return ALLOWED_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
+  return RAG_OFFICIAL_SOURCE_HOSTS.some((domain) => host === domain || host.endsWith(`.${domain}`));
 };
 
 const isBinarySource = (url: URL, contentType: string): boolean =>
-  /\.(pdf|doc|docx|rtf)$/i.test(url.pathname) || /pdf|msword|officedocument|octet-stream/i.test(contentType);
+  /\.(pdf|doc|docx|rtf)$/i.test(url.pathname) ||
+  /pdf|msword|officedocument|octet-stream/i.test(contentType);
 
 const htmlToText = (html: string): string =>
   html
@@ -142,7 +146,8 @@ const fetchOfficialText = async (
       return {
         kind: 'metadata_only',
         contentType,
-        message: 'Binary or document-style official source requires manual text extraction before chunking.'
+        message:
+          'Binary or document-style official source requires manual text extraction before chunking.'
       };
     }
 
@@ -189,14 +194,22 @@ const run = async (): Promise<void> => {
         url: source.url,
         sourceCategory: source.sourceCategory
       });
+      const lastUpdated = source.lastUpdated ? new Date(source.lastUpdated) : new Date();
+      const nextRefreshAt = source.nextRefreshAt
+        ? new Date(source.nextRefreshAt)
+        : addDays(lastUpdated, DEFAULT_REFRESH_DAYS);
 
       const doc =
-        existing
-        ?? new RagKnowledgeSourceModel({
+        existing ??
+        new RagKnowledgeSourceModel({
           ...source,
           language: 'en',
           legalReviewed: source.legalReviewed ?? false,
-          lastUpdated: source.lastUpdated ? new Date(source.lastUpdated) : undefined,
+          lastUpdated,
+          lastVerifiedAt: source.lastVerifiedAt ? new Date(source.lastVerifiedAt) : new Date(),
+          nextReviewAt: source.nextReviewAt ? new Date(source.nextReviewAt) : undefined,
+          nextRefreshAt,
+          reviewNotes: source.reviewNotes,
           status: 'pending_review',
           version: 1,
           metadata: {}
@@ -212,7 +225,11 @@ const run = async (): Promise<void> => {
       doc.licenseStatus = source.licenseStatus;
       doc.legalReviewed = false;
       doc.status = 'pending_review';
-      doc.lastUpdated = source.lastUpdated ? new Date(source.lastUpdated) : doc.lastUpdated;
+      doc.lastUpdated = lastUpdated;
+      doc.lastVerifiedAt = source.lastVerifiedAt ? new Date(source.lastVerifiedAt) : new Date();
+      doc.nextReviewAt = source.nextReviewAt ? new Date(source.nextReviewAt) : doc.nextReviewAt;
+      doc.nextRefreshAt = nextRefreshAt;
+      doc.reviewNotes = source.reviewNotes ?? doc.reviewNotes;
 
       try {
         const fetched = await fetchOfficialText(source.url);
@@ -229,7 +246,10 @@ const run = async (): Promise<void> => {
             contentType: fetched.contentType
           };
           await doc.save();
-          logger.warn({ title: source.title, reason: fetched.message }, 'Official source stored as metadata only');
+          logger.warn(
+            { title: source.title, reason: fetched.message },
+            'Official source stored as metadata only'
+          );
           continue;
         }
 
@@ -303,7 +323,10 @@ const run = async (): Promise<void> => {
           contentType: fetched.contentType
         };
         await doc.save();
-        logger.info({ title: source.title, chunks: embeddedChunks.length }, 'Official source ingested and embedded');
+        logger.info(
+          { title: source.title, chunks: embeddedChunks.length },
+          'Official source ingested and embedded'
+        );
       } catch (error) {
         await RagChunkModel.deleteMany({ sourceId: doc._id });
         doc.ingestionStatus = 'failed';

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const textSchema = z.string().trim().min(1).max(600);
+const templateTextSchema = z.string().trim().min(1).max(2400);
 
 export const platformSettingsPayloadSchema = z.object({
   safety: z.object({
@@ -22,7 +23,11 @@ export const platformSettingsPayloadSchema = z.object({
   }),
   ai: z.object({
     disclaimerText: textSchema,
-    humanReviewText: textSchema
+    humanReviewText: textSchema,
+    triageSystemPrompt: templateTextSchema,
+    triageResponseTemplate: templateTextSchema,
+    triageFallbackText: templateTextSchema,
+    triageTemplateStatus: z.enum(['draft', 'approved']).default('draft')
   })
 });
 

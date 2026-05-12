@@ -31,6 +31,7 @@ Sample Atlas Vector Search index JSON:
 ```
 
 Create manually in Atlas:
+
 1. Open cluster -> Database -> `ragchunks` collection.
 2. Go to Search Indexes -> Create Index -> JSON Editor.
 3. Use index name from env `RAG_VECTOR_INDEX`.
@@ -38,11 +39,13 @@ Create manually in Atlas:
 5. Save and wait until the index is active.
 
 Validation:
+
 - Run `npm run rag:check:index`
 - If Mongo returns `SearchNotEnabled`, Atlas Search / Vector Search is not enabled on the connected deployment yet.
 - If the index name is missing, create it manually and rerun the check.
 
 Notes on filtering:
+
 - Chunk-level filter fields in `$vectorSearch`:
   - `sourceId`
   - `sourceCategory`
@@ -51,5 +54,6 @@ Notes on filtering:
 - Legal/public approval is enforced at source-query time before chunk retrieval:
   - `status=approved`
   - `legalReviewed=true` for `official_legal_source`
+  - `nextRefreshAt` must be in the future for official legal/support sources
 
 RAG retrieval will not work correctly until Atlas Search is enabled, the named index exists, and the embedding dimensions match the configured embedding model.

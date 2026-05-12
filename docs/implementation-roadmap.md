@@ -128,24 +128,33 @@ For each feature, implement in this order:
 
 ### Task 4.1 Official source governance
 
-- Backend: RAG knowledge source approval, ingestion, reindexing.
-- Admin: manage official sources, approval state, legal review state.
-- Frontend: only use approved/published explanations.
-- Validation: unapproved source content never appears in AI answers.
+- Backend: RAG knowledge source approval, ingestion, refresh, and reindexing.
+- Backend: enforce official source URLs, publisher, licence status, source update dates, refresh dates, legal review, approval separation, stale-source exclusion, ingestion, refresh hash checks, and reindexing.
+- Admin: manage official sources, jurisdiction/topic/source type metadata, approval state, legal review state, licence notes, update dates, refresh schedule, due-refresh queue, stale-source exclusions, and official URL refresh actions.
+- Frontend: only use approved/published explanations from approved current RAG sources.
+- Validation: unapproved, stale, rejected, archived, metadata-only, or non-legally-reviewed legal source content never appears in AI answers.
+
+### Task 4.1a Official source ingestion and refresh workflow
+
+- Backend: `POST /rag/knowledge-sources/:id/refresh` fetches readable official HTML/text, stores PDFs/docs as metadata-only unless extracted text is supplied, updates `lastVerifiedAt`, `nextRefreshAt`, `ingestionStatus`, `sha256Hash`, and chunk count, and returns changed official material to review.
+- Admin: refresh action, due-refresh counters, stale-exclusion counters, needs-legal-review state, and ready-for-approval state on the knowledge-source page.
+- Seed data: NSW-first starter official corpus for NSW discrimination/racial vilification plus AHRC, eSafety, OAIC, Scamwatch, and ACSC support context, all `pending_review` with `legalReviewed=false`.
+- Validation: `/rag/answer` searches only approved, current, legally reviewed official legal sources and returns the insufficient-sources fallback when none are available; citations include title, publisher, URL, jurisdiction, source category/type/topic, and update date.
 
 ### Task 4.2 Information-only triage responses
 
-- Backend: triage endpoint enforces disclaimer and blocks legal/clinical/crisis advice.
-- Admin: manage prompt templates and review workflow.
-- Frontend: display triage classification, explanation, and disclaimer.
-- Validation: red-team prompts cannot produce legal advice phrasing.
+- Backend: triage endpoint enforces disclaimer, normalizes output into an information-only envelope, blocks legal/clinical/crisis advice phrasing, and returns confidence, citations, fallback reason, safety flags, and human-review state.
+- Admin: manage AI triage system prompt, response template, fallback text, and template status through draft/publish platform settings.
+- Frontend: display triage classification, explanation, disclaimer, confidence, fallback reason, citations, and human-review state.
+- Validation: red-team prompts cannot produce legal, clinical, counselling, crisis-service, or case-management advice phrasing.
 
 ### Task 4.3 NSW-first legal awareness
 
-- Backend: NSW racial hatred offence and civil pathway content as approved knowledge.
-- Admin: content approval and versioning.
-- Frontend: plain-language explainers and micro-lessons.
-- Validation: every legal-aware screen states information-only.
+- Backend: `/rag/answer` and `/rag/timeline-assistant` attach an NSW `legalAwareness` envelope for racial abuse and migrant challenge contexts, keep the response information-only, and retrieve NSW requests from approved NSW, Commonwealth, or Australian sources only.
+- Backend: NSW legal-aware fallbacks return `sourceStatus=insufficient_approved_sources` and no citations when there are no approved, current, legally reviewed sources.
+- Admin: legal awareness content remains governed by the official-source registry, approval state, legal review state, versioning, refresh status, and stale-source exclusion rules from Tasks 4.1 and 4.1a.
+- Frontend: racial abuse and migrant challenge assistant flows show NSW legal-awareness pathway cards, source status, source policy, confidence, human-review state, and citations returned by the backend.
+- Validation: every legal-aware screen states information-only; detailed legal explanations and citations appear only from approved, current, legally reviewed sources.
 
 ## Phase 5: Report And Route Engine
 

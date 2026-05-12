@@ -14,6 +14,7 @@ import {
   listKnowledgeSources,
   rejectKnowledgeSource,
   reindexKnowledgeSource,
+  refreshKnowledgeSource,
   runTimelineAssistant,
   searchRag,
   updateKnowledgeSource
@@ -25,6 +26,7 @@ import type {
   RagAnswerInput,
   RagSearchInput,
   RagTimelineAssistantInput,
+  RefreshKnowledgeSourceInput,
   RejectKnowledgeSourceInput,
   UpdateKnowledgeSourceInput
 } from './rag.schema';
@@ -110,6 +112,20 @@ export const ingestKnowledgeSourceController = asyncHandler(async (req: Request,
     .status(StatusCodes.OK)
     .json(successResponse('Knowledge source ingested', { result }, { informationOnly: true }));
 });
+
+export const refreshKnowledgeSourceController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await refreshKnowledgeSource(
+      getContext(req),
+      req.params.id,
+      req.body as RefreshKnowledgeSourceInput
+    );
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Knowledge source refreshed', { result }, { informationOnly: true }));
+  }
+);
 
 export const approveKnowledgeSourceController = asyncHandler(
   async (req: Request, res: Response) => {

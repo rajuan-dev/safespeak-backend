@@ -12,7 +12,16 @@ import { saveTranscriptionToEvidence } from '@modules/evidence/evidence.service'
 import type { EvidenceUploadFile } from '@modules/evidence/evidence.types';
 import { EvidenceModel } from '@modules/evidence/evidence.model';
 import { ReportModel, type ReportDocument } from '@modules/reports/reports.model';
-import { getSafeSpeakSystemPrompt } from './ai-guardrails';
+import { getPublicPlatformSettings } from '@modules/platform-settings/platform-settings.service';
+import {
+  buildInformationOnlyDisclaimer,
+  detectClinicalAdviceRisk,
+  detectCrisisRisk,
+  detectLegalAdviceRisk,
+  enforceAiOutputGuardrails,
+  getSafeSpeakSystemPrompt,
+  shouldRequireHumanReview
+} from './ai-guardrails';
 
 import { AI_ACTIONS, DEFAULT_AI_LANGUAGE } from './ai.constants';
 import { AiInteractionModel } from './ai.model';
@@ -298,6 +307,223 @@ const buildReportContext = async (
   return { report, citations };
 };
 
+type TriageFallbackReason =
+  | 'none'
+  | 'insufficient_input'
+  | 'crisis_safety'
+  | 'legal_advice_risk'
+  | 'clinical_advice_risk';
+
+type TriageSafetyFlags = {
+  legalAdviceRisk: boolean;
+  clinicalAdviceRisk: boolean;
+  crisisRisk: boolean;
+  insufficientInput: boolean;
+};
+
+type TriageResourceRecommendation = {
+  title: string;
+  body: string;
+  type: string;
+};
+
+const TRIAGE_SEVERITY_VALUES = new Set(['low', 'medium', 'high', 'urgent']);
+
+const toStringValue = (value: unknown): string =>
+  typeof value === 'string' ? value.trim() : '';
+
+const normalizeStringList = (value: unknown, fallback: string[] = []): string[] => {
+  if (Array.isArray(value)) {
+    const values = value
+      .map((item) => toStringValue(item))
+      .filter(Boolean)
+      .slice(0, 8);
+
+    return values.length > 0 ? values : fallback;
+  }
+
+  const stringValue = toStringValue(value);
+
+  return stringValue ? [stringValue] : fallback;
+};
+
+const normalizeResourceRecommendations = (value: unknown): TriageResourceRecommendation[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const record = item as Record<string, unknown>;
+      const title = toStringValue(record.title);
+      const body = toStringValue(record.body);
+      const type = toStringValue(record.type);
+
+      if (!title || !body) {
+        return null;
+      }
+
+      return { title, body, type: type || 'support' };
+    })
+    .filter((item): item is TriageResourceRecommendation => Boolean(item))
+    .slice(0, 6);
+};
+
+const stripRepeatedDisclaimer = (text: string, disclaimer: string): string =>
+  text.replace(new RegExp(disclaimer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '').trim();
+
+const sanitizeTriageText = (value: unknown, disclaimer: string, fallback: string): string => {
+  const text = toStringValue(value) || fallback;
+  const sanitized = enforceAiOutputGuardrails(text);
+
+  return stripRepeatedDisclaimer(sanitized, disclaimer) || fallback;
+};
+
+const normalizeTriageSeverity = (value: unknown, flags: TriageSafetyFlags): string => {
+  const candidate = toStringValue(value).toLowerCase();
+
+  if (flags.crisisRisk) {
+    return 'urgent';
+  }
+
+  return TRIAGE_SEVERITY_VALUES.has(candidate) ? candidate : 'medium';
+};
+
+const buildTriageFlags = (
+  narrative: string,
+  structuredFields: Record<string, unknown> | undefined,
+  modelOutput: Record<string, unknown>
+): TriageSafetyFlags => {
+  const structuredText = JSON.stringify(structuredFields ?? {});
+  const combinedText = `${narrative}\n${structuredText}\n${JSON.stringify(modelOutput)}`;
+  const inputText = `${narrative}\n${structuredText}`.replace(/[{}[\]":,_-]/g, ' ').trim();
+
+  return {
+    legalAdviceRisk: detectLegalAdviceRisk(combinedText),
+    clinicalAdviceRisk: detectClinicalAdviceRisk(combinedText),
+    crisisRisk: detectCrisisRisk(combinedText),
+    insufficientInput: inputText.length < 24
+  };
+};
+
+const buildTriageFallbackReason = (flags: TriageSafetyFlags): TriageFallbackReason => {
+  if (flags.crisisRisk) {
+    return 'crisis_safety';
+  }
+
+  if (flags.legalAdviceRisk) {
+    return 'legal_advice_risk';
+  }
+
+  if (flags.clinicalAdviceRisk) {
+    return 'clinical_advice_risk';
+  }
+
+  if (flags.insufficientInput) {
+    return 'insufficient_input';
+  }
+
+  return 'none';
+};
+
+const normalizeTriageConfidence = (
+  modelConfidence: unknown,
+  flags: TriageSafetyFlags,
+  citations: AiCitation[]
+): 'low' | 'medium' | 'high' => {
+  const candidate = toStringValue(modelConfidence).toLowerCase();
+
+  if (
+    flags.crisisRisk ||
+    flags.legalAdviceRisk ||
+    flags.clinicalAdviceRisk ||
+    flags.insufficientInput
+  ) {
+    return 'low';
+  }
+
+  if (candidate === 'high' || candidate === 'medium' || candidate === 'low') {
+    return candidate;
+  }
+
+  return citations.length > 0 ? 'medium' : 'low';
+};
+
+const normalizeTriageOutput = (input: {
+  modelOutput: Record<string, unknown>;
+  narrative: string;
+  structuredFields?: Record<string, unknown>;
+  citations: AiCitation[];
+  disclaimer: string;
+  humanReviewText: string;
+  fallbackText: string;
+}): Record<string, unknown> => {
+  const flags = buildTriageFlags(input.narrative, input.structuredFields, input.modelOutput);
+  const fallbackReason = buildTriageFallbackReason(flags);
+  const pendingHumanReview = shouldRequireHumanReview({
+    legalAdviceRisk: flags.legalAdviceRisk,
+    clinicalAdviceRisk: flags.clinicalAdviceRisk,
+    crisisRisk: flags.crisisRisk,
+    insufficientSources: false,
+    insufficientInput: flags.insufficientInput
+  });
+  const summaryFallback =
+    fallbackReason === 'crisis_safety'
+      ? 'Immediate safety may be a concern. If there is immediate danger, call 000 now.'
+      : input.fallbackText;
+  const assessmentFallback =
+    fallbackReason === 'none'
+      ? input.fallbackText
+      : `${summaryFallback} ${input.humanReviewText}`;
+  const normalizedSummary = sanitizeTriageText(
+    input.modelOutput.summary,
+    input.disclaimer,
+    summaryFallback
+  );
+  const normalizedAssessment = sanitizeTriageText(
+    input.modelOutput.assessmentBody,
+    input.disclaimer,
+    assessmentFallback
+  );
+
+  return {
+    severitySignal: normalizeTriageSeverity(input.modelOutput.severitySignal, flags),
+    primarySupportNeed:
+      sanitizeTriageText(input.modelOutput.primarySupportNeed, input.disclaimer, 'Support options'),
+    specialtyTag:
+      sanitizeTriageText(input.modelOutput.specialtyTag, input.disclaimer, 'general support')
+        .toLowerCase()
+        .slice(0, 80),
+    summary: normalizedSummary,
+    assessmentBody: normalizedAssessment,
+    riskFactors: normalizeStringList(input.modelOutput.riskFactors),
+    suggestedSupportCategories: normalizeStringList(input.modelOutput.suggestedSupportCategories, [
+      'support'
+    ]),
+    recommendedActions: normalizeStringList(input.modelOutput.recommendedActions, [
+      'Document what happened if safe to do so',
+      'Consider contacting an official support service'
+    ]),
+    resourceRecommendations: normalizeResourceRecommendations(input.modelOutput.resourceRecommendations),
+    nonLegalSafetyNotes: normalizeStringList(input.modelOutput.nonLegalSafetyNotes, [
+      input.disclaimer
+    ]),
+    immediateSafetyFlag: flags.crisisRisk || Boolean(input.modelOutput.immediateSafetyFlag),
+    confidence: normalizeTriageConfidence(input.modelOutput.confidence, flags, input.citations),
+    citations: input.citations,
+    fallbackReason,
+    pendingHumanReview,
+    safetyFlags: flags,
+    disclaimer: input.disclaimer,
+    humanReviewNote: input.humanReviewText,
+    reviewStatus: 'pending_human_review'
+  };
+};
+
 export const extractIncidentFields = async (
   context: AiServiceContext,
   input: ExtractIncidentFieldsInput
@@ -327,15 +553,18 @@ export const triageReport = async (
 ): Promise<Record<string, unknown>> => {
   await assertAiConsent(context.owner);
   const { report, citations } = await buildReportContext(context.owner, input.reportId);
+  const platformSettings = await getPublicPlatformSettings({});
+  const aiSettings = platformSettings.settings.ai;
   const language = input.language ?? report?.language ?? DEFAULT_AI_LANGUAGE;
   const narrative =
     input.narrative ?? report?.originalNarrative ?? report?.translatedNarrative ?? '';
   const output = await callOpenAIJson<Record<string, unknown>>(
-    systemPrompt(language),
+    `${systemPrompt(language)} ${aiSettings.triageSystemPrompt}`,
     [
       'Triage this report for information-only support.',
       'Return valid JSON only.',
-      'Use keys: severitySignal, primarySupportNeed, specialtyTag, summary, assessmentBody, riskFactors, suggestedSupportCategories, recommendedActions, resourceRecommendations, nonLegalSafetyNotes, immediateSafetyFlag, citations, reviewStatus.',
+      aiSettings.triageResponseTemplate,
+      'Use keys: severitySignal, primarySupportNeed, specialtyTag, summary, assessmentBody, riskFactors, suggestedSupportCategories, recommendedActions, resourceRecommendations, nonLegalSafetyNotes, immediateSafetyFlag, confidence, citations, fallbackReason, pendingHumanReview, safetyFlags, disclaimer, reviewStatus.',
       'severitySignal should be one of: low, medium, high, urgent.',
       'primarySupportNeed should be a concise human-readable label such as Mental Health Support or Immediate Safety Support.',
       'specialtyTag should be a short lowercase tag, 1 to 3 words.',
@@ -350,16 +579,35 @@ export const triageReport = async (
       `Structured fields: ${JSON.stringify(input.structuredFields ?? report?.structuredFields ?? {})}`
     ].join(' ')
   );
+  const normalizedOutput = normalizeTriageOutput({
+    modelOutput: output,
+    narrative,
+    structuredFields: input.structuredFields ?? report?.structuredFields,
+    citations,
+    disclaimer: aiSettings.disclaimerText || buildInformationOnlyDisclaimer(),
+    humanReviewText: aiSettings.humanReviewText,
+    fallbackText: aiSettings.triageFallbackText
+  });
 
-  return recordAiInteraction(
+  const interaction = await recordAiInteraction(
     context,
     AI_ACTIONS.triageReport,
     input,
-    output,
+    normalizedOutput,
     language,
     citations,
     input.reportId
   );
+
+  return {
+    ...normalizedOutput,
+    citations,
+    guardrails: interaction.guardrails,
+    reviewStatus: interaction.reviewStatus,
+    interactionId: interaction.interactionId,
+    templateVersion: platformSettings.version,
+    templateStatus: aiSettings.triageTemplateStatus
+  };
 };
 
 export const generateClarifyingQuestions = async (

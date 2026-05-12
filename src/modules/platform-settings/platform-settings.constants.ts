@@ -30,6 +30,13 @@ export const DEFAULT_PLATFORM_SETTINGS = {
   ai: {
     disclaimerText:
       'This output is information-only and must not be treated as legal, medical, counselling, crisis, or case-management advice.',
-    humanReviewText: 'AI-generated content may require human review before use in formal reports.'
+    humanReviewText: 'AI-generated content may require human review before use in formal reports.',
+    triageSystemPrompt:
+      'Triage reports into information-only support guidance. Do not give legal, clinical, crisis-service, counselling, or case-management advice. Use general options language and flag uncertain or high-risk content for human review.',
+    triageResponseTemplate:
+      'Return severitySignal, primarySupportNeed, specialtyTag, summary, assessmentBody, riskFactors, suggestedSupportCategories, recommendedActions, resourceRecommendations, nonLegalSafetyNotes, immediateSafetyFlag, confidence, citations, fallbackReason, pendingHumanReview, safetyFlags, disclaimer, and reviewStatus.',
+    triageFallbackText:
+      'SafeSpeak cannot confidently triage this with the available information. General options may include documenting what happened, considering support services, and seeking official information if safe.',
+    triageTemplateStatus: 'approved'
   }
 } as const;

@@ -16,6 +16,7 @@ import {
   listKnowledgeSourcesController,
   rejectKnowledgeSourceController,
   reindexKnowledgeSourceController,
+  refreshKnowledgeSourceController,
   searchRagController,
   timelineAssistantController,
   updateKnowledgeSourceController
@@ -28,6 +29,7 @@ import {
   ragSearchSchema,
   ragTimelineAssistantSchema,
   rejectKnowledgeSourceSchema,
+  refreshKnowledgeSourceSchema,
   updateKnowledgeSourceSchema
 } from './rag.schema';
 
@@ -72,6 +74,11 @@ ragRoutes.post(
   '/knowledge-sources/:id/ingest',
   validate({ params: ragParamsSchema, body: ingestKnowledgeSourceSchema }),
   ingestKnowledgeSourceController
+);
+ragRoutes.post(
+  '/knowledge-sources/:id/refresh',
+  validate({ params: ragParamsSchema, body: refreshKnowledgeSourceSchema }),
+  refreshKnowledgeSourceController
 );
 ragRoutes.post(
   '/knowledge-sources/:id/approve',

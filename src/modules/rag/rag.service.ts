@@ -8,6 +8,7 @@ import { ApiError } from '@common/errors/ApiError';
 import { env } from '@config/env';
 import {
   buildInformationOnlyDisclaimer,
+  detectClinicalAdviceRisk,
   detectCrisisRisk,
   detectLegalAdviceRisk,
   detectPoliceReportingRequest,
@@ -44,10 +45,18 @@ import type {
   RagAnswerInput,
   RagSearchInput,
   RagTimelineAssistantInput,
+  RefreshKnowledgeSourceInput,
   RejectKnowledgeSourceInput,
   UpdateKnowledgeSourceInput
 } from './rag.schema';
-import type { RagOwner, RagSearchResult, RagServiceContext, RagSourceCategory } from './rag.types';
+import type {
+  RagJurisdiction,
+  RagLegalAwareness,
+  RagOwner,
+  RagSearchResult,
+  RagServiceContext,
+  RagSourceCategory
+} from './rag.types';
 
 const ownerFilter = (owner: RagOwner): RagOwner => {
   if (!owner.userId && !owner.sessionId) {
@@ -58,8 +67,32 @@ const ownerFilter = (owner: RagOwner): RagOwner => {
 };
 
 const hashText = (text: string): string => createHash('sha256').update(text).digest('hex');
+const hashBytes = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 const GOVERNED_SOURCE_CATEGORIES = new Set<string>(RAG_GOVERNED_SOURCE_CATEGORIES);
 const OFFICIAL_SOURCE_HOSTS = new Set<string>(RAG_OFFICIAL_SOURCE_HOSTS);
+const OFFICIAL_REFRESH_TIMEOUT_MS = 15000;
+const OFFICIAL_REFRESH_MAX_BYTES = 750000;
+const OFFICIAL_REFRESH_DEFAULT_DAYS = 90;
+const OFFICIAL_REFRESH_MIN_TEXT_LENGTH = 200;
+const MATERIAL_REVIEW_FIELDS = new Set<keyof UpdateKnowledgeSourceInput>([
+  'title',
+  'description',
+  'sourceCategory',
+  'jurisdiction',
+  'topic',
+  'sourceType',
+  'language',
+  'url',
+  'localFilePath',
+  'publisher',
+  'licenseStatus',
+  'lastUpdated',
+  'lastVerifiedAt',
+  'nextReviewAt',
+  'nextRefreshAt',
+  'legalReviewed',
+  'status'
+]);
 
 const assertAiConsent = async (owner: RagOwner): Promise<void> => {
   const consent = await getCurrentConsent(owner);
@@ -112,6 +145,10 @@ const assertKnowledgeSourceGovernance = (input: {
   sourceCategory?: string;
   url?: string;
   sourceType?: string;
+  publisher?: string;
+  licenseStatus?: string;
+  lastUpdated?: Date;
+  nextRefreshAt?: Date;
 }): void => {
   if (!isGovernedKnowledgeSource(input.sourceCategory)) {
     return;
@@ -130,6 +167,34 @@ const assertKnowledgeSourceGovernance = (input: {
       'Official legal/support knowledge sources must be statutes, regulations, guidance, forms, decisions, reports, FAQs, support resources, or webpages'
     );
   }
+
+  if (!input.publisher?.trim()) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official legal/support knowledge sources require a publisher'
+    );
+  }
+
+  if (!input.licenseStatus?.trim()) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official legal/support knowledge sources require a license status'
+    );
+  }
+
+  if (!input.lastUpdated) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official legal/support knowledge sources require lastUpdated metadata'
+    );
+  }
+
+  if (!input.nextRefreshAt) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official legal/support knowledge sources require a nextRefreshAt refresh date'
+    );
+  }
 };
 
 const assertMergedKnowledgeSourceGovernance = (
@@ -139,8 +204,56 @@ const assertMergedKnowledgeSourceGovernance = (
   assertKnowledgeSourceGovernance({
     sourceCategory: input.sourceCategory ?? source.sourceCategory,
     sourceType: input.sourceType ?? source.sourceType,
-    url: input.url ?? source.url
+    url: input.url ?? source.url,
+    publisher: input.publisher ?? source.publisher,
+    licenseStatus: input.licenseStatus ?? source.licenseStatus,
+    lastUpdated: input.lastUpdated ?? source.lastUpdated,
+    nextRefreshAt: input.nextRefreshAt ?? source.nextRefreshAt
   });
+};
+
+const hasMaterialReviewChange = (input: UpdateKnowledgeSourceInput): boolean =>
+  Object.keys(input).some((key) =>
+    MATERIAL_REVIEW_FIELDS.has(key as keyof UpdateKnowledgeSourceInput)
+  );
+
+const clearApprovalState = (source: HydratedRagKnowledgeSourceDocument): void => {
+  source.status = 'pending_review';
+  source.approvedBy = undefined;
+  source.approvedAt = undefined;
+};
+
+const clearLegalReviewState = (source: HydratedRagKnowledgeSourceDocument): void => {
+  source.legalReviewed = false;
+  source.legalReviewedBy = undefined;
+  source.legalReviewedAt = undefined;
+};
+
+const isDateExpired = (value?: Date): boolean => Boolean(value && value.getTime() <= Date.now());
+
+const addDays = (date: Date, days: number): Date => {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+
+  return next;
+};
+
+const isNswSpecificJurisdiction = (jurisdiction: RagJurisdiction): boolean =>
+  !['Cth', 'AU', 'Global', 'Internal'].includes(jurisdiction);
+
+const buildJurisdictionFilter = (
+  jurisdiction: RagJurisdiction | undefined,
+  category: RagSourceCategory
+): FilterQuery<RagKnowledgeSourceDocument> => {
+  if (!jurisdiction) {
+    return {};
+  }
+
+  if (isGovernedKnowledgeSource(category) && isNswSpecificJurisdiction(jurisdiction)) {
+    return { jurisdiction: { $in: [jurisdiction, 'Cth', 'AU'] } };
+  }
+
+  return { jurisdiction };
 };
 
 type HydratedRagKnowledgeSourceDocument = HydratedDocument<RagKnowledgeSourceDocument>;
@@ -171,7 +284,9 @@ const chunkText = (text: string): string[] => {
   return chunks;
 };
 
-const readIngestionText = async (input: IngestKnowledgeSourceInput): Promise<string> => {
+type KnowledgeSourceTextInput = Pick<IngestKnowledgeSourceInput, 'content' | 'localFilePath'>;
+
+const readIngestionText = async (input: KnowledgeSourceTextInput): Promise<string> => {
   if (input.content) {
     return input.content;
   }
@@ -234,6 +349,274 @@ const extractLegalMetadataFromText = (
   };
 };
 
+type OfficialFetchResult =
+  | {
+      kind: 'metadata_only';
+      message: string;
+      contentType?: string;
+      contentLength?: number;
+      lastModified?: Date;
+      sha256Hash?: string;
+    }
+  | {
+      kind: 'text';
+      text: string;
+      contentType?: string;
+      contentLength?: number;
+      lastModified?: Date;
+      sha256Hash: string;
+    };
+
+const isDocumentSource = (url: URL, contentType: string): boolean =>
+  /\.(pdf|doc|docx|rtf)$/i.test(url.pathname) ||
+  /pdf|msword|officedocument|rtf|octet-stream/i.test(contentType);
+
+const parseHeaderDate = (value: string | null): Date | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = new Date(value);
+
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+};
+
+const parseContentLength = (value: string | null): number | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const htmlToText = (html: string): string =>
+  html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<\/(p|div|li|section|article|h1|h2|h3|h4|h5|h6|tr)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\r/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+
+const normalizeFetchedText = (body: string, contentType: string): string => {
+  if (/html|xml/i.test(contentType) || /<html|<body|<article/i.test(body)) {
+    return htmlToText(body);
+  }
+
+  return body.replace(/\s+/g, ' ').trim();
+};
+
+const fetchOfficialSourceText = async (rawUrl: string): Promise<OfficialFetchResult> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OFFICIAL_REFRESH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(rawUrl, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,text/plain,application/pdf,*/*;q=0.8',
+        'User-Agent': 'SafeSpeak-RAG-Refresh/1.0'
+      },
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`Fetch failed with status ${response.status}`);
+    }
+
+    const url = new URL(rawUrl);
+    const contentType = response.headers.get('content-type') ?? '';
+    const contentLength = parseContentLength(response.headers.get('content-length'));
+    const lastModified = parseHeaderDate(response.headers.get('last-modified'));
+
+    if (isDocumentSource(url, contentType)) {
+      const bytes = Buffer.from(await response.arrayBuffer());
+
+      return {
+        kind: 'metadata_only',
+        contentType,
+        contentLength: contentLength ?? bytes.length,
+        lastModified,
+        sha256Hash: hashBytes(bytes),
+        message:
+          'Binary or document-style official source was stored as metadata only. Extract text manually before chunking it for RAG.'
+      };
+    }
+
+    const body = await response.text();
+
+    if (body.length > OFFICIAL_REFRESH_MAX_BYTES) {
+      return {
+        kind: 'metadata_only',
+        contentType,
+        contentLength: contentLength ?? body.length,
+        lastModified,
+        sha256Hash: hashText(body),
+        message: `Fetched official source exceeded ${OFFICIAL_REFRESH_MAX_BYTES} characters and was stored as metadata only.`
+      };
+    }
+
+    const text = normalizeFetchedText(body, contentType);
+
+    if (text.length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH) {
+      return {
+        kind: 'metadata_only',
+        contentType,
+        contentLength: contentLength ?? body.length,
+        lastModified,
+        sha256Hash: hashText(body),
+        message: 'Readable official-source text could not be extracted safely.'
+      };
+    }
+
+    return {
+      kind: 'text',
+      text,
+      contentType,
+      contentLength: contentLength ?? body.length,
+      lastModified,
+      sha256Hash: hashText(text)
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+type EmbedKnowledgeSourceTextOptions = {
+  expectedSha256?: string;
+  metadata?: Record<string, unknown>;
+  verificationDate?: Date;
+  nextRefreshAt?: Date;
+  lastUpdated?: Date;
+  contentType?: string;
+  contentLength?: number;
+  refreshMode?: string;
+  preserveApprovalOnUnchanged?: boolean;
+};
+
+const embedKnowledgeSourceText = async (
+  source: HydratedRagKnowledgeSourceDocument,
+  text: string,
+  options: EmbedKnowledgeSourceTextOptions
+): Promise<{
+  chunkCount: number;
+  sha256Hash: string;
+  extractedLegalMetadata: Record<string, unknown>;
+  hashChanged: boolean;
+}> => {
+  const sha256Hash = hashText(text);
+
+  if (options.expectedSha256 && options.expectedSha256.toLowerCase() !== sha256Hash) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Knowledge source SHA-256 verification failed');
+  }
+
+  const previousHash = source.sha256Hash;
+  const hashChanged = previousHash !== sha256Hash;
+  const chunks = chunkText(text);
+
+  await RagChunkModel.deleteMany({ sourceId: source._id });
+  source.ingestionStatus = 'chunked';
+  await source.save();
+
+  const extractedLegalMetadata = extractLegalMetadataFromText(text, source);
+  const embeddedChunks = await Promise.all(
+    chunks.map(async (chunk, index) => ({
+      sourceId: source._id,
+      sourceCategory: source.sourceCategory,
+      jurisdiction: source.jurisdiction,
+      topic: source.topic,
+      sectionRef: undefined,
+      chunkIndex: index,
+      chunkText: chunk,
+      embedding: await createEmbedding(chunk),
+      tokenCount: Math.ceil(chunk.length / 4),
+      citationLabel: `${source.title} [chunk ${index + 1}]`,
+      citationUrl: source.url,
+      metadata: {
+        ...options.metadata,
+        ...extractedLegalMetadata,
+        sourceTitle: source.title,
+        sourceType: source.sourceType,
+        sourceCategory: source.sourceCategory,
+        language: source.language,
+        jurisdiction: source.jurisdiction
+      }
+    }))
+  );
+
+  if (embeddedChunks.length > 0) {
+    await RagChunkModel.insertMany(embeddedChunks);
+  }
+
+  source.sha256Hash = sha256Hash;
+  source.rawText = text;
+
+  const verificationDate = options.verificationDate ?? new Date();
+  const nextRefreshAt =
+    options.nextRefreshAt ??
+    (isGovernedKnowledgeSource(source.sourceCategory)
+      ? addDays(verificationDate, OFFICIAL_REFRESH_DEFAULT_DAYS)
+      : source.nextRefreshAt);
+
+  if (source.sourceCategory !== 'internal_product_rule') {
+    const canKeepApproval =
+      Boolean(options.preserveApprovalOnUnchanged) &&
+      source.status === 'approved' &&
+      !hashChanged &&
+      !isDateExpired(nextRefreshAt);
+
+    if (!canKeepApproval) {
+      clearApprovalState(source);
+
+      if (source.sourceCategory === 'official_legal_source' && hashChanged) {
+        clearLegalReviewState(source);
+      }
+    }
+  }
+
+  source.ingestedAt = verificationDate;
+  source.fetchedAt = verificationDate;
+  source.lastVerifiedAt = verificationDate;
+  source.lastUpdated = options.lastUpdated ?? source.lastUpdated;
+  source.nextRefreshAt = nextRefreshAt;
+  source.ingestionStatus = 'embedded';
+  source.ingestionError = undefined;
+  source.version = (source.version ?? 1) + (hashChanged ? 1 : 0);
+  source.metadata = {
+    ...source.metadata,
+    ...options.metadata,
+    ...extractedLegalMetadata,
+    chunkCount: embeddedChunks.length,
+    sha256Verified: true,
+    contentHashChanged: hashChanged,
+    refreshMode: options.refreshMode,
+    contentType: options.contentType,
+    contentLength: options.contentLength,
+    lastVerifiedAt: verificationDate.toISOString()
+  };
+  await source.save();
+
+  return {
+    chunkCount: embeddedChunks.length,
+    sha256Hash,
+    extractedLegalMetadata,
+    hashChanged
+  };
+};
+
 export const listKnowledgeSources = async (): Promise<unknown[]> =>
   RagKnowledgeSourceModel.find({ deletedAt: { $exists: false } })
     .sort({ createdAt: -1 })
@@ -256,7 +639,10 @@ export const createKnowledgeSource = async (
 
   const source = await RagKnowledgeSourceModel.create({
     ...input,
-    createdBy: context.owner.userId
+    createdBy: context.owner.userId,
+    legalReviewedBy: input.legalReviewed ? context.owner.userId : undefined,
+    legalReviewedAt: input.legalReviewed ? new Date() : undefined,
+    lastVerifiedAt: input.lastVerifiedAt ?? new Date()
   });
 
   await auditRagAction(context, RAG_ACTIONS.sourceCreate, source._id.toString(), {
@@ -284,11 +670,31 @@ export const updateKnowledgeSource = async (
   const source = await getSource(sourceId);
   assertMergedKnowledgeSourceGovernance(source, input);
 
+  const shouldReturnToReview =
+    source.status === 'approved' && hasMaterialReviewChange(input) && input.status === undefined;
+  const legalReviewedChanged =
+    input.legalReviewed !== undefined && input.legalReviewed !== source.legalReviewed;
+
   source.set(input);
+
+  if (legalReviewedChanged) {
+    source.legalReviewedBy = input.legalReviewed ? (context.owner.userId as never) : undefined;
+    source.legalReviewedAt = input.legalReviewed ? new Date() : undefined;
+  }
+
+  if (hasMaterialReviewChange(input)) {
+    source.lastVerifiedAt = input.lastVerifiedAt ?? new Date();
+  }
+
+  if (shouldReturnToReview) {
+    clearApprovalState(source);
+  }
+
   await source.save();
 
   await auditRagAction(context, RAG_ACTIONS.sourceUpdate, source._id.toString(), {
-    changedFields: Object.keys(input)
+    changedFields: Object.keys(input),
+    returnedToReview: shouldReturnToReview
   });
 
   return source;
@@ -323,80 +729,192 @@ export const ingestKnowledgeSource = async (
 
   try {
     const text = await readIngestionText(input);
-    const sha256Hash = hashText(text);
-
-    if (input.expectedSha256 && input.expectedSha256.toLowerCase() !== sha256Hash) {
-      throw new ApiError(StatusCodes.BAD_REQUEST, 'Knowledge source SHA-256 verification failed');
-    }
-
-    const chunks = chunkText(text);
-    await RagChunkModel.deleteMany({ sourceId: source._id });
-    source.ingestionStatus = 'chunked';
-    await source.save();
-
-    const extractedLegalMetadata = extractLegalMetadataFromText(text, source);
-    const embeddedChunks = await Promise.all(
-      chunks.map(async (chunk, index) => ({
-        sourceId: source._id,
-        sourceCategory: source.sourceCategory,
-        jurisdiction: source.jurisdiction,
-        topic: source.topic,
-        sectionRef: undefined,
-        chunkIndex: index,
-        chunkText: chunk,
-        embedding: await createEmbedding(chunk),
-        tokenCount: Math.ceil(chunk.length / 4),
-        citationLabel: `${source.title} [chunk ${index + 1}]`,
-        citationUrl: source.url,
-        metadata: {
-          ...input.metadata,
-          ...extractedLegalMetadata,
-          sourceTitle: source.title,
-          sourceType: source.sourceType,
-          sourceCategory: source.sourceCategory,
-          language: source.language,
-          jurisdiction: source.jurisdiction
-        }
-      }))
-    );
-
-    if (embeddedChunks.length > 0) {
-      await RagChunkModel.insertMany(embeddedChunks);
-    }
-
-    source.sha256Hash = sha256Hash;
-    source.rawText = text;
-    source.status =
-      source.sourceCategory === 'internal_product_rule' ? source.status : 'pending_review';
-    source.ingestedAt = new Date();
-    source.ingestionStatus = 'embedded';
-    source.version = (source.version ?? 1) + 1;
-    source.metadata = {
-      ...source.metadata,
-      ...input.metadata,
-      ...extractedLegalMetadata,
-      chunkCount: embeddedChunks.length,
-      sha256Verified: true
-    };
-    await source.save();
+    const result = await embedKnowledgeSourceText(source, text, {
+      expectedSha256: input.expectedSha256,
+      metadata: input.metadata,
+      refreshMode: 'admin_ingest'
+    });
 
     await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
-      chunkCount: embeddedChunks.length,
-      sha256Hash,
+      chunkCount: result.chunkCount,
+      sha256Hash: result.sha256Hash,
       requiresHumanReview: source.status !== 'approved'
     });
 
     return {
       source,
-      chunkCount: embeddedChunks.length,
-      sha256Hash,
-      extractedLegalMetadata,
+      chunkCount: result.chunkCount,
+      sha256Hash: result.sha256Hash,
+      extractedLegalMetadata: result.extractedLegalMetadata,
       reviewStatus: 'pending_human_review'
     };
   } catch (error) {
     source.ingestionStatus = 'failed';
     source.ingestionError =
       error instanceof Error ? error.message : 'Knowledge source ingestion failed';
+    await source.save();
+    throw error;
+  }
+};
+
+export const refreshKnowledgeSource = async (
+  context: RagServiceContext,
+  sourceId: string,
+  input: RefreshKnowledgeSourceInput
+): Promise<unknown> => {
+  ownerFilter(context.owner);
+  const source = await getSource(sourceId);
+  assertMergedKnowledgeSourceGovernance(source, {});
+
+  if (!source.url && !input.content && !input.localFilePath) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official source refresh requires a URL or extracted text content'
+    );
+  }
+
+  if (
+    isGovernedKnowledgeSource(source.sourceCategory) &&
+    source.url &&
+    !isOfficialSourceUrl(source.url)
+  ) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official source refresh requires an approved government, agency, or AustLII URL'
+    );
+  }
+
+  const verificationDate = new Date();
+  source.ingestionStatus = 'fetched';
+  source.ingestionError = undefined;
+  source.fetchedAt = verificationDate;
+  await source.save();
+
+  try {
+    if (input.content || input.localFilePath) {
+      const text = await readIngestionText(input);
+      const result = await embedKnowledgeSourceText(source, text, {
+        expectedSha256: input.expectedSha256,
+        metadata: input.metadata,
+        verificationDate,
+        nextRefreshAt: input.nextRefreshAt,
+        refreshMode: 'admin_extracted_text',
+        preserveApprovalOnUnchanged: true
+      });
+
+      await auditRagAction(context, RAG_ACTIONS.sourceRefresh, source._id.toString(), {
+        mode: 'admin_extracted_text',
+        chunkCount: result.chunkCount,
+        sha256Hash: result.sha256Hash,
+        hashChanged: result.hashChanged,
+        requiresHumanReview: source.status !== 'approved'
+      });
+
+      return {
+        source,
+        chunkCount: result.chunkCount,
+        sha256Hash: result.sha256Hash,
+        extractedLegalMetadata: result.extractedLegalMetadata,
+        metadataOnly: false,
+        ingestionStatus: source.ingestionStatus,
+        reviewStatus: source.status === 'approved' ? 'approved_current' : 'pending_human_review'
+      };
+    }
+
+    const fetched = await fetchOfficialSourceText(source.url as string);
+
+    if (fetched.kind === 'metadata_only') {
+      const hashChanged = Boolean(fetched.sha256Hash && fetched.sha256Hash !== source.sha256Hash);
+
+      await RagChunkModel.deleteMany({ sourceId: source._id });
+      source.rawText = undefined;
+      source.ingestedAt = undefined;
+      source.fetchedAt = verificationDate;
+      source.lastVerifiedAt = verificationDate;
+      source.lastUpdated = fetched.lastModified ?? source.lastUpdated;
+      source.nextRefreshAt =
+        input.nextRefreshAt ?? addDays(verificationDate, OFFICIAL_REFRESH_DEFAULT_DAYS);
+      source.sha256Hash =
+        fetched.sha256Hash ?? hashText(`${source.url}:${verificationDate.toISOString()}`);
+      source.ingestionStatus = 'metadata_only';
+      source.ingestionError = undefined;
+      source.version = (source.version ?? 1) + (hashChanged ? 1 : 0);
+
+      if (isGovernedKnowledgeSource(source.sourceCategory)) {
+        clearApprovalState(source);
+
+        if (source.sourceCategory === 'official_legal_source') {
+          clearLegalReviewState(source);
+        }
+      }
+
+      source.metadata = {
+        ...source.metadata,
+        ...input.metadata,
+        chunkCount: 0,
+        sha256Verified: Boolean(fetched.sha256Hash),
+        contentHashChanged: hashChanged,
+        refreshMode: 'metadata_only',
+        refreshMessage: fetched.message,
+        contentType: fetched.contentType,
+        contentLength: fetched.contentLength,
+        lastVerifiedAt: verificationDate.toISOString()
+      };
+      await source.save();
+
+      await auditRagAction(context, RAG_ACTIONS.sourceRefresh, source._id.toString(), {
+        mode: 'metadata_only',
+        message: fetched.message,
+        sha256Hash: source.sha256Hash,
+        hashChanged,
+        requiresHumanReview: true
+      });
+
+      return {
+        source,
+        chunkCount: 0,
+        sha256Hash: source.sha256Hash,
+        metadataOnly: true,
+        ingestionStatus: source.ingestionStatus,
+        message: fetched.message,
+        reviewStatus: 'metadata_only_needs_extracted_text'
+      };
+    }
+
+    const result = await embedKnowledgeSourceText(source, fetched.text, {
+      expectedSha256: input.expectedSha256,
+      metadata: input.metadata,
+      verificationDate,
+      nextRefreshAt: input.nextRefreshAt,
+      lastUpdated: fetched.lastModified,
+      contentType: fetched.contentType,
+      contentLength: fetched.contentLength,
+      refreshMode: 'official_url_fetch',
+      preserveApprovalOnUnchanged: true
+    });
+
+    await auditRagAction(context, RAG_ACTIONS.sourceRefresh, source._id.toString(), {
+      mode: 'official_url_fetch',
+      chunkCount: result.chunkCount,
+      sha256Hash: result.sha256Hash,
+      hashChanged: result.hashChanged,
+      requiresHumanReview: source.status !== 'approved'
+    });
+
+    return {
+      source,
+      chunkCount: result.chunkCount,
+      sha256Hash: result.sha256Hash,
+      extractedLegalMetadata: result.extractedLegalMetadata,
+      metadataOnly: false,
+      ingestionStatus: source.ingestionStatus,
+      reviewStatus: source.status === 'approved' ? 'approved_current' : 'pending_human_review'
+    };
+  } catch (error) {
+    source.ingestionStatus = 'failed';
+    source.ingestionError =
+      error instanceof Error ? error.message : 'Knowledge source refresh failed';
+    source.lastVerifiedAt = verificationDate;
     await source.save();
     throw error;
   }
@@ -417,10 +935,17 @@ export const approveKnowledgeSource = async (
     );
   }
 
-  if (source.nextReviewAt && source.nextReviewAt.getTime() <= Date.now()) {
+  if (isDateExpired(source.nextReviewAt)) {
     throw new ApiError(
       StatusCodes.CONFLICT,
       'Knowledge source review date has expired; refresh before approval'
+    );
+  }
+
+  if (isGovernedKnowledgeSource(source.sourceCategory) && isDateExpired(source.nextRefreshAt)) {
+    throw new ApiError(
+      StatusCodes.CONFLICT,
+      'Knowledge source refresh date has expired; refresh before approval'
     );
   }
 
@@ -434,6 +959,7 @@ export const approveKnowledgeSource = async (
   source.status = 'approved';
   source.approvedBy = context.owner.userId as never;
   source.approvedAt = new Date();
+  source.lastVerifiedAt = new Date();
   await source.save();
 
   await auditRagAction(context, RAG_ACTIONS.sourceApprove, source._id.toString());
@@ -500,18 +1026,97 @@ const classifySourceCategory = (input: RagAnswerInput | RagSearchInput): RagSour
   return 'internal_product_rule';
 };
 
+const shouldAttachNswLegalAwareness = (input: {
+  text: string;
+  jurisdiction?: RagJurisdiction;
+  incidentCategory?: string;
+  category?: RagSourceCategory;
+}): boolean => {
+  if (input.jurisdiction && input.jurisdiction !== 'NSW') {
+    return false;
+  }
+
+  if (
+    input.incidentCategory === 'racial_abuse' ||
+    input.incidentCategory === 'migrant_challenges'
+  ) {
+    return true;
+  }
+
+  if (input.category === 'official_legal_source') {
+    return /nsw|new south wales|racial|racis[mt]|discriminat|vilification|migrant|workplace|school|housing/i.test(
+      input.text
+    );
+  }
+
+  return (
+    /nsw|new south wales/i.test(input.text) &&
+    /racial|racis[mt]|discriminat|migrant/i.test(input.text)
+  );
+};
+
+const buildNswLegalAwareness = (input: {
+  sourceStatus: RagLegalAwareness['sourceStatus'];
+  topic?: 'racial_abuse' | 'migrant_challenges';
+}): RagLegalAwareness => {
+  const topic = input.topic ?? 'racial_abuse';
+
+  return {
+    jurisdiction: 'NSW',
+    topic,
+    informationOnly: true,
+    sourceStatus: input.sourceStatus,
+    keyPoints: [
+      'Keep a dated record of what happened if it is safe to do so.',
+      'Racial discrimination, vilification, or victimisation concerns may have NSW and Commonwealth information pathways.',
+      'Online abuse may also involve platform reporting, eSafety information, or urgent safety support depending on the situation.'
+    ],
+    pathwayCards: [
+      {
+        title: 'NSW discrimination pathway',
+        body: 'For NSW incidents, SafeSpeak can point to Anti-Discrimination NSW complaint information after approved sources are available.',
+        sourceRequirement: 'Requires approved NSW source before detailed legal explanation.'
+      },
+      {
+        title: 'Commonwealth race discrimination pathway',
+        body: 'Some racial discrimination concerns may also involve Australian Human Rights Commission information.',
+        sourceRequirement: 'Cite only approved Commonwealth sources in generated answers.'
+      },
+      {
+        title: 'Online abuse pathway',
+        body: 'If the conduct happened online, eSafety information may be relevant alongside evidence collection and safety planning.',
+        sourceRequirement: 'Use approved eSafety support sources before public citation.'
+      }
+    ],
+    citationPolicy:
+      input.sourceStatus === 'approved_sources_used'
+        ? 'Only approved, current, legally reviewed sources are included as citations.'
+        : 'No citations are shown until approved, current, legally reviewed sources are available.'
+  };
+};
+
 const buildSourceFilter = (
   input: RagSearchInput,
   category: RagSourceCategory
-): FilterQuery<RagKnowledgeSourceDocument> => ({
-  status: 'approved',
-  deletedAt: { $exists: false },
-  sourceCategory: category,
-  ...(category === 'official_legal_source' ? { legalReviewed: true } : {}),
-  ...(input.language ? { language: input.language } : {}),
-  ...(input.jurisdiction ? { jurisdiction: input.jurisdiction } : {}),
-  ...(input.topic ? { topic: input.topic } : {})
-});
+): FilterQuery<RagKnowledgeSourceDocument> => {
+  const now = new Date();
+
+  return {
+    status: 'approved',
+    deletedAt: { $exists: false },
+    sourceCategory: category,
+    ...(category === 'official_legal_source' ? { legalReviewed: true } : {}),
+    ...(input.language ? { language: input.language } : {}),
+    ...buildJurisdictionFilter(input.jurisdiction, category),
+    ...(input.topic ? { topic: input.topic } : {}),
+    ...(isGovernedKnowledgeSource(category)
+      ? {
+          nextRefreshAt: { $gt: now },
+          $or: [{ nextReviewAt: { $exists: false } }, { nextReviewAt: { $gt: now } }]
+        }
+      : {})
+  };
+};
 
 const isVectorSearchUnavailable = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error);
@@ -522,8 +1127,14 @@ const isVectorSearchUnavailable = (error: unknown): boolean => {
 const buildFallbackAnswer = (
   question: string,
   category: RagSourceCategory,
-  flags: { crisisRisk: boolean; legalAdviceRisk: boolean; insufficientSources: boolean },
-  fallbackReason: 'insufficient_sources' | 'vector_unavailable'
+  flags: {
+    crisisRisk: boolean;
+    legalAdviceRisk: boolean;
+    clinicalAdviceRisk: boolean;
+    insufficientSources: boolean;
+  },
+  fallbackReason: 'insufficient_sources' | 'vector_unavailable',
+  legalAwareness?: RagLegalAwareness
 ): Record<string, unknown> => {
   const disclaimer = buildInformationOnlyDisclaimer();
   const reasonText =
@@ -548,7 +1159,8 @@ const buildFallbackAnswer = (
       sourceCategoriesUsed: [],
       confidence: 'low',
       pendingHumanReview: true,
-      safetyFlags: flags
+      safetyFlags: flags,
+      legalAwareness
     };
   }
 
@@ -564,7 +1176,8 @@ const buildFallbackAnswer = (
       sourceCategoriesUsed: [],
       confidence: 'low',
       pendingHumanReview: true,
-      safetyFlags: flags
+      safetyFlags: flags,
+      legalAwareness
     };
   }
 
@@ -579,7 +1192,8 @@ const buildFallbackAnswer = (
       sourceCategoriesUsed: [],
       confidence: 'low',
       pendingHumanReview: true,
-      safetyFlags: flags
+      safetyFlags: flags,
+      legalAwareness
     };
   }
 
@@ -596,7 +1210,8 @@ const buildFallbackAnswer = (
       sourceCategoriesUsed: [],
       confidence: 'low',
       pendingHumanReview: true,
-      safetyFlags: flags
+      safetyFlags: flags,
+      legalAwareness
     };
   }
 
@@ -611,7 +1226,8 @@ const buildFallbackAnswer = (
       sourceCategoriesUsed: [],
       confidence: 'low',
       pendingHumanReview: true,
-      safetyFlags: flags
+      safetyFlags: flags,
+      legalAwareness
     };
   }
 
@@ -622,7 +1238,8 @@ const buildFallbackAnswer = (
     sourceCategoriesUsed: [],
     confidence: 'low',
     pendingHumanReview: true,
-    safetyFlags: flags
+    safetyFlags: flags,
+    legalAwareness
   };
 };
 
@@ -631,7 +1248,6 @@ export const searchRag = async (
   input: RagSearchInput
 ): Promise<RagSearchResult[]> => {
   await assertAiConsent(context.owner);
-  const queryVector = await createEmbedding(input.query);
   const sourceCategory = classifySourceCategory(input);
   const sourceFilter = buildSourceFilter(input, sourceCategory);
   const sourceIds = await RagKnowledgeSourceModel.find(sourceFilter)
@@ -641,6 +1257,8 @@ export const searchRag = async (
   if (sourceIds.length === 0) {
     return [];
   }
+
+  const queryVector = await createEmbedding(input.query);
 
   const pipeline: PipelineStage[] = [
     {
@@ -731,6 +1349,11 @@ export const answerRag = async (
   const category = classifySourceCategory(input);
   let results: RagSearchResult[] = [];
   let fallbackReason: 'insufficient_sources' | 'vector_unavailable' = 'insufficient_sources';
+  const includeNswLegalAwareness = shouldAttachNswLegalAwareness({
+    text: input.question,
+    jurisdiction: input.jurisdiction,
+    category
+  });
 
   try {
     results = await searchRag(context, {
@@ -747,6 +1370,14 @@ export const answerRag = async (
   }
 
   const insufficientSources = results.length === 0;
+  const legalAwareness = includeNswLegalAwareness
+    ? buildNswLegalAwareness({
+        sourceStatus: insufficientSources
+          ? 'insufficient_approved_sources'
+          : 'approved_sources_used',
+        topic: /migrant/i.test(input.question) ? 'migrant_challenges' : 'racial_abuse'
+      })
+    : undefined;
   const citations: AiCitation[] = results.map((result) => ({
     sourceType: 'knowledge_source',
     sourceId: result.sourceId,
@@ -756,9 +1387,11 @@ export const answerRag = async (
 
   const safetySeedText = `${input.question}\n${results.map((r) => r.text).join('\n')}`;
   const legalAdviceRisk = detectLegalAdviceRisk(safetySeedText);
+  const clinicalAdviceRisk = detectClinicalAdviceRisk(safetySeedText);
   const crisisRisk = detectCrisisRisk(safetySeedText);
   const pendingHumanReview = shouldRequireHumanReview({
     legalAdviceRisk,
+    clinicalAdviceRisk,
     crisisRisk,
     insufficientSources
   });
@@ -767,8 +1400,9 @@ export const answerRag = async (
     return buildFallbackAnswer(
       input.question,
       category,
-      { crisisRisk, legalAdviceRisk, insufficientSources },
-      fallbackReason
+      { crisisRisk, legalAdviceRisk, clinicalAdviceRisk, insufficientSources },
+      fallbackReason,
+      legalAwareness
     );
   }
 
@@ -798,17 +1432,22 @@ export const answerRag = async (
     answer: answerText,
     disclaimer: buildInformationOnlyDisclaimer(),
     citations: results.map((result) => ({
+      sourceId: result.sourceId,
       title: result.title,
       publisher: result.publisher,
       url: result.citationUrl,
       jurisdiction: result.jurisdiction,
+      sourceCategory: result.sourceCategory,
+      sourceType: result.sourceType,
+      topic: result.topic,
       sectionRef: result.sectionRef,
       lastUpdated: result.lastUpdated
     })),
     sourceCategoriesUsed: Array.from(new Set(results.map((result) => result.sourceCategory))),
     confidence: results.length >= 4 ? 'high' : results.length >= 2 ? 'medium' : 'low',
     pendingHumanReview,
-    safetyFlags: { crisisRisk, legalAdviceRisk, insufficientSources }
+    safetyFlags: { crisisRisk, legalAdviceRisk, clinicalAdviceRisk, insufficientSources },
+    legalAwareness
   };
 };
 
@@ -1229,6 +1868,19 @@ export const runTimelineAssistant = async (
       : enforceAiOutputGuardrails(
           'Thank you. Can you share one more detail that feels safe to add?'
         );
+  const legalAwareness = shouldAttachNswLegalAwareness({
+    text: input.message,
+    jurisdiction: input.jurisdiction,
+    incidentCategory: input.incidentCategory,
+    category: classifySourceCategory({ query: input.message } as RagSearchInput)
+  })
+    ? buildNswLegalAwareness({
+        sourceStatus:
+          results.length > 0 ? 'approved_sources_used' : 'insufficient_approved_sources',
+        topic:
+          input.incidentCategory === 'migrant_challenges' ? 'migrant_challenges' : 'racial_abuse'
+      })
+    : undefined;
 
   await auditRagAction(context, RAG_ACTIONS.answer, undefined, {
     mode: 'timeline_assistant',
@@ -1249,13 +1901,18 @@ export const runTimelineAssistant = async (
           : 'low',
     disclaimer: buildInformationOnlyDisclaimer(),
     citations: results.map((result) => ({
+      sourceId: result.sourceId,
       title: result.title,
       publisher: result.publisher,
       url: result.citationUrl,
       jurisdiction: result.jurisdiction,
+      sourceCategory: result.sourceCategory,
+      sourceType: result.sourceType,
+      topic: result.topic,
       sectionRef: result.sectionRef,
       lastUpdated: result.lastUpdated
     })),
+    legalAwareness,
     rag: {
       used: results.length > 0,
       unavailable: ragUnavailable,

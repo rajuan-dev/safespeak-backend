@@ -38,16 +38,31 @@ const mergeSettings = (
   }
 });
 
+const withDefaultSettings = (settings?: Partial<PlatformSettingsPayload>): PlatformSettingsPayload => ({
+  safety: {
+    ...DEFAULT_PLATFORM_SETTINGS.safety,
+    ...settings?.safety
+  },
+  consent: {
+    ...DEFAULT_PLATFORM_SETTINGS.consent,
+    ...settings?.consent
+  },
+  ai: {
+    ...DEFAULT_PLATFORM_SETTINGS.ai,
+    ...settings?.ai
+  }
+});
+
 const serializePublicSettings = (settings: PlatformSettingsHydratedDocument) => ({
-  settings: settings.published,
+  settings: withDefaultSettings(settings.published),
   version: settings.version,
   publishedAt: settings.publishedAt,
   updatedAt: settings.updatedAt
 });
 
 const serializeAdminSettings = (settings: PlatformSettingsHydratedDocument) => ({
-  draft: settings.draft,
-  published: settings.published,
+  draft: withDefaultSettings(settings.draft),
+  published: withDefaultSettings(settings.published),
   version: settings.version,
   publishedAt: settings.publishedAt,
   createdAt: settings.createdAt,
@@ -80,6 +95,21 @@ const getOrCreatePlatformSettings = async (
   const existing = await PlatformSettingsModel.findOne({ key: PLATFORM_SETTINGS_KEY });
 
   if (existing) {
+    const draft = withDefaultSettings(existing.draft);
+    const published = withDefaultSettings(existing.published);
+
+    if (JSON.stringify(existing.draft) !== JSON.stringify(draft)) {
+      existing.draft = draft;
+    }
+
+    if (JSON.stringify(existing.published) !== JSON.stringify(published)) {
+      existing.published = published;
+    }
+
+    if (existing.isModified()) {
+      await existing.save();
+    }
+
     return existing;
   }
 

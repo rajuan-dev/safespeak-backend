@@ -40,7 +40,16 @@ const platformSettingsPayloadSchema = new Schema<PlatformSettingsPayload>(
     },
     ai: {
       disclaimerText: { type: String, required: true, trim: true },
-      humanReviewText: { type: String, required: true, trim: true }
+      humanReviewText: { type: String, required: true, trim: true },
+      triageSystemPrompt: { type: String, required: true, trim: true },
+      triageResponseTemplate: { type: String, required: true, trim: true },
+      triageFallbackText: { type: String, required: true, trim: true },
+      triageTemplateStatus: {
+        type: String,
+        enum: ['draft', 'approved'],
+        required: true,
+        default: 'draft'
+      }
     }
   },
   { _id: false }

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   RAG_JURISDICTIONS,
   RAG_SOURCE_CATEGORIES,
+  RAG_SOURCE_STATUSES,
   RAG_SOURCE_TYPES,
   RAG_TOPICS
 } from './rag.constants';
@@ -59,9 +60,12 @@ export const createKnowledgeSourceSchema = z.object({
   publisher: z.string().trim().min(1).max(200),
   licenseStatus: z.string().trim().min(1).max(200),
   lastUpdated: z.coerce.date().optional(),
+  lastVerifiedAt: z.coerce.date().optional(),
   nextReviewAt: z.coerce.date().optional(),
+  nextRefreshAt: z.coerce.date().optional(),
   legalReviewed: z.boolean().default(false),
-  status: z.enum(['draft', 'pending_review', 'approved', 'rejected', 'expired']).default('draft'),
+  reviewNotes: z.string().trim().max(2000).optional(),
+  status: z.enum(RAG_SOURCE_STATUSES).default('draft'),
   version: z.number().int().min(1).default(1),
   metadata: z.record(z.unknown()).default({})
 });
@@ -72,12 +76,26 @@ export const ingestKnowledgeSourceSchema = z
   .object({
     content: z.string().trim().min(1).max(200000).optional(),
     localFilePath: z.string().trim().min(1).max(1000).optional(),
-    expectedSha256: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),
+    expectedSha256: z
+      .string()
+      .regex(/^[0-9a-fA-F]{64}$/)
+      .optional(),
     metadata: z.record(z.unknown()).default({})
   })
   .refine((value) => Boolean(value.content || value.localFilePath), {
     message: 'content or localFilePath is required'
   });
+
+export const refreshKnowledgeSourceSchema = z.object({
+  content: z.string().trim().min(1).max(200000).optional(),
+  localFilePath: z.string().trim().min(1).max(1000).optional(),
+  expectedSha256: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .optional(),
+  nextRefreshAt: z.coerce.date().optional(),
+  metadata: z.record(z.unknown()).default({})
+});
 
 export const rejectKnowledgeSourceSchema = z.object({
   reason: z.string().trim().min(1).max(1000)
@@ -89,4 +107,5 @@ export type RagTimelineAssistantInput = z.infer<typeof ragTimelineAssistantSchem
 export type CreateKnowledgeSourceInput = z.infer<typeof createKnowledgeSourceSchema>;
 export type UpdateKnowledgeSourceInput = z.infer<typeof updateKnowledgeSourceSchema>;
 export type IngestKnowledgeSourceInput = z.infer<typeof ingestKnowledgeSourceSchema>;
+export type RefreshKnowledgeSourceInput = z.infer<typeof refreshKnowledgeSourceSchema>;
 export type RejectKnowledgeSourceInput = z.infer<typeof rejectKnowledgeSourceSchema>;

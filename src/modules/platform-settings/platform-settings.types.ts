@@ -21,6 +21,10 @@ export type PlatformSettingsPayload = {
   ai: {
     disclaimerText: string;
     humanReviewText: string;
+    triageSystemPrompt: string;
+    triageResponseTemplate: string;
+    triageFallbackText: string;
+    triageTemplateStatus: 'draft' | 'approved';
   };
 };
 

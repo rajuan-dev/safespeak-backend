@@ -36,6 +36,22 @@ export interface RagSearchResult {
   metadata: Record<string, unknown>;
 }
 
+export interface RagLegalAwarenessCard {
+  title: string;
+  body: string;
+  sourceRequirement: string;
+}
+
+export interface RagLegalAwareness {
+  jurisdiction: 'NSW';
+  topic: 'racial_abuse' | 'migrant_challenges';
+  informationOnly: true;
+  sourceStatus: 'approved_sources_used' | 'insufficient_approved_sources';
+  keyPoints: string[];
+  pathwayCards: RagLegalAwarenessCard[];
+  citationPolicy: string;
+}
+
 export interface RagServiceContext {
   owner: RagOwner;
   actorType?: 'user' | 'admin' | 'anonymous_session';

@@ -63,6 +63,7 @@ export const RAG_SOURCE_TYPES = [
 export const RAG_OFFICIAL_SOURCE_HOSTS = [
   'legislation.gov.au',
   'austlii.edu.au',
+  'humanrights.gov.au',
   'ahrc.gov.au',
   'esafety.gov.au',
   'oaic.gov.au',
@@ -128,6 +129,7 @@ export const RAG_ACTIONS = {
   sourceUpdate: 'rag.knowledge_source.update',
   sourceDelete: 'rag.knowledge_source.delete',
   sourceIngest: 'rag.knowledge_source.ingest',
+  sourceRefresh: 'rag.knowledge_source.refresh',
   sourceApprove: 'rag.knowledge_source.approve',
   sourceReject: 'rag.knowledge_source.reject',
   sourceReindex: 'rag.knowledge_source.reindex'

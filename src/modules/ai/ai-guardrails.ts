@@ -5,7 +5,19 @@ const LEGAL_ADVICE_RISK_PATTERNS = [
   /\byou should sue\b/i,
   /\byou must report\b/i,
   /\bI advise you to\b/i,
-  /\blegal advice\b/i
+  /\blegal advice\b/i,
+  /\byou are entitled to compensation\b/i,
+  /\byou have a case\b/i
+];
+
+const CLINICAL_ADVICE_RISK_PATTERNS = [
+  /\byou have (ptsd|depression|anxiety|trauma)\b/i,
+  /\bi diagnose\b/i,
+  /\bclinical advice\b/i,
+  /\bmedical advice\b/i,
+  /\btake (this )?medication\b/i,
+  /\bstop taking (your )?medication\b/i,
+  /\btherapy plan\b/i
 ];
 
 const CRISIS_RISK_PATTERNS = [
@@ -65,6 +77,9 @@ export const getSafeSpeakSystemPrompt = (language: string): string =>
 export const detectLegalAdviceRisk = (text: string): boolean =>
   LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(text));
 
+export const detectClinicalAdviceRisk = (text: string): boolean =>
+  CLINICAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(text));
+
 export const detectCrisisRisk = (text: string): boolean =>
   CRISIS_RISK_PATTERNS.some((pattern) => pattern.test(text));
 
@@ -79,15 +94,27 @@ export const detectSafeSpeakProductQuestion = (text: string): boolean =>
 
 export const shouldRequireHumanReview = (flags: {
   legalAdviceRisk: boolean;
+  clinicalAdviceRisk?: boolean;
   crisisRisk: boolean;
   insufficientSources: boolean;
-}): boolean => flags.legalAdviceRisk || flags.crisisRisk || flags.insufficientSources;
+  insufficientInput?: boolean;
+}): boolean =>
+  flags.legalAdviceRisk ||
+  Boolean(flags.clinicalAdviceRisk) ||
+  flags.crisisRisk ||
+  flags.insufficientSources ||
+  Boolean(flags.insufficientInput);
 
 export const enforceAiOutputGuardrails = (text: string): string => {
   let safeText = text;
 
   safeText = safeText.replace(/\byou should sue\b/gi, 'options may include seeking legal information');
   safeText = safeText.replace(/\byou must report\b/gi, 'you may consider reporting if safe to do so');
+  safeText = safeText.replace(/\byou are entitled to compensation\b/gi, 'compensation may be a legal topic to ask a qualified service about');
+  safeText = safeText.replace(/\byou have a case\b/gi, 'an official legal or support service may help explain possible options');
+  safeText = safeText.replace(/\byou have (ptsd|depression|anxiety|trauma)\b/gi, 'your wellbeing may have been affected');
+  safeText = safeText.replace(/\btake (this )?medication\b/gi, 'speak with a qualified health professional about medication');
+  safeText = safeText.replace(/\bstop taking (your )?medication\b/gi, 'speak with a qualified health professional before changing medication');
 
   if (!safeText.toLowerCase().includes(INFORMATION_ONLY_DISCLAIMER.toLowerCase())) {
     safeText = `${safeText}\n\n${INFORMATION_ONLY_DISCLAIMER}`;

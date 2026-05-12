@@ -31,8 +31,13 @@ export interface RagKnowledgeSourceDocument {
   publisher: string;
   licenseStatus: string;
   lastUpdated?: Date;
+  lastVerifiedAt?: Date;
   nextReviewAt?: Date;
+  nextRefreshAt?: Date;
   legalReviewed: boolean;
+  legalReviewedBy?: Types.ObjectId;
+  legalReviewedAt?: Date;
+  reviewNotes?: string;
   status: RagSourceStatus;
   ingestionStatus?: RagIngestionStatus;
   ingestionError?: string;
@@ -77,7 +82,13 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
     description: { type: String, required: false, trim: true },
     sourceCategory: { type: String, enum: RAG_SOURCE_CATEGORIES, required: true, index: true },
     sourceType: { type: String, enum: RAG_SOURCE_TYPES, required: true, index: true },
-    jurisdiction: { type: String, enum: RAG_JURISDICTIONS, required: true, trim: true, index: true },
+    jurisdiction: {
+      type: String,
+      enum: RAG_JURISDICTIONS,
+      required: true,
+      trim: true,
+      index: true
+    },
     topic: { type: String, enum: RAG_TOPICS, required: true, index: true },
     language: { type: String, required: true, default: 'en', index: true },
     url: { type: String, required: false, trim: true },
@@ -85,9 +96,20 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
     publisher: { type: String, required: true, trim: true },
     licenseStatus: { type: String, required: true, trim: true },
     lastUpdated: { type: Date, required: false, index: true },
+    lastVerifiedAt: { type: Date, required: false, index: true },
     nextReviewAt: { type: Date, required: false },
+    nextRefreshAt: { type: Date, required: false, index: true },
     legalReviewed: { type: Boolean, required: true, default: false, index: true },
-    status: { type: String, enum: RAG_SOURCE_STATUSES, required: true, default: 'draft', index: true },
+    legalReviewedBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
+    legalReviewedAt: { type: Date, required: false },
+    reviewNotes: { type: String, required: false, trim: true },
+    status: {
+      type: String,
+      enum: RAG_SOURCE_STATUSES,
+      required: true,
+      default: 'draft',
+      index: true
+    },
     ingestionStatus: { type: String, enum: RAG_INGESTION_STATUSES, required: false, index: true },
     ingestionError: { type: String, required: false },
     fetchedAt: { type: Date, required: false },
@@ -109,7 +131,12 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
 
 const ragChunkSchema = new Schema<RagChunkDocument>(
   {
-    sourceId: { type: Schema.Types.ObjectId, ref: 'RagKnowledgeSource', required: true, index: true },
+    sourceId: {
+      type: Schema.Types.ObjectId,
+      ref: 'RagKnowledgeSource',
+      required: true,
+      index: true
+    },
     sourceCategory: { type: String, enum: RAG_SOURCE_CATEGORIES, required: true, index: true },
     jurisdiction: { type: String, enum: RAG_JURISDICTIONS, required: true, index: true },
     topic: { type: String, enum: RAG_TOPICS, required: true, index: true },
