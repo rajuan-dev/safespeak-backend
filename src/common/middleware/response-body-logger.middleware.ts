@@ -24,8 +24,25 @@ const parseJsonSafe = (body: unknown): unknown => {
   }
 };
 
+const withRequestId = (body: unknown, requestId?: string): unknown => {
+  if (!requestId || !body || typeof body !== 'object' || Array.isArray(body)) {
+    return body;
+  }
+
+  const envelope = body as { success?: unknown; requestId?: unknown };
+
+  if (typeof envelope.success !== 'boolean' || envelope.requestId) {
+    return body;
+  }
+
+  return {
+    ...body,
+    requestId
+  };
+};
+
 export const responseBodyLoggerMiddleware = (
-  _req: Request,
+  req: Request,
   res: Response,
   next: NextFunction
 ): void => {
@@ -33,9 +50,13 @@ export const responseBodyLoggerMiddleware = (
   const originalSend = res.send.bind(res);
 
   res.json = (body: unknown): Response => {
-    res.locals.responseBody = truncateForLog(redactSensitive(body), JSON_RESPONSE_LOG_LIMIT);
+    const responseBody = withRequestId(body, req.requestId);
+    res.locals.responseBody = truncateForLog(
+      redactSensitive(responseBody),
+      JSON_RESPONSE_LOG_LIMIT
+    );
 
-    return originalJson(body);
+    return originalJson(responseBody);
   };
 
   res.send = (body?: unknown): Response => {

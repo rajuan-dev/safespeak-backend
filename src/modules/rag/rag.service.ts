@@ -29,7 +29,9 @@ import {
   DEFAULT_RAG_TOP_K,
   RAG_ACTIONS,
   RAG_CHUNK_OVERLAP,
-  RAG_CHUNK_SIZE
+  RAG_CHUNK_SIZE,
+  RAG_GOVERNED_SOURCE_CATEGORIES,
+  RAG_OFFICIAL_SOURCE_HOSTS
 } from './rag.constants';
 import {
   RagChunkModel,
@@ -56,12 +58,17 @@ const ownerFilter = (owner: RagOwner): RagOwner => {
 };
 
 const hashText = (text: string): string => createHash('sha256').update(text).digest('hex');
+const GOVERNED_SOURCE_CATEGORIES = new Set<string>(RAG_GOVERNED_SOURCE_CATEGORIES);
+const OFFICIAL_SOURCE_HOSTS = new Set<string>(RAG_OFFICIAL_SOURCE_HOSTS);
 
 const assertAiConsent = async (owner: RagOwner): Promise<void> => {
   const consent = await getCurrentConsent(owner);
 
   if (!consent.process_with_ai) {
-    throw new ApiError(StatusCodes.FORBIDDEN, 'process_with_ai consent is required for AI processing');
+    throw new ApiError(
+      StatusCodes.FORBIDDEN,
+      'process_with_ai consent is required for AI processing'
+    );
   }
 };
 
@@ -84,10 +91,65 @@ const auditRagAction = async (
   });
 };
 
+const normalizeHostname = (value: string): string => value.toLowerCase().replace(/^www\./, '');
+
+const isOfficialSourceUrl = (url: string): boolean => {
+  try {
+    const hostname = normalizeHostname(new URL(url).hostname);
+
+    return Array.from(OFFICIAL_SOURCE_HOSTS).some(
+      (officialHost) => hostname === officialHost || hostname.endsWith(`.${officialHost}`)
+    );
+  } catch {
+    return false;
+  }
+};
+
+const isGovernedKnowledgeSource = (sourceCategory?: string): boolean =>
+  Boolean(sourceCategory && GOVERNED_SOURCE_CATEGORIES.has(sourceCategory));
+
+const assertKnowledgeSourceGovernance = (input: {
+  sourceCategory?: string;
+  url?: string;
+  sourceType?: string;
+}): void => {
+  if (!isGovernedKnowledgeSource(input.sourceCategory)) {
+    return;
+  }
+
+  if (!input.url || !isOfficialSourceUrl(input.url)) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official legal/support knowledge sources must use an approved government, agency, or AustLII URL'
+    );
+  }
+
+  if (input.sourceType === 'ProductRequirement' || input.sourceType === 'Policy') {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official legal/support knowledge sources must be statutes, regulations, guidance, forms, decisions, reports, FAQs, support resources, or webpages'
+    );
+  }
+};
+
+const assertMergedKnowledgeSourceGovernance = (
+  source: RagKnowledgeSourceDocument,
+  input: UpdateKnowledgeSourceInput
+): void => {
+  assertKnowledgeSourceGovernance({
+    sourceCategory: input.sourceCategory ?? source.sourceCategory,
+    sourceType: input.sourceType ?? source.sourceType,
+    url: input.url ?? source.url
+  });
+};
+
 type HydratedRagKnowledgeSourceDocument = HydratedDocument<RagKnowledgeSourceDocument>;
 
 const getSource = async (sourceId: string): Promise<HydratedRagKnowledgeSourceDocument> => {
-  const source = await RagKnowledgeSourceModel.findOne({ _id: sourceId, deletedAt: { $exists: false } });
+  const source = await RagKnowledgeSourceModel.findOne({
+    _id: sourceId,
+    deletedAt: { $exists: false }
+  });
 
   if (!source) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Knowledge source not found');
@@ -125,19 +187,28 @@ const uniqueMatches = (values: string[]): string[] => Array.from(new Set(values.
 
 const extractLegalMetadataFromText = (
   text: string,
-  source: Pick<RagKnowledgeSourceDocument, 'title' | 'jurisdiction' | 'sourceType' | 'sourceCategory'>
+  source: Pick<
+    RagKnowledgeSourceDocument,
+    'title' | 'jurisdiction' | 'sourceType' | 'sourceCategory'
+  >
 ): Record<string, unknown> => {
   const actNameMatches = Array.from(
-    text.matchAll(/\b([A-Z][A-Za-z'’().,&/-]+(?:\s+[A-Z][A-Za-z'’().,&/-]+){0,8}\s+(?:Act|Regulation|Code|Charter|Constitution|Policy))\b/g)
+    text.matchAll(
+      /\b([A-Z][A-Za-z'’().,&/-]+(?:\s+[A-Z][A-Za-z'’().,&/-]+){0,8}\s+(?:Act|Regulation|Code|Charter|Constitution|Policy))\b/g
+    )
   ).map((match) => match[1]?.trim() ?? '');
   const sectionMatches = Array.from(
-    text.matchAll(/\b(?:s|sec|section|sections|pt|part|cl|clause|art|article)\.?\s*([0-9A-Za-z().,-]+)/gi)
+    text.matchAll(
+      /\b(?:s|sec|section|sections|pt|part|cl|clause|art|article)\.?\s*([0-9A-Za-z().,-]+)/gi
+    )
   ).map((match) => match[0]?.trim() ?? '');
   const constitutionalMentions = Array.from(
     text.matchAll(/\b(constitution|constitutional|human rights|bill of rights|implied freedom)\b/gi)
   ).map((match) => match[1]?.trim() ?? '');
   const courtMatches = Array.from(
-    text.matchAll(/\b(High Court|Federal Court|Supreme Court|Local Court|District Court|Tribunal)\b/gi)
+    text.matchAll(
+      /\b(High Court|Federal Court|Supreme Court|Local Court|District Court|Tribunal)\b/gi
+    )
   ).map((match) => match[1]?.trim() ?? '');
 
   const legislationType =
@@ -164,7 +235,9 @@ const extractLegalMetadataFromText = (
 };
 
 export const listKnowledgeSources = async (): Promise<unknown[]> =>
-  RagKnowledgeSourceModel.find({ deletedAt: { $exists: false } }).sort({ createdAt: -1 }).lean();
+  RagKnowledgeSourceModel.find({ deletedAt: { $exists: false } })
+    .sort({ createdAt: -1 })
+    .lean();
 
 export const createKnowledgeSource = async (
   context: RagServiceContext,
@@ -179,7 +252,12 @@ export const createKnowledgeSource = async (
     );
   }
 
-  const source = await RagKnowledgeSourceModel.create({ ...input, createdBy: context.owner.userId });
+  assertKnowledgeSourceGovernance(input);
+
+  const source = await RagKnowledgeSourceModel.create({
+    ...input,
+    createdBy: context.owner.userId
+  });
 
   await auditRagAction(context, RAG_ACTIONS.sourceCreate, source._id.toString(), {
     sourceType: source.sourceType,
@@ -204,6 +282,8 @@ export const updateKnowledgeSource = async (
   }
 
   const source = await getSource(sourceId);
+  assertMergedKnowledgeSourceGovernance(source, input);
+
   source.set(input);
   await source.save();
 
@@ -214,7 +294,10 @@ export const updateKnowledgeSource = async (
   return source;
 };
 
-export const deleteKnowledgeSource = async (context: RagServiceContext, sourceId: string): Promise<void> => {
+export const deleteKnowledgeSource = async (
+  context: RagServiceContext,
+  sourceId: string
+): Promise<void> => {
   ownerFilter(context.owner);
   const source = await getSource(sourceId);
   source.status = 'expired';
@@ -232,6 +315,8 @@ export const ingestKnowledgeSource = async (
 ): Promise<unknown> => {
   ownerFilter(context.owner);
   const source = await getSource(sourceId);
+  assertMergedKnowledgeSourceGovernance(source, {});
+
   source.ingestionStatus = 'fetched';
   source.ingestionError = undefined;
   await source.save();
@@ -281,7 +366,8 @@ export const ingestKnowledgeSource = async (
 
     source.sha256Hash = sha256Hash;
     source.rawText = text;
-    source.status = source.sourceCategory === 'internal_product_rule' ? source.status : 'pending_review';
+    source.status =
+      source.sourceCategory === 'internal_product_rule' ? source.status : 'pending_review';
     source.ingestedAt = new Date();
     source.ingestionStatus = 'embedded';
     source.version = (source.version ?? 1) + 1;
@@ -309,15 +395,34 @@ export const ingestKnowledgeSource = async (
     };
   } catch (error) {
     source.ingestionStatus = 'failed';
-    source.ingestionError = error instanceof Error ? error.message : 'Knowledge source ingestion failed';
+    source.ingestionError =
+      error instanceof Error ? error.message : 'Knowledge source ingestion failed';
     await source.save();
     throw error;
   }
 };
 
-export const approveKnowledgeSource = async (context: RagServiceContext, sourceId: string): Promise<unknown> => {
+export const approveKnowledgeSource = async (
+  context: RagServiceContext,
+  sourceId: string
+): Promise<unknown> => {
   const owner = ownerFilter(context.owner);
   const source = await getSource(sourceId);
+  assertMergedKnowledgeSourceGovernance(source, {});
+
+  if (source.sourceCategory === 'official_legal_source' && !source.legalReviewed) {
+    throw new ApiError(
+      StatusCodes.FORBIDDEN,
+      'Legal knowledge sources require legalReviewed=true before approval'
+    );
+  }
+
+  if (source.nextReviewAt && source.nextReviewAt.getTime() <= Date.now()) {
+    throw new ApiError(
+      StatusCodes.CONFLICT,
+      'Knowledge source review date has expired; refresh before approval'
+    );
+  }
 
   if (source.createdBy && owner.userId && source.createdBy.toString() === owner.userId) {
     throw new ApiError(
@@ -349,12 +454,17 @@ export const rejectKnowledgeSource = async (
   source.rejectionReason = input.reason;
   await source.save();
 
-  await auditRagAction(context, RAG_ACTIONS.sourceReject, source._id.toString(), { reason: input.reason });
+  await auditRagAction(context, RAG_ACTIONS.sourceReject, source._id.toString(), {
+    reason: input.reason
+  });
 
   return source;
 };
 
-export const reindexKnowledgeSource = async (context: RagServiceContext, sourceId: string): Promise<unknown> => {
+export const reindexKnowledgeSource = async (
+  context: RagServiceContext,
+  sourceId: string
+): Promise<unknown> => {
   const source = await getSource(sourceId);
 
   if (!source.rawText) {
@@ -378,10 +488,15 @@ const classifySourceCategory = (input: RagAnswerInput | RagSearchInput): RagSour
   }
 
   const q = ('question' in input ? input.question : input.query).toLowerCase();
-  if (/(law|legal|legislation|act|rights|court|discrimination|racial abuse|racial hatred|vilification|harassment|employer|what are my options)/i.test(q)) {
+  if (
+    /(law|legal|legislation|act|rights|court|discrimination|racial abuse|racial hatred|vilification|harassment|employer|what are my options)/i.test(
+      q
+    )
+  ) {
     return 'official_legal_source';
   }
-  if (/(support|helpline|000|1800respect|lifeline|reportcyber|scamwatch)/i.test(q)) return 'official_support_source';
+  if (/(support|helpline|000|1800respect|lifeline|reportcyber|scamwatch)/i.test(q))
+    return 'official_support_source';
   return 'internal_product_rule';
 };
 
@@ -511,12 +626,17 @@ const buildFallbackAnswer = (
   };
 };
 
-export const searchRag = async (context: RagServiceContext, input: RagSearchInput): Promise<RagSearchResult[]> => {
+export const searchRag = async (
+  context: RagServiceContext,
+  input: RagSearchInput
+): Promise<RagSearchResult[]> => {
   await assertAiConsent(context.owner);
   const queryVector = await createEmbedding(input.query);
   const sourceCategory = classifySourceCategory(input);
   const sourceFilter = buildSourceFilter(input, sourceCategory);
-  const sourceIds = await RagKnowledgeSourceModel.find(sourceFilter).sort({ lastUpdated: -1 }).distinct('_id');
+  const sourceIds = await RagKnowledgeSourceModel.find(sourceFilter)
+    .sort({ lastUpdated: -1 })
+    .distinct('_id');
 
   if (sourceIds.length === 0) {
     return [];
@@ -533,7 +653,14 @@ export const searchRag = async (context: RagServiceContext, input: RagSearchInpu
         filter: { sourceId: { $in: sourceIds }, sourceCategory }
       }
     },
-    { $lookup: { from: 'ragknowledgesources', localField: 'sourceId', foreignField: '_id', as: 'source' } },
+    {
+      $lookup: {
+        from: 'ragknowledgesources',
+        localField: 'sourceId',
+        foreignField: '_id',
+        as: 'source'
+      }
+    },
     { $unwind: '$source' },
     {
       $project: {
@@ -574,7 +701,10 @@ export const searchRag = async (context: RagServiceContext, input: RagSearchInpu
     };
   };
   const results = await RagChunkModel.aggregate<RagAggregateResult>(pipeline);
-  await auditRagAction(context, RAG_ACTIONS.search, undefined, { resultCount: results.length, topK: input.topK ?? DEFAULT_RAG_TOP_K });
+  await auditRagAction(context, RAG_ACTIONS.search, undefined, {
+    resultCount: results.length,
+    topK: input.topK ?? DEFAULT_RAG_TOP_K
+  });
 
   return results.map((result) => ({
     chunkId: result._id.toString(),
@@ -594,13 +724,20 @@ export const searchRag = async (context: RagServiceContext, input: RagSearchInpu
   }));
 };
 
-export const answerRag = async (context: RagServiceContext, input: RagAnswerInput): Promise<Record<string, unknown>> => {
+export const answerRag = async (
+  context: RagServiceContext,
+  input: RagAnswerInput
+): Promise<Record<string, unknown>> => {
   const category = classifySourceCategory(input);
   let results: RagSearchResult[] = [];
   let fallbackReason: 'insufficient_sources' | 'vector_unavailable' = 'insufficient_sources';
 
   try {
-    results = await searchRag(context, { ...input, query: input.question, sourceCategory: category });
+    results = await searchRag(context, {
+      ...input,
+      query: input.question,
+      sourceCategory: category
+    });
   } catch (error) {
     if (!isVectorSearchUnavailable(error)) {
       throw error;
@@ -620,7 +757,11 @@ export const answerRag = async (context: RagServiceContext, input: RagAnswerInpu
   const safetySeedText = `${input.question}\n${results.map((r) => r.text).join('\n')}`;
   const legalAdviceRisk = detectLegalAdviceRisk(safetySeedText);
   const crisisRisk = detectCrisisRisk(safetySeedText);
-  const pendingHumanReview = shouldRequireHumanReview({ legalAdviceRisk, crisisRisk, insufficientSources });
+  const pendingHumanReview = shouldRequireHumanReview({
+    legalAdviceRisk,
+    crisisRisk,
+    insufficientSources
+  });
 
   if (insufficientSources) {
     return buildFallbackAnswer(
@@ -631,7 +772,9 @@ export const answerRag = async (context: RagServiceContext, input: RagAnswerInpu
     );
   }
 
-  const contextText = results.map((result, index) => `[${index + 1}] ${result.title}: ${result.text}`).join('\n\n');
+  const contextText = results
+    .map((result, index) => `[${index + 1}] ${result.title}: ${result.text}`)
+    .join('\n\n');
 
   const modelResponse = await answerWithContext(context, {
     question: input.question,
@@ -646,7 +789,10 @@ export const answerRag = async (context: RagServiceContext, input: RagAnswerInpu
     typeof answerCandidate === 'string' ? answerCandidate : JSON.stringify(answerCandidate ?? '')
   );
 
-  await auditRagAction(context, RAG_ACTIONS.answer, undefined, { citationCount: results.length, sourceCategory: category });
+  await auditRagAction(context, RAG_ACTIONS.answer, undefined, {
+    citationCount: results.length,
+    sourceCategory: category
+  });
 
   return {
     answer: answerText,
@@ -790,10 +936,7 @@ const extractBestPatternMatch = (value: string, patterns: RegExp[]): string => {
   return '';
 };
 
-const alignTimelineValueToUserVoice = (
-  value: string,
-  latestUserMessage: string
-): string => {
+const alignTimelineValueToUserVoice = (value: string, latestUserMessage: string): string => {
   const cleanedLatestMessage = cleanTimelineValue(latestUserMessage);
 
   if (!cleanedLatestMessage) {
@@ -834,9 +977,7 @@ const normalizeActivityContext = (value: string): string => {
     .replace(/\s+/g, ' ')
     .trim();
 
-  const normalizedActivity = withoutLead
-    .replace(/\bi am\b/i, 'I was')
-    .replace(/\bi'm\b/i, 'I was');
+  const normalizedActivity = withoutLead.replace(/\bi am\b/i, 'I was').replace(/\bi'm\b/i, 'I was');
 
   return normalizedActivity ? `while ${normalizedActivity}` : '';
 };
@@ -848,19 +989,13 @@ const buildShortWhatFromUserMessage = (latestUserMessage: string): string => {
     return '';
   }
 
-  const actionMatch = extractBestPatternMatch(
-    cleanedLatestMessage,
-    HARM_ACTION_PATTERNS
-  );
+  const actionMatch = extractBestPatternMatch(cleanedLatestMessage, HARM_ACTION_PATTERNS);
 
   if (!actionMatch) {
     return '';
   }
 
-  const activityMatch = extractBestPatternMatch(
-    cleanedLatestMessage,
-    ACTIVITY_CONTEXT_PATTERNS
-  );
+  const activityMatch = extractBestPatternMatch(cleanedLatestMessage, ACTIVITY_CONTEXT_PATTERNS);
   const normalizedActivity = normalizeActivityContext(activityMatch);
 
   if (!normalizedActivity || actionMatch.toLowerCase().includes(normalizedActivity.toLowerCase())) {
@@ -870,11 +1005,7 @@ const buildShortWhatFromUserMessage = (latestUserMessage: string): string => {
   return cleanTimelineValue(`${actionMatch} ${normalizedActivity}`);
 };
 
-const compactTimelineFieldValue = (
-  key: string,
-  value: string,
-  latestUserMessage = ''
-): string => {
+const compactTimelineFieldValue = (key: string, value: string, latestUserMessage = ''): string => {
   const cleanedValue = cleanTimelineValue(value);
 
   if (!cleanedValue) {
@@ -884,8 +1015,9 @@ const compactTimelineFieldValue = (
   if (key === 'what') {
     const userVoiceWhat = buildShortWhatFromUserMessage(latestUserMessage);
     const actionMatch = extractBestPatternMatch(cleanedValue, HARM_ACTION_PATTERNS);
-    const compactWhat = userVoiceWhat
-      || alignTimelineValueToUserVoice(actionMatch || cleanedValue, latestUserMessage);
+    const compactWhat =
+      userVoiceWhat ||
+      alignTimelineValueToUserVoice(actionMatch || cleanedValue, latestUserMessage);
 
     return trimTimelineValueWords(compactWhat, TIMELINE_VALUE_WORD_LIMITS.what ?? 12);
   }
@@ -1012,8 +1144,9 @@ const buildTimelineFallback = (
   const combinedText = `${latestMessage} ${conversationText}`.trim();
 
   if (!combinedTimeline.what) {
-    const incidentType = detectPatternValue(latestMessage || combinedText, INCIDENT_TYPE_PATTERNS)
-      || detectPatternValue(combinedText, INCIDENT_TYPE_PATTERNS);
+    const incidentType =
+      detectPatternValue(latestMessage || combinedText, INCIDENT_TYPE_PATTERNS) ||
+      detectPatternValue(combinedText, INCIDENT_TYPE_PATTERNS);
 
     if (incidentType) {
       fallback.what = incidentType;
@@ -1105,8 +1238,7 @@ export const runTimelineAssistant = async (
 
   return {
     assistantMessage,
-    nextQuestion:
-      typeof output.nextQuestion === 'string' ? output.nextQuestion.trim() : '',
+    nextQuestion: typeof output.nextQuestion === 'string' ? output.nextQuestion.trim() : '',
     timeline: resolvedTimeline,
     readyForSubmission: Boolean(output.readyForSubmission),
     confidence:

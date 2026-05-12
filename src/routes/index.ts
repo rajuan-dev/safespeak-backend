@@ -16,9 +16,10 @@ import {
   microEducationRoutes
 } from '@modules/microeducation/microeducation.routes';
 import {
-  adminMediaAssetRoutes,
-  mediaAssetRoutes
-} from '@modules/media-assets/media-assets.routes';
+  adminPlatformSettingsRoutes,
+  platformSettingsRoutes
+} from '@modules/platform-settings/platform-settings.routes';
+import { adminMediaAssetRoutes, mediaAssetRoutes } from '@modules/media-assets/media-assets.routes';
 import { profileRoutes } from '@modules/profile/profile.routes';
 import { ragRoutes } from '@modules/rag/rag.routes';
 import { adminResourceRoutes, resourceRoutes } from '@modules/resources/resources.routes';
@@ -35,6 +36,8 @@ apiRouter.use('/auth', authRoutes);
 apiRouter.use('/sessions', sessionsRoutes);
 apiRouter.use('/consents', consentRoutes);
 apiRouter.use('/', profileRoutes);
+apiRouter.use('/platform-settings', platformSettingsRoutes);
+apiRouter.use('/admin/platform-settings', adminPlatformSettingsRoutes);
 apiRouter.use('/microeducation', microEducationRoutes);
 apiRouter.use('/admin/microeducation', adminMicroEducationRoutes);
 apiRouter.use('/content-resources', contentResourceRoutes);

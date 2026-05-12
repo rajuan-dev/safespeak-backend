@@ -60,6 +60,59 @@ export const RAG_SOURCE_TYPES = [
   'WebPage'
 ] as const;
 
+export const RAG_OFFICIAL_SOURCE_HOSTS = [
+  'legislation.gov.au',
+  'austlii.edu.au',
+  'ahrc.gov.au',
+  'esafety.gov.au',
+  'oaic.gov.au',
+  'accc.gov.au',
+  'scamwatch.gov.au',
+  'cyber.gov.au',
+  'acma.gov.au',
+  'asic.gov.au',
+  'fairwork.gov.au',
+  'fwc.gov.au',
+  'homeaffairs.gov.au',
+  'nsw.gov.au',
+  'agd.nsw.gov.au',
+  'police.nsw.gov.au',
+  'legislation.nsw.gov.au',
+  'vic.gov.au',
+  'legislation.vic.gov.au',
+  'veohrc.vic.gov.au',
+  'vcat.vic.gov.au',
+  'qld.gov.au',
+  'legislation.qld.gov.au',
+  'adcq.qld.gov.au',
+  'courts.qld.gov.au',
+  'sa.gov.au',
+  'legislation.sa.gov.au',
+  'equalopportunity.sa.gov.au',
+  'wa.gov.au',
+  'legislation.wa.gov.au',
+  'equalopportunity.wa.gov.au',
+  'tas.gov.au',
+  'legislation.tas.gov.au',
+  'equalopportunity.tas.gov.au',
+  'nt.gov.au',
+  'legislation.nt.gov.au',
+  'act.gov.au',
+  'legislation.act.gov.au',
+  '1800respect.org.au',
+  'legalaid.nsw.gov.au',
+  'legalaid.vic.gov.au',
+  'legalaid.qld.gov.au',
+  'lsc.sa.gov.au',
+  'legalaid.wa.gov.au',
+  'legalaid.tas.gov.au'
+] as const;
+
+export const RAG_GOVERNED_SOURCE_CATEGORIES = [
+  'official_legal_source',
+  'official_support_source'
+] as const;
+
 export const RAG_INGESTION_STATUSES = [
   'metadata_only',
   'fetched',

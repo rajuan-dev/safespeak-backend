@@ -69,7 +69,7 @@ export class ApiResponse {
       message,
       data: null,
       meta: null,
-      errors: options.errors?.length ? options.errors : undefined,
+      errors: options.errors ?? [],
       errorCode: options.errorCode,
       requestId: options.requestId,
       timestamp: new Date().toISOString()

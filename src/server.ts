@@ -2,9 +2,9 @@ import http from 'node:http';
 
 import { createApp } from './app';
 import { bootstrapApp } from './bootstrap';
+import { logger } from './common/utils/logger';
 import { disconnectDatabase } from './config/database';
 import { env } from './config/env';
-import { logger } from './common/utils/logger';
 
 const app = createApp();
 const server = http.createServer(app);

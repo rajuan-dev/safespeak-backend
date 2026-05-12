@@ -29,11 +29,7 @@ import type {
   SubmitReportInput,
   UpdateReportInput
 } from './reports.schema';
-import type {
-  ReportDestinationPreview,
-  ReportOwner,
-  ReportStatus
-} from './reports.types';
+import type { ReportDestinationPreview, ReportOwner, ReportStatus } from './reports.types';
 
 const ownerFilter = (owner: ReportOwner): ReportOwner => {
   if (!owner.userId && !owner.sessionId) {
@@ -374,52 +370,13 @@ const getCandidateDestinations = async (
   });
 };
 
-const applyConsentStorageRules = (
-  input: CreateReportInput | UpdateReportInput,
-  hasCloudSyncConsent: boolean
-): Partial<CreateReportInput | UpdateReportInput> => {
-  if (hasCloudSyncConsent) {
-    return input;
+const assertCloudSyncConsentForReportWrite = (hasCloudSyncConsent: boolean): void => {
+  if (!hasCloudSyncConsent) {
+    throw new ApiError(
+      StatusCodes.FORBIDDEN,
+      'cloud_sync consent is required before report data can be stored on SafeSpeak servers'
+    );
   }
-
-  return {
-    language: input.language,
-    jurisdiction: input.jurisdiction,
-    lga: input.lga,
-    status: 'local_only',
-    structuredFields: {}
-  };
-};
-
-const applyUpdateConsentStorageRules = (
-  input: UpdateReportInput,
-  hasCloudSyncConsent: boolean
-): Partial<UpdateReportInput> => {
-  if (hasCloudSyncConsent) {
-    return input;
-  }
-
-  const storedInput: Partial<UpdateReportInput> = {
-    structuredFields: {}
-  };
-
-  if (input.language !== undefined) {
-    storedInput.language = input.language;
-  }
-
-  if (input.jurisdiction !== undefined) {
-    storedInput.jurisdiction = input.jurisdiction;
-  }
-
-  if (input.lga !== undefined) {
-    storedInput.lga = input.lga;
-  }
-
-  if (input.status !== undefined) {
-    storedInput.status = input.status;
-  }
-
-  return storedInput;
 };
 
 export const createReport = async (
@@ -430,22 +387,22 @@ export const createReport = async (
 ): Promise<unknown> => {
   const filter = ownerFilter(owner);
   const consentSnapshot = await getCurrentConsent(owner);
-  const hasCloudSyncConsent = consentSnapshot.cloud_sync;
-  const storedInput = applyConsentStorageRules(input, hasCloudSyncConsent);
-  const status = hasCloudSyncConsent ? (input.status ?? 'draft') : 'local_only';
+  assertCloudSyncConsentForReportWrite(consentSnapshot.cloud_sync);
+
+  const status = input.status ?? 'draft';
   const report = await ReportModel.create({
     ...filter,
-    ...storedInput,
+    ...input,
     refNo: generateRefNo(),
     ownerType: owner.userId ? 'user' : 'anonymous',
     consentSnapshot,
     status,
-    statusHistory: createStatusHistory(status, hasCloudSyncConsent ? 'created' : 'local_only')
+    statusHistory: createStatusHistory(status, 'created')
   });
 
   await auditReportChange(owner, 'report.create', report._id.toString(), ip, userAgent, {
     status,
-    cloudSyncConsent: hasCloudSyncConsent
+    cloudSyncConsent: consentSnapshot.cloud_sync
   });
 
   return report;
@@ -473,20 +430,13 @@ export const updateReport = async (
 ): Promise<unknown> => {
   const report = await getOwnedReport(owner, reportId);
   const consentSnapshot = await getCurrentConsent(owner);
-  const storedInput = applyUpdateConsentStorageRules(input, consentSnapshot.cloud_sync);
+  assertCloudSyncConsentForReportWrite(consentSnapshot.cloud_sync);
 
-  report.set(storedInput);
+  report.set(input);
   await normalizeReportRequiredFields(report, owner, input);
 
   if (input.status) {
-    report.statusHistory.push(
-      ...createStatusHistory(
-        input.status,
-        consentSnapshot.cloud_sync ? undefined : 'cloud_sync_not_granted'
-      )
-    );
-  } else if (!consentSnapshot.cloud_sync) {
-    report.statusHistory.push(...createStatusHistory(report.status, 'cloud_sync_not_granted'));
+    report.statusHistory.push(...createStatusHistory(input.status));
   }
 
   try {
@@ -616,7 +566,9 @@ export const getReportDestinationPreviews = async (
   const report = await getOwnedReport(owner, reportId);
   const destinations = await getCandidateDestinations(report, query);
 
-  return Promise.all(destinations.map((destination) => buildDestinationPreview(report, destination)));
+  return Promise.all(
+    destinations.map((destination) => buildDestinationPreview(report, destination))
+  );
 };
 
 export const listReportSubmissions = async (
@@ -751,14 +703,21 @@ export const submitReportToDestination = async (
   );
   await report.save();
 
-  await auditReportChange(owner, 'report.submit_destination', report._id.toString(), ip, userAgent, {
-    submissionId: submission._id.toString(),
-    destinationId: destination._id.toString(),
-    destinationKey: destination.key,
-    destinationType: destination.type,
-    channel: destination.channel,
-    anonymityMode: input.anonymityMode
-  });
+  await auditReportChange(
+    owner,
+    'report.submit_destination',
+    report._id.toString(),
+    ip,
+    userAgent,
+    {
+      submissionId: submission._id.toString(),
+      destinationId: destination._id.toString(),
+      destinationKey: destination.key,
+      destinationType: destination.type,
+      channel: destination.channel,
+      anonymityMode: input.anonymityMode
+    }
+  );
 
   return toSafeSubmission(submission.toObject());
 };
@@ -789,11 +748,18 @@ export const acknowledgeReportSubmission = async (
     await report.save();
   }
 
-  await auditReportChange(owner, 'report.submission_acknowledge', report._id.toString(), ip, userAgent, {
-    submissionId: submission._id.toString(),
-    externalReference: input.externalReference,
-    status: input.status
-  });
+  await auditReportChange(
+    owner,
+    'report.submission_acknowledge',
+    report._id.toString(),
+    ip,
+    userAgent,
+    {
+      submissionId: submission._id.toString(),
+      externalReference: input.externalReference,
+      status: input.status
+    }
+  );
 
   return toSafeSubmission(submission.toObject());
 };

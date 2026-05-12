@@ -37,7 +37,9 @@ Success:
   "success": true,
   "message": "Request completed successfully",
   "data": {},
-  "meta": {}
+  "meta": {},
+  "requestId": "request-id",
+  "timestamp": "2026-05-09T00:00:00.000Z"
 }
 ```
 
@@ -286,6 +288,7 @@ Protected by either `Authorization` or `X-SafeSpeak-Session`.
 ## Reports
 
 Protected by either `Authorization` or `X-SafeSpeak-Session`.
+Creating or updating a server-side report requires `cloud_sync: true` in current consent. Without that consent, keep drafts local-only on the user device.
 
 ### POST Create Report
 
@@ -512,14 +515,21 @@ Example knowledge source create body:
 
 ```json
 {
-  "title": "NSW Information-only Support Resource",
-  "description": "Example knowledge source for RAG.",
-  "sourceType": "safety_resource",
+  "title": "Racial Discrimination Act 1975",
+  "description": "Official legal source for RAG. Requires legal review before approval.",
+  "sourceCategory": "official_legal_source",
+  "sourceType": "Act",
+  "topic": "discrimination",
   "jurisdiction": "NSW",
   "language": "en",
-  "url": "https://example.org/resource",
+  "publisher": "Australian Government",
+  "licenseStatus": "Government copyright",
+  "url": "https://www.legislation.gov.au/",
+  "legalReviewed": false,
+  "status": "pending_review",
   "metadata": {
-    "owner": "SafeSpeak"
+    "owner": "SafeSpeak",
+    "refreshCadence": "quarterly"
   }
 }
 ```
@@ -577,6 +587,7 @@ Example error response:
   "meta": null,
   "errorCode": "AUTH_ERROR",
   "requestId": "request-id",
+  "errors": [],
   "timestamp": "2026-05-09T00:00:00.000Z"
 }
 ```
@@ -634,6 +645,7 @@ Protected by either `Authorization` or `X-SafeSpeak-Session`. Warm referrals req
 - `PATCH {{base_url}}{{api_prefix}}/support/safety-plans/{{safety_plan_id}}`
 
 Route note:
+
 - Support recommendations use `POST /support/recommendations`, not `GET`.
 
 ## Analytics
