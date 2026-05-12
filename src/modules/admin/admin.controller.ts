@@ -8,16 +8,19 @@ import type {
   CreateAdminUserInput,
   DestinationInput,
   PrivacyRequestQueryInput,
+  SubmissionTemplateInput,
   TaxonomyInput,
   UpdateAdminUserInput,
   UpdateDestinationInput,
   UpdatePrivacyRequestInput,
+  UpdateSubmissionTemplateInput,
   UpdateTaxonomyInput,
   UsersQueryInput
 } from './admin.schema';
 import {
   createAdminUser,
   createDestination,
+  createSubmissionTemplate,
   createTaxonomy,
   getEducationalContentOverview,
   getAdminAnalyticsOverview,
@@ -25,11 +28,13 @@ import {
   listDestinations,
   listKnowledgeSourcesForAdmin,
   listPrivacyRequests,
+  listSubmissionTemplates,
   listTaxonomies,
   listUsers,
   updateAdminUser,
   updateDestination,
   updatePrivacyRequest,
+  updateSubmissionTemplate,
   updateTaxonomy
 } from './admin.service';
 
@@ -114,6 +119,43 @@ export const updateAdminDestinationController = asyncHandler(
     );
 
     res.status(StatusCodes.OK).json(successResponse('Admin destination updated', { destination }));
+  }
+);
+
+export const adminSubmissionTemplatesController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const templates = await listSubmissionTemplates(getContext(req), req.query);
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin submission templates retrieved', { templates }));
+  }
+);
+
+export const createAdminSubmissionTemplateController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const template = await createSubmissionTemplate(
+      getContext(req),
+      req.body as SubmissionTemplateInput
+    );
+
+    res
+      .status(StatusCodes.CREATED)
+      .json(successResponse('Admin submission template created', { template }));
+  }
+);
+
+export const updateAdminSubmissionTemplateController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const template = await updateSubmissionTemplate(
+      getContext(req),
+      req.params.id,
+      req.body as UpdateSubmissionTemplateInput
+    );
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin submission template updated', { template }));
   }
 );
 

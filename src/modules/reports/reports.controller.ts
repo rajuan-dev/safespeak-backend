@@ -4,18 +4,28 @@ import { asyncHandler } from '@common/errors/asyncHandler';
 import { ApiResponse } from '@common/responses/api-response';
 
 import {
+  acknowledgeReportSubmission,
   createReport,
   getReportById,
+  getReportDestinationPreviews,
   getReportStatus,
   getReportTimeline,
+  listReportSubmissions,
   listReports,
   markReportInfoOnly,
   requestReportDelete,
   softDeleteReport,
+  submitReportToDestination,
   updateReport,
   withdrawReport
 } from './reports.service';
-import type { CreateReportInput, UpdateReportInput } from './reports.schema';
+import type {
+  AcknowledgeSubmissionInput,
+  CreateReportInput,
+  ReportDestinationPreviewQueryInput,
+  SubmitReportInput,
+  UpdateReportInput
+} from './reports.schema';
 
 const getOwner = (req: Request) => ({
   userId: req.user?.id,
@@ -99,3 +109,47 @@ export const getReportTimelineController = asyncHandler(async (req: Request, res
 
   ApiResponse.success(res, 'Report timeline retrieved', { timeline });
 });
+
+export const getReportDestinationPreviewsController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const query = req.query as unknown as ReportDestinationPreviewQueryInput;
+    const destinations = await getReportDestinationPreviews(getOwner(req), req.params.id, query);
+
+    ApiResponse.success(res, 'Report destination previews retrieved', { destinations });
+  }
+);
+
+export const listReportSubmissionsController = asyncHandler(async (req: Request, res: Response) => {
+  const submissions = await listReportSubmissions(getOwner(req), req.params.id);
+
+  ApiResponse.success(res, 'Report submissions retrieved', { submissions });
+});
+
+export const submitReportController = asyncHandler(async (req: Request, res: Response) => {
+  const input = req.body as unknown as SubmitReportInput;
+  const submission = await submitReportToDestination(
+    getOwner(req),
+    req.params.id,
+    input,
+    req.ip,
+    req.get('user-agent')
+  );
+
+  ApiResponse.created(res, 'Report submitted to destination', { submission });
+});
+
+export const acknowledgeReportSubmissionController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const input = req.body as unknown as AcknowledgeSubmissionInput;
+    const submission = await acknowledgeReportSubmission(
+      getOwner(req),
+      req.params.id,
+      req.params.submissionId,
+      input,
+      req.ip,
+      req.get('user-agent')
+    );
+
+    ApiResponse.success(res, 'Report submission acknowledgement recorded', { submission });
+  }
+);

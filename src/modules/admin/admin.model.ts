@@ -1,11 +1,21 @@
 import { Schema, model, type Types } from 'mongoose';
 
 import {
+  ADMIN_DESTINATION_CHANNELS,
   ADMIN_DESTINATION_TYPES,
+  ADMIN_SUBMISSION_TEMPLATE_ACK_MODES,
+  ADMIN_SUBMISSION_TEMPLATE_ATTACHMENT_MODES,
   ADMIN_TAXONOMY_TYPES,
   PRIVACY_REQUEST_STATUSES
 } from './admin.constants';
-import type { AdminDestinationType, AdminTaxonomyType, PrivacyRequestStatus } from './admin.types';
+import type {
+  AdminDestinationChannel,
+  AdminDestinationType,
+  AdminSubmissionTemplateAckMode,
+  AdminSubmissionTemplateAttachmentMode,
+  AdminTaxonomyType,
+  PrivacyRequestStatus
+} from './admin.types';
 
 export interface AdminTaxonomyDocument {
   _id: Types.ObjectId;
@@ -22,8 +32,43 @@ export interface AdminTaxonomyDocument {
 export interface AdminDestinationDocument {
   _id: Types.ObjectId;
   type: AdminDestinationType;
+  key: string;
   name: string;
+  channel: AdminDestinationChannel;
+  jurisdiction: string;
+  languages: string[];
   endpoint?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  minimumRequiredInfo: string[];
+  anonymityOptions: string[];
+  expectedNextSteps: string[];
+  consentRequired: boolean;
+  supportsAcknowledgement: boolean;
+  isActive: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface AdminSubmissionTemplateDocument {
+  _id: Types.ObjectId;
+  key: string;
+  name: string;
+  destinationType: AdminDestinationType;
+  channel: AdminDestinationChannel;
+  jurisdiction: string;
+  titleTemplate: string;
+  summaryTemplate: string;
+  fieldMappings: Array<{
+    source: string;
+    target: string;
+    required: boolean;
+    transform?: string;
+  }>;
+  staticPayload: Record<string, unknown>;
+  acknowledgementMode: AdminSubmissionTemplateAckMode;
+  attachmentMode: AdminSubmissionTemplateAttachmentMode;
   isActive: boolean;
   metadata: Record<string, unknown>;
   createdAt: Date;
@@ -91,10 +136,151 @@ const adminDestinationSchema = new Schema<AdminDestinationDocument>(
       required: true,
       trim: true
     },
+    key: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    channel: {
+      type: String,
+      enum: ADMIN_DESTINATION_CHANNELS,
+      required: true,
+      index: true
+    },
+    jurisdiction: {
+      type: String,
+      required: true,
+      trim: true,
+      index: true
+    },
+    languages: {
+      type: [String],
+      required: true,
+      default: ['en']
+    },
     endpoint: {
       type: String,
       required: false,
       trim: true
+    },
+    contactEmail: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    contactPhone: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    minimumRequiredInfo: {
+      type: [String],
+      required: true,
+      default: []
+    },
+    anonymityOptions: {
+      type: [String],
+      required: true,
+      default: []
+    },
+    expectedNextSteps: {
+      type: [String],
+      required: true,
+      default: []
+    },
+    consentRequired: {
+      type: Boolean,
+      required: true,
+      default: true
+    },
+    supportsAcknowledgement: {
+      type: Boolean,
+      required: true,
+      default: false
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true
+    },
+    metadata: {
+      type: Schema.Types.Mixed,
+      default: {}
+    }
+  },
+  { timestamps: true }
+);
+
+const adminSubmissionTemplateSchema = new Schema<AdminSubmissionTemplateDocument>(
+  {
+    key: {
+      type: String,
+      required: true,
+      trim: true,
+      unique: true
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    destinationType: {
+      type: String,
+      enum: ADMIN_DESTINATION_TYPES,
+      required: true,
+      index: true
+    },
+    channel: {
+      type: String,
+      enum: ADMIN_DESTINATION_CHANNELS,
+      required: true,
+      index: true
+    },
+    jurisdiction: {
+      type: String,
+      required: true,
+      trim: true,
+      index: true
+    },
+    titleTemplate: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    summaryTemplate: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    fieldMappings: {
+      type: [
+        new Schema(
+          {
+            source: { type: String, required: true, trim: true },
+            target: { type: String, required: true, trim: true },
+            required: { type: Boolean, required: true, default: false },
+            transform: { type: String, required: false, trim: true }
+          },
+          { _id: false }
+        )
+      ],
+      default: []
+    },
+    staticPayload: {
+      type: Schema.Types.Mixed,
+      default: {}
+    },
+    acknowledgementMode: {
+      type: String,
+      enum: ADMIN_SUBMISSION_TEMPLATE_ACK_MODES,
+      required: true,
+      default: 'manual'
+    },
+    attachmentMode: {
+      type: String,
+      enum: ADMIN_SUBMISSION_TEMPLATE_ATTACHMENT_MODES,
+      required: true,
+      default: 'metadata_only'
     },
     isActive: {
       type: Boolean,
@@ -153,7 +339,8 @@ const privacyRequestSchema = new Schema<PrivacyRequestDocument>(
 );
 
 adminTaxonomySchema.index({ type: 1, key: 1 }, { unique: true });
-adminDestinationSchema.index({ type: 1, name: 1 }, { unique: true });
+adminDestinationSchema.index({ type: 1, key: 1 }, { unique: true });
+adminSubmissionTemplateSchema.index({ destinationType: 1, channel: 1, jurisdiction: 1, isActive: 1 });
 
 export const AdminTaxonomyModel = model<AdminTaxonomyDocument>(
   'AdminTaxonomy',
@@ -162,6 +349,10 @@ export const AdminTaxonomyModel = model<AdminTaxonomyDocument>(
 export const AdminDestinationModel = model<AdminDestinationDocument>(
   'AdminDestination',
   adminDestinationSchema
+);
+export const AdminSubmissionTemplateModel = model<AdminSubmissionTemplateDocument>(
+  'AdminSubmissionTemplate',
+  adminSubmissionTemplateSchema
 );
 export const PrivacyRequestModel = model<PrivacyRequestDocument>(
   'PrivacyRequest',

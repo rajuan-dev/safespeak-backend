@@ -121,6 +121,48 @@ const readIngestionText = async (input: IngestKnowledgeSourceInput): Promise<str
   return readFile(input.localFilePath, 'utf8');
 };
 
+const uniqueMatches = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
+
+const extractLegalMetadataFromText = (
+  text: string,
+  source: Pick<RagKnowledgeSourceDocument, 'title' | 'jurisdiction' | 'sourceType' | 'sourceCategory'>
+): Record<string, unknown> => {
+  const actNameMatches = Array.from(
+    text.matchAll(/\b([A-Z][A-Za-z'’().,&/-]+(?:\s+[A-Z][A-Za-z'’().,&/-]+){0,8}\s+(?:Act|Regulation|Code|Charter|Constitution|Policy))\b/g)
+  ).map((match) => match[1]?.trim() ?? '');
+  const sectionMatches = Array.from(
+    text.matchAll(/\b(?:s|sec|section|sections|pt|part|cl|clause|art|article)\.?\s*([0-9A-Za-z().,-]+)/gi)
+  ).map((match) => match[0]?.trim() ?? '');
+  const constitutionalMentions = Array.from(
+    text.matchAll(/\b(constitution|constitutional|human rights|bill of rights|implied freedom)\b/gi)
+  ).map((match) => match[1]?.trim() ?? '');
+  const courtMatches = Array.from(
+    text.matchAll(/\b(High Court|Federal Court|Supreme Court|Local Court|District Court|Tribunal)\b/gi)
+  ).map((match) => match[1]?.trim() ?? '');
+
+  const legislationType =
+    /\bconstitution(?:al)?\b/i.test(text) || /\bconstitution\b/i.test(source.title)
+      ? 'constitution'
+      : /\bregulation\b/i.test(text) || /\bregulation\b/i.test(source.title)
+        ? 'regulation'
+        : /\bpolicy\b/i.test(text) || /\bpolicy\b/i.test(source.title)
+          ? 'policy'
+          : /\bact\b/i.test(text) || /\bact\b/i.test(source.title)
+            ? 'act'
+            : source.sourceType.toLowerCase();
+
+  return {
+    detectedLegalType: legislationType,
+    detectedActNames: uniqueMatches(actNameMatches).slice(0, 20),
+    detectedSectionRefs: uniqueMatches(sectionMatches).slice(0, 40),
+    detectedConstitutionalMentions: uniqueMatches(
+      constitutionalMentions.map((item) => item.toLowerCase())
+    ).slice(0, 20),
+    detectedCourts: uniqueMatches(courtMatches).slice(0, 20),
+    detectedJurisdictionHint: source.jurisdiction
+  };
+};
+
 export const listKnowledgeSources = async (): Promise<unknown[]> =>
   RagKnowledgeSourceModel.find({ deletedAt: { $exists: false } }).sort({ createdAt: -1 }).lean();
 
@@ -190,59 +232,87 @@ export const ingestKnowledgeSource = async (
 ): Promise<unknown> => {
   ownerFilter(context.owner);
   const source = await getSource(sourceId);
-  const text = await readIngestionText(input);
-  const sha256Hash = hashText(text);
-
-  if (input.expectedSha256 && input.expectedSha256.toLowerCase() !== sha256Hash) {
-    throw new ApiError(StatusCodes.BAD_REQUEST, 'Knowledge source SHA-256 verification failed');
-  }
-
-  const chunks = chunkText(text);
-  await RagChunkModel.deleteMany({ sourceId: source._id });
-
-  const embeddedChunks = await Promise.all(
-    chunks.map(async (chunk, index) => ({
-      sourceId: source._id,
-      sourceCategory: source.sourceCategory,
-      jurisdiction: source.jurisdiction,
-      topic: source.topic,
-      sectionRef: undefined,
-      chunkIndex: index,
-      chunkText: chunk,
-      embedding: await createEmbedding(chunk),
-      tokenCount: Math.ceil(chunk.length / 4),
-      citationLabel: `${source.title} [chunk ${index + 1}]`,
-      citationUrl: source.url,
-      metadata: {
-        ...input.metadata,
-        sourceTitle: source.title,
-        sourceType: source.sourceType,
-        sourceCategory: source.sourceCategory,
-        language: source.language,
-        jurisdiction: source.jurisdiction
-      }
-    }))
-  );
-
-  if (embeddedChunks.length > 0) {
-    await RagChunkModel.insertMany(embeddedChunks);
-  }
-
-  source.sha256Hash = sha256Hash;
-  source.rawText = text;
-  source.status = source.sourceCategory === 'internal_product_rule' ? source.status : 'pending_review';
-  source.ingestedAt = new Date();
-  source.version = (source.version ?? 1) + 1;
-  source.metadata = { ...source.metadata, ...input.metadata, chunkCount: embeddedChunks.length, sha256Verified: true };
+  source.ingestionStatus = 'fetched';
+  source.ingestionError = undefined;
   await source.save();
 
-  await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
-    chunkCount: embeddedChunks.length,
-    sha256Hash,
-    requiresHumanReview: source.status !== 'approved'
-  });
+  try {
+    const text = await readIngestionText(input);
+    const sha256Hash = hashText(text);
 
-  return { source, chunkCount: embeddedChunks.length, sha256Hash, reviewStatus: 'pending_human_review' };
+    if (input.expectedSha256 && input.expectedSha256.toLowerCase() !== sha256Hash) {
+      throw new ApiError(StatusCodes.BAD_REQUEST, 'Knowledge source SHA-256 verification failed');
+    }
+
+    const chunks = chunkText(text);
+    await RagChunkModel.deleteMany({ sourceId: source._id });
+    source.ingestionStatus = 'chunked';
+    await source.save();
+
+    const extractedLegalMetadata = extractLegalMetadataFromText(text, source);
+    const embeddedChunks = await Promise.all(
+      chunks.map(async (chunk, index) => ({
+        sourceId: source._id,
+        sourceCategory: source.sourceCategory,
+        jurisdiction: source.jurisdiction,
+        topic: source.topic,
+        sectionRef: undefined,
+        chunkIndex: index,
+        chunkText: chunk,
+        embedding: await createEmbedding(chunk),
+        tokenCount: Math.ceil(chunk.length / 4),
+        citationLabel: `${source.title} [chunk ${index + 1}]`,
+        citationUrl: source.url,
+        metadata: {
+          ...input.metadata,
+          ...extractedLegalMetadata,
+          sourceTitle: source.title,
+          sourceType: source.sourceType,
+          sourceCategory: source.sourceCategory,
+          language: source.language,
+          jurisdiction: source.jurisdiction
+        }
+      }))
+    );
+
+    if (embeddedChunks.length > 0) {
+      await RagChunkModel.insertMany(embeddedChunks);
+    }
+
+    source.sha256Hash = sha256Hash;
+    source.rawText = text;
+    source.status = source.sourceCategory === 'internal_product_rule' ? source.status : 'pending_review';
+    source.ingestedAt = new Date();
+    source.ingestionStatus = 'embedded';
+    source.version = (source.version ?? 1) + 1;
+    source.metadata = {
+      ...source.metadata,
+      ...input.metadata,
+      ...extractedLegalMetadata,
+      chunkCount: embeddedChunks.length,
+      sha256Verified: true
+    };
+    await source.save();
+
+    await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
+      chunkCount: embeddedChunks.length,
+      sha256Hash,
+      requiresHumanReview: source.status !== 'approved'
+    });
+
+    return {
+      source,
+      chunkCount: embeddedChunks.length,
+      sha256Hash,
+      extractedLegalMetadata,
+      reviewStatus: 'pending_human_review'
+    };
+  } catch (error) {
+    source.ingestionStatus = 'failed';
+    source.ingestionError = error instanceof Error ? error.message : 'Knowledge source ingestion failed';
+    await source.save();
+    throw error;
+  }
 };
 
 export const approveKnowledgeSource = async (context: RagServiceContext, sourceId: string): Promise<unknown> => {

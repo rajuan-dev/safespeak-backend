@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import { REPORT_SEVERITIES, REPORT_STATUSES } from './reports.constants';
+import {
+  REPORT_SEVERITIES,
+  REPORT_STATUSES,
+  REPORT_SUBMISSION_ANONYMITY_MODES,
+  REPORT_SUBMISSION_STATUSES
+} from './reports.constants';
 
 const objectIdSchema = z.string().regex(/^[a-f\d]{24}$/i);
 
@@ -39,5 +44,42 @@ export const createReportSchema = z
 
 export const updateReportSchema = createReportSchema.partial();
 
+export const reportDestinationPreviewQuerySchema = z
+  .object({
+    destinationType: z.string().trim().max(120).optional(),
+    jurisdiction: z.string().trim().max(80).optional()
+  })
+  .strict();
+
+export const submitReportSchema = z
+  .object({
+    destinationId: objectIdSchema,
+    anonymityMode: z.enum(REPORT_SUBMISSION_ANONYMITY_MODES).default('identified'),
+    notes: z.string().trim().max(2000).optional(),
+    confirmConsent: z.boolean().refine((value) => value, {
+      message: 'Submission consent confirmation is required'
+    })
+  })
+  .strict();
+
+export const submissionParamsSchema = z.object({
+  id: objectIdSchema,
+  submissionId: objectIdSchema
+});
+
+export const acknowledgeSubmissionSchema = z
+  .object({
+    status: z.enum(REPORT_SUBMISSION_STATUSES).default('acknowledged'),
+    externalReference: z.string().trim().min(1).max(200),
+    acknowledgementMessage: z.string().trim().max(2000).optional(),
+    acknowledgementPayload: z.record(z.unknown()).default({})
+  })
+  .strict();
+
 export type CreateReportInput = z.infer<typeof createReportSchema>;
 export type UpdateReportInput = z.infer<typeof updateReportSchema>;
+export type ReportDestinationPreviewQueryInput = z.infer<
+  typeof reportDestinationPreviewQuerySchema
+>;
+export type SubmitReportInput = z.infer<typeof submitReportSchema>;
+export type AcknowledgeSubmissionInput = z.infer<typeof acknowledgeSubmissionSchema>;

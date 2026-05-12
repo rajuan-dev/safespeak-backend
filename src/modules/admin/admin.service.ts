@@ -14,17 +14,25 @@ import { ResourceModel } from '@modules/resources/resources.model';
 import { ReportModel } from '@modules/reports/reports.model';
 
 import { ADMIN_ACTIONS } from './admin.constants';
-import { AdminDestinationModel, AdminTaxonomyModel, PrivacyRequestModel } from './admin.model';
+import {
+  AdminDestinationModel,
+  AdminSubmissionTemplateModel,
+  AdminTaxonomyModel,
+  PrivacyRequestModel
+} from './admin.model';
 import type {
   DestinationInput,
   DestinationQueryInput,
   CreateAdminUserInput,
   PrivacyRequestQueryInput,
+  SubmissionTemplateInput,
+  SubmissionTemplateQueryInput,
   TaxonomyInput,
   TaxonomyQueryInput,
   UpdateAdminUserInput,
   UpdateDestinationInput,
   UpdatePrivacyRequestInput,
+  UpdateSubmissionTemplateInput,
   UpdateTaxonomyInput,
   UsersQueryInput
 } from './admin.schema';
@@ -209,9 +217,11 @@ export const listDestinations = async (
 ): Promise<unknown[]> => {
   const destinations = await AdminDestinationModel.find({
     ...(query.type ? { type: query.type } : {}),
+    ...(query.channel ? { channel: query.channel } : {}),
+    ...(query.jurisdiction ? { jurisdiction: query.jurisdiction } : {}),
     ...(query.isActive !== undefined ? { isActive: query.isActive } : {})
   })
-    .sort({ type: 1, name: 1 })
+    .sort({ type: 1, jurisdiction: 1, name: 1 })
     .lean();
 
   await audit(context, ADMIN_ACTIONS.destinationsList, undefined, { count: destinations.length });
@@ -249,6 +259,58 @@ export const updateDestination = async (
   });
 
   return destination;
+};
+
+export const listSubmissionTemplates = async (
+  context: AdminServiceContext,
+  query: SubmissionTemplateQueryInput
+): Promise<unknown[]> => {
+  const templates = await AdminSubmissionTemplateModel.find({
+    ...(query.destinationType ? { destinationType: query.destinationType } : {}),
+    ...(query.channel ? { channel: query.channel } : {}),
+    ...(query.jurisdiction ? { jurisdiction: query.jurisdiction } : {}),
+    ...(query.isActive !== undefined ? { isActive: query.isActive } : {})
+  })
+    .sort({ destinationType: 1, jurisdiction: 1, name: 1 })
+    .lean();
+
+  await audit(context, ADMIN_ACTIONS.submissionTemplatesList, undefined, { count: templates.length });
+
+  return templates;
+};
+
+export const createSubmissionTemplate = async (
+  context: AdminServiceContext,
+  input: SubmissionTemplateInput
+): Promise<unknown> => {
+  const template = await AdminSubmissionTemplateModel.create(input);
+  await audit(context, ADMIN_ACTIONS.submissionTemplateCreate, template._id.toString(), {
+    key: input.key,
+    destinationType: input.destinationType,
+    channel: input.channel
+  });
+
+  return template;
+};
+
+export const updateSubmissionTemplate = async (
+  context: AdminServiceContext,
+  id: string,
+  input: UpdateSubmissionTemplateInput
+): Promise<unknown> => {
+  const template = await AdminSubmissionTemplateModel.findById(id);
+
+  if (!template) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Submission template not found');
+  }
+
+  template.set(input);
+  await template.save();
+  await audit(context, ADMIN_ACTIONS.submissionTemplateUpdate, template._id.toString(), {
+    changedFields: Object.keys(input)
+  });
+
+  return template;
 };
 
 export const listKnowledgeSourcesForAdmin = async (

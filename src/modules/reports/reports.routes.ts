@@ -4,18 +4,30 @@ import { authenticateSessionOrUser } from '@common/middleware/auth.middleware';
 import { validate } from '@common/middleware/validate.middleware';
 
 import {
+  acknowledgeReportSubmissionController,
   createReportController,
   deleteReportController,
+  getReportDestinationPreviewsController,
   getReportController,
   getReportStatusController,
   getReportTimelineController,
+  listReportSubmissionsController,
   listReportsController,
   markInfoOnlyController,
   requestDeleteController,
+  submitReportController,
   updateReportController,
   withdrawReportController
 } from './reports.controller';
-import { createReportSchema, reportParamsSchema, updateReportSchema } from './reports.schema';
+import {
+  acknowledgeSubmissionSchema,
+  createReportSchema,
+  reportDestinationPreviewQuerySchema,
+  reportParamsSchema,
+  submissionParamsSchema,
+  submitReportSchema,
+  updateReportSchema
+} from './reports.schema';
 
 export const reportsRoutes = Router();
 
@@ -53,4 +65,24 @@ reportsRoutes.get(
   '/:id/timeline',
   validate({ params: reportParamsSchema }),
   getReportTimelineController
+);
+reportsRoutes.get(
+  '/:id/destinations',
+  validate({ params: reportParamsSchema, query: reportDestinationPreviewQuerySchema }),
+  getReportDestinationPreviewsController
+);
+reportsRoutes.get(
+  '/:id/submissions',
+  validate({ params: reportParamsSchema }),
+  listReportSubmissionsController
+);
+reportsRoutes.post(
+  '/:id/submissions',
+  validate({ params: reportParamsSchema, body: submitReportSchema }),
+  submitReportController
+);
+reportsRoutes.post(
+  '/:id/submissions/:submissionId/acknowledge',
+  validate({ params: submissionParamsSchema, body: acknowledgeSubmissionSchema }),
+  acknowledgeReportSubmissionController
 );
