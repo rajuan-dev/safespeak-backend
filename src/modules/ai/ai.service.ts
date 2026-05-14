@@ -14,6 +14,10 @@ import { EvidenceModel } from '@modules/evidence/evidence.model';
 import { ReportModel, type ReportDocument } from '@modules/reports/reports.model';
 import { getPublicPlatformSettings } from '@modules/platform-settings/platform-settings.service';
 import {
+  getTaxonomyCatalog,
+  type PublicTaxonomyRecord
+} from '@modules/taxonomies/taxonomies.service';
+import {
   buildInformationOnlyDisclaimer,
   detectClinicalAdviceRisk,
   detectCrisisRisk,
@@ -245,6 +249,12 @@ const callOpenAIJson = async <TOutput>(
 };
 
 const systemPrompt = (language: string): string => getSafeSpeakSystemPrompt(language);
+
+const formatTaxonomyPromptList = (records: PublicTaxonomyRecord[]): string =>
+  records
+    .slice(0, 40)
+    .map((record) => `${record.key} (${record.label})`)
+    .join('; ');
 
 const recordAiInteraction = async (
   context: AiServiceContext,
@@ -531,9 +541,14 @@ export const extractIncidentFields = async (
   await assertAiConsent(context.owner);
   const { citations } = await buildReportContext(context.owner, input.reportId);
   const language = input.language ?? DEFAULT_AI_LANGUAGE;
+  const taxonomyCatalog = await getTaxonomyCatalog();
   const output = await callOpenAIJson<Record<string, unknown>>(
     systemPrompt(language),
-    `Extract incident fields as JSON with keys: incidentType, who, what, when, where, how, risks, evidenceMentioned, missingInformation, citations, reviewStatus. Narrative: ${input.narrative}`
+    [
+      'Extract incident fields as JSON with keys: incidentType, who, what, when, where, how, risks, evidenceMentioned, missingInformation, citations, reviewStatus.',
+      `Use the closest active incident_type taxonomy key for incidentType when possible: ${formatTaxonomyPromptList(taxonomyCatalog.incidentTypes)}.`,
+      `Narrative: ${input.narrative}`
+    ].join(' ')
   );
 
   return recordAiInteraction(
@@ -558,6 +573,7 @@ export const triageReport = async (
   const language = input.language ?? report?.language ?? DEFAULT_AI_LANGUAGE;
   const narrative =
     input.narrative ?? report?.originalNarrative ?? report?.translatedNarrative ?? '';
+  const taxonomyCatalog = await getTaxonomyCatalog();
   const output = await callOpenAIJson<Record<string, unknown>>(
     `${systemPrompt(language)} ${aiSettings.triageSystemPrompt}`,
     [
@@ -566,7 +582,10 @@ export const triageReport = async (
       aiSettings.triageResponseTemplate,
       'Use keys: severitySignal, primarySupportNeed, specialtyTag, summary, assessmentBody, riskFactors, suggestedSupportCategories, recommendedActions, resourceRecommendations, nonLegalSafetyNotes, immediateSafetyFlag, confidence, citations, fallbackReason, pendingHumanReview, safetyFlags, disclaimer, reviewStatus.',
       'severitySignal should be one of: low, medium, high, urgent.',
-      'primarySupportNeed should be a concise human-readable label such as Mental Health Support or Immediate Safety Support.',
+      `Active incident_type taxonomy: ${formatTaxonomyPromptList(taxonomyCatalog.incidentTypes)}.`,
+      `Active support_need taxonomy: ${formatTaxonomyPromptList(taxonomyCatalog.supportNeeds)}.`,
+      'primarySupportNeed should use an active support_need label when one fits, otherwise a concise human-readable support label.',
+      'suggestedSupportCategories should prefer active support_need keys or labels when relevant.',
       'specialtyTag should be a short lowercase tag, 1 to 3 words.',
       'summary and assessmentBody should be concise and information-only.',
       'riskFactors, suggestedSupportCategories, recommendedActions, and nonLegalSafetyNotes should be short arrays of strings.',

@@ -62,6 +62,14 @@ export const submitReportSchema = z
   })
   .strict();
 
+export const submissionPreviewSchema = z
+  .object({
+    destinationIds: z.array(objectIdSchema).min(1).max(10),
+    anonymityMode: z.enum(REPORT_SUBMISSION_ANONYMITY_MODES).default('identified'),
+    notes: z.string().trim().max(2000).optional()
+  })
+  .strict();
+
 export const submissionParamsSchema = z.object({
   id: objectIdSchema,
   submissionId: objectIdSchema
@@ -82,4 +90,5 @@ export type ReportDestinationPreviewQueryInput = z.infer<
   typeof reportDestinationPreviewQuerySchema
 >;
 export type SubmitReportInput = z.infer<typeof submitReportSchema>;
+export type SubmissionPreviewInput = z.infer<typeof submissionPreviewSchema>;
 export type AcknowledgeSubmissionInput = z.infer<typeof acknowledgeSubmissionSchema>;

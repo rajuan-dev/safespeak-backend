@@ -1,8 +1,11 @@
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import { StatusCodes } from 'http-status-codes';
 import type { FilterQuery, HydratedDocument, PipelineStage } from 'mongoose';
+import mammoth from 'mammoth';
+import { PDFParse } from 'pdf-parse';
 
 import { ApiError } from '@common/errors/ApiError';
 import { env } from '@config/env';
@@ -74,6 +77,29 @@ const OFFICIAL_REFRESH_TIMEOUT_MS = 15000;
 const OFFICIAL_REFRESH_MAX_BYTES = 750000;
 const OFFICIAL_REFRESH_DEFAULT_DAYS = 90;
 const OFFICIAL_REFRESH_MIN_TEXT_LENGTH = 200;
+const KNOWLEDGE_DOCUMENT_STORAGE_ROOT = path.resolve('./storage/rag-knowledge-sources');
+const KNOWLEDGE_DOCUMENT_MAX_BYTES = 52428800;
+const KNOWLEDGE_DOCUMENT_ALLOWED_EXTENSIONS = new Set([
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.txt',
+  '.md',
+  '.html',
+  '.htm',
+  '.csv',
+  '.json'
+]);
+const KNOWLEDGE_DOCUMENT_ALLOWED_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+  'text/markdown',
+  'text/html',
+  'text/csv',
+  'application/json'
+]);
 const MATERIAL_REVIEW_FIELDS = new Set<keyof UpdateKnowledgeSourceInput>([
   'title',
   'description',
@@ -419,6 +445,105 @@ const normalizeFetchedText = (body: string, contentType: string): string => {
   return body.replace(/\s+/g, ' ').trim();
 };
 
+type UploadedKnowledgeDocument = Express.Multer.File;
+
+const getDocumentExtension = (fileName: string): string => path.extname(fileName).toLowerCase();
+
+const isSupportedKnowledgeDocument = (file: UploadedKnowledgeDocument): boolean => {
+  const extension = getDocumentExtension(file.originalname);
+
+  return (
+    KNOWLEDGE_DOCUMENT_ALLOWED_EXTENSIONS.has(extension) ||
+    KNOWLEDGE_DOCUMENT_ALLOWED_MIME_TYPES.has(file.mimetype)
+  );
+};
+
+const ensureSupportedKnowledgeDocument = (file: UploadedKnowledgeDocument): void => {
+  if (!isSupportedKnowledgeDocument(file)) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Unsupported legal document type. Upload PDF, Word, TXT, MD, HTML, CSV, or JSON.'
+    );
+  }
+
+  if (file.size > KNOWLEDGE_DOCUMENT_MAX_BYTES) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Knowledge document exceeds the 50MB limit.');
+  }
+};
+
+const createKnowledgeDocumentStorageKey = (originalFileName: string): string => {
+  const extension = getDocumentExtension(originalFileName);
+  const dateSegment = new Date().toISOString().slice(0, 10);
+
+  return `${dateSegment}/${randomUUID()}${extension}`;
+};
+
+const getKnowledgeDocumentStoragePath = (storageKey: string): string => {
+  const absolutePath = path.resolve(KNOWLEDGE_DOCUMENT_STORAGE_ROOT, storageKey);
+
+  if (!absolutePath.startsWith(KNOWLEDGE_DOCUMENT_STORAGE_ROOT)) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Invalid knowledge document storage key');
+  }
+
+  return absolutePath;
+};
+
+const saveKnowledgeDocumentFile = async (
+  file: UploadedKnowledgeDocument
+): Promise<string> => {
+  ensureSupportedKnowledgeDocument(file);
+  const storageKey = createKnowledgeDocumentStorageKey(file.originalname);
+  const absolutePath = getKnowledgeDocumentStoragePath(storageKey);
+
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, file.buffer);
+
+  return storageKey;
+};
+
+const extractTextFromUploadedDocument = async (
+  file: UploadedKnowledgeDocument
+): Promise<{ text: string; extractor: string }> => {
+  const extension = getDocumentExtension(file.originalname);
+  const mimeType = file.mimetype.toLowerCase();
+
+  if (extension === '.pdf' || mimeType === 'application/pdf') {
+    const parser = new PDFParse({ data: file.buffer });
+
+    try {
+      const parsed = await parser.getText();
+
+      return { text: parsed.text.trim(), extractor: 'pdf-parse' };
+    } finally {
+      await parser.destroy();
+    }
+  }
+
+  if (
+    extension === '.docx' ||
+    mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ) {
+    const parsed = await mammoth.extractRawText({ buffer: file.buffer });
+
+    return { text: parsed.value.trim(), extractor: 'mammoth' };
+  }
+
+  if (extension === '.doc' || mimeType === 'application/msword') {
+    throw new ApiError(
+      StatusCodes.UNPROCESSABLE_ENTITY,
+      'Legacy .doc extraction is not supported. Convert the document to .docx or PDF and upload again.'
+    );
+  }
+
+  const rawText = file.buffer.toString('utf8');
+
+  if (extension === '.html' || extension === '.htm' || /html/i.test(file.mimetype)) {
+    return { text: htmlToText(rawText), extractor: 'html-to-text' };
+  }
+
+  return { text: rawText.trim(), extractor: 'plain-text' };
+};
+
 const fetchOfficialSourceText = async (rawUrl: string): Promise<OfficialFetchResult> => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OFFICIAL_REFRESH_TIMEOUT_MS);
@@ -527,7 +652,6 @@ const embedKnowledgeSourceText = async (
   const hashChanged = previousHash !== sha256Hash;
   const chunks = chunkText(text);
 
-  await RagChunkModel.deleteMany({ sourceId: source._id });
   source.ingestionStatus = 'chunked';
   await source.save();
 
@@ -558,8 +682,26 @@ const embedKnowledgeSourceText = async (
   );
 
   if (embeddedChunks.length > 0) {
-    await RagChunkModel.insertMany(embeddedChunks);
+    await RagChunkModel.bulkWrite(
+      embeddedChunks.map((chunk) => ({
+        updateOne: {
+          filter: {
+            sourceId: chunk.sourceId,
+            chunkIndex: chunk.chunkIndex
+          },
+          update: {
+            $set: chunk
+          },
+          upsert: true
+        }
+      }))
+    );
   }
+
+  await RagChunkModel.deleteMany({
+    sourceId: source._id,
+    chunkIndex: { $gte: embeddedChunks.length }
+  });
 
   source.sha256Hash = sha256Hash;
   source.rawText = text;
@@ -621,6 +763,38 @@ export const listKnowledgeSources = async (): Promise<unknown[]> =>
   RagKnowledgeSourceModel.find({ deletedAt: { $exists: false } })
     .sort({ createdAt: -1 })
     .lean();
+
+export const listKnowledgeSourceChunks = async (
+  context: RagServiceContext,
+  sourceId: string
+): Promise<unknown[]> => {
+  ownerFilter(context.owner);
+  const source = await getSource(sourceId);
+
+  const chunks = await RagChunkModel.find({ sourceId: source._id })
+    .sort({ chunkIndex: 1 })
+    .limit(20)
+    .select('chunkIndex chunkText tokenCount citationLabel citationUrl sectionRef metadata createdAt updatedAt')
+    .lean();
+
+  await auditRagAction(context, RAG_ACTIONS.search, source._id.toString(), {
+    mode: 'admin_chunk_preview',
+    chunkCount: chunks.length
+  });
+
+  return chunks.map((chunk) => ({
+    id: chunk._id.toString(),
+    chunkIndex: chunk.chunkIndex,
+    text: chunk.chunkText,
+    tokenCount: chunk.tokenCount,
+    citationLabel: chunk.citationLabel,
+    citationUrl: chunk.citationUrl,
+    sectionRef: chunk.sectionRef,
+    metadata: chunk.metadata,
+    createdAt: chunk.createdAt,
+    updatedAt: chunk.updatedAt
+  }));
+};
 
 export const createKnowledgeSource = async (
   context: RagServiceContext,
@@ -712,6 +886,134 @@ export const deleteKnowledgeSource = async (
   await RagChunkModel.deleteMany({ sourceId: source._id });
 
   await auditRagAction(context, RAG_ACTIONS.sourceDelete, source._id.toString());
+};
+
+export const uploadKnowledgeSourceDocument = async (
+  context: RagServiceContext,
+  sourceId: string,
+  file: UploadedKnowledgeDocument | undefined,
+  options: { ingestImmediately?: boolean } = {}
+): Promise<unknown> => {
+  ownerFilter(context.owner);
+
+  if (!file) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Legal source document file is required');
+  }
+
+  const source = await getSource(sourceId);
+  assertMergedKnowledgeSourceGovernance(source, {});
+
+  const storageKey = await saveKnowledgeDocumentFile(file);
+  const uploadedAt = new Date();
+  const documentMetadata = {
+    originalFileName: file.originalname,
+    mimeType: file.mimetype,
+    fileSizeBytes: file.size,
+    storageKey,
+    uploadedAt: uploadedAt.toISOString()
+  };
+
+  source.metadata = {
+    ...source.metadata,
+    uploadedFile: documentMetadata,
+    ingestionPipeline: {
+      status: options.ingestImmediately === false ? 'needs_review' : 'extracting',
+      updatedAt: uploadedAt.toISOString()
+    }
+  };
+  source.ingestionStatus = options.ingestImmediately === false ? 'metadata_only' : 'fetched';
+  source.ingestionError = undefined;
+  source.fetchedAt = uploadedAt;
+  await source.save();
+
+  if (options.ingestImmediately === false) {
+    await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
+      mode: 'admin_document_upload',
+      fileName: file.originalname,
+      fileSizeBytes: file.size,
+      status: 'uploaded_needs_review'
+    });
+
+    return {
+      source,
+      uploadedFile: documentMetadata,
+      ingestionStatus: source.ingestionStatus,
+      message: 'Document uploaded. Run ingestion after review.'
+    };
+  }
+
+  try {
+    const extracted = await extractTextFromUploadedDocument(file);
+
+    if (extracted.text.length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH) {
+      throw new ApiError(
+        StatusCodes.UNPROCESSABLE_ENTITY,
+        'Extracted document text was too short to index safely.'
+      );
+    }
+
+    const result = await embedKnowledgeSourceText(source, extracted.text, {
+      metadata: {
+        uploadedFile: documentMetadata,
+        ingestionPipeline: {
+          status: 'indexed',
+          extractor: extracted.extractor,
+          updatedAt: new Date().toISOString()
+        }
+      },
+      refreshMode: 'admin_document_upload',
+      contentType: file.mimetype,
+      contentLength: file.size
+    });
+
+    await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
+      mode: 'admin_document_upload',
+      fileName: file.originalname,
+      fileSizeBytes: file.size,
+      extractor: extracted.extractor,
+      chunkCount: result.chunkCount,
+      sha256Hash: result.sha256Hash,
+      requiresHumanReview: source.status !== 'approved'
+    });
+
+    return {
+      source,
+      uploadedFile: documentMetadata,
+      chunkCount: result.chunkCount,
+      sha256Hash: result.sha256Hash,
+      extractedLegalMetadata: result.extractedLegalMetadata,
+      ingestionStatus: source.ingestionStatus
+    };
+  } catch (error) {
+    source.ingestionStatus = 'failed';
+    source.ingestionError =
+      error instanceof Error ? error.message : 'Document extraction failed';
+    source.metadata = {
+      ...source.metadata,
+      uploadedFile: documentMetadata,
+      ingestionPipeline: {
+        status: 'failed',
+        updatedAt: new Date().toISOString(),
+        error: source.ingestionError
+      }
+    };
+    await source.save();
+
+    await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
+      mode: 'admin_document_upload',
+      fileName: file.originalname,
+      fileSizeBytes: file.size,
+      failed: true,
+      error: source.ingestionError
+    });
+
+    return {
+      source,
+      uploadedFile: documentMetadata,
+      ingestionStatus: source.ingestionStatus,
+      error: source.ingestionError
+    };
+  }
 };
 
 export const ingestKnowledgeSource = async (
@@ -924,7 +1226,7 @@ export const approveKnowledgeSource = async (
   context: RagServiceContext,
   sourceId: string
 ): Promise<unknown> => {
-  const owner = ownerFilter(context.owner);
+  ownerFilter(context.owner);
   const source = await getSource(sourceId);
   assertMergedKnowledgeSourceGovernance(source, {});
 
@@ -949,17 +1251,13 @@ export const approveKnowledgeSource = async (
     );
   }
 
-  if (source.createdBy && owner.userId && source.createdBy.toString() === owner.userId) {
-    throw new ApiError(
-      StatusCodes.FORBIDDEN,
-      'Knowledge sources must be approved by a different admin'
-    );
-  }
-
   source.status = 'approved';
   source.approvedBy = context.owner.userId as never;
   source.approvedAt = new Date();
   source.lastVerifiedAt = new Date();
+  if (source.ingestionStatus === 'embedded') {
+    source.ingestionError = undefined;
+  }
   await source.save();
 
   await auditRagAction(context, RAG_ACTIONS.sourceApprove, source._id.toString());

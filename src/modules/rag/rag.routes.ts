@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 
 import {
   authenticateSessionOrUser,
@@ -13,12 +14,14 @@ import {
   createKnowledgeSourceController,
   deleteKnowledgeSourceController,
   ingestKnowledgeSourceController,
+  listKnowledgeSourceChunksController,
   listKnowledgeSourcesController,
   rejectKnowledgeSourceController,
   reindexKnowledgeSourceController,
   refreshKnowledgeSourceController,
   searchRagController,
   timelineAssistantController,
+  uploadKnowledgeSourceDocumentController,
   updateKnowledgeSourceController
 } from './rag.controller';
 import {
@@ -34,6 +37,14 @@ import {
 } from './rag.schema';
 
 export const ragRoutes = Router();
+
+const documentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 52428800,
+    files: 1
+  }
+});
 
 ragRoutes.post(
   '/search',
@@ -69,6 +80,17 @@ ragRoutes.delete(
   '/knowledge-sources/:id',
   validate({ params: ragParamsSchema }),
   deleteKnowledgeSourceController
+);
+ragRoutes.get(
+  '/knowledge-sources/:id/chunks',
+  validate({ params: ragParamsSchema }),
+  listKnowledgeSourceChunksController
+);
+ragRoutes.post(
+  '/knowledge-sources/:id/document',
+  documentUpload.single('file'),
+  validate({ params: ragParamsSchema }),
+  uploadKnowledgeSourceDocumentController
 );
 ragRoutes.post(
   '/knowledge-sources/:id/ingest',

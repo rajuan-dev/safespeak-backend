@@ -25,6 +25,7 @@ export interface AdminTaxonomyDocument {
   description?: string;
   isActive: boolean;
   metadata: Record<string, unknown>;
+  deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -118,6 +119,11 @@ const adminTaxonomySchema = new Schema<AdminTaxonomyDocument>(
     metadata: {
       type: Schema.Types.Mixed,
       default: {}
+    },
+    deletedAt: {
+      type: Date,
+      required: false,
+      index: true
     }
   },
   { timestamps: true }

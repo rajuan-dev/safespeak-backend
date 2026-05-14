@@ -12,6 +12,7 @@ import {
   adminContentResourcesListController,
   adminContentResourceUpdateController,
   publicContentResourceDownloadController,
+  publicContentResourceImageController,
   publicContentResourcesListController
 } from './content-resources.controller';
 import {
@@ -28,7 +29,7 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: env.CONTENT_RESOURCE_MAX_FILE_SIZE_BYTES,
-    files: 1
+    files: 2
   }
 });
 
@@ -41,6 +42,11 @@ contentResourceRoutes.get(
   '/:id/download',
   validate({ params: contentResourceParamsSchema }),
   publicContentResourceDownloadController
+);
+contentResourceRoutes.get(
+  '/:id/image',
+  validate({ params: contentResourceParamsSchema }),
+  publicContentResourceImageController
 );
 
 adminContentResourceRoutes.use(authenticateUser, requireAdminRole());
@@ -56,13 +62,19 @@ adminContentResourceRoutes.get(
 );
 adminContentResourceRoutes.post(
   '/',
-  upload.single('file'),
+  upload.fields([
+    { name: 'file', maxCount: 1 },
+    { name: 'image', maxCount: 1 }
+  ]),
   validate({ body: createContentResourceSchema }),
   adminContentResourceCreateController
 );
 adminContentResourceRoutes.patch(
   '/:id',
-  upload.single('file'),
+  upload.fields([
+    { name: 'file', maxCount: 1 },
+    { name: 'image', maxCount: 1 }
+  ]),
   validate({ params: contentResourceParamsSchema, body: updateContentResourceSchema }),
   adminContentResourceUpdateController
 );

@@ -7,6 +7,15 @@ export const CONTENT_RESOURCE_ALLOWED_MIME_TYPES = [
   'video/mp4'
 ] as const;
 
+export const CONTENT_RESOURCE_ALLOWED_IMAGE_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif'
+] as const;
+
+export const CONTENT_RESOURCE_MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+
 export const CONTENT_RESOURCE_ACTIONS = {
   listPublic: 'content_resources.list_public',
   listAdmin: 'admin.content_resources.list',

@@ -94,6 +94,13 @@ export const submissionTemplateQuerySchema = z.object({
   isActive: z.coerce.boolean().optional()
 });
 
+export const reportDeliveryQuerySchema = z.object({
+  status: z.string().trim().max(80).optional(),
+  destinationType: z.enum(ADMIN_DESTINATION_TYPES).optional(),
+  channel: z.enum(ADMIN_DESTINATION_CHANNELS).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25)
+});
+
 export const submissionTemplateSchema = z.object({
   key: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(200),
@@ -132,6 +139,7 @@ export type DestinationQueryInput = z.infer<typeof destinationQuerySchema>;
 export type DestinationInput = z.infer<typeof destinationSchema>;
 export type UpdateDestinationInput = z.infer<typeof updateDestinationSchema>;
 export type SubmissionTemplateQueryInput = z.infer<typeof submissionTemplateQuerySchema>;
+export type ReportDeliveryQueryInput = z.infer<typeof reportDeliveryQuerySchema>;
 export type SubmissionTemplateInput = z.infer<typeof submissionTemplateSchema>;
 export type UpdateSubmissionTemplateInput = z.infer<typeof updateSubmissionTemplateSchema>;
 export type PrivacyRequestQueryInput = z.infer<typeof privacyRequestQuerySchema>;

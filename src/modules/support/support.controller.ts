@@ -5,21 +5,31 @@ import { asyncHandler } from '@common/errors/asyncHandler';
 import { successResponse } from '@common/responses/api-response';
 
 import type {
+  AdminWarmReferralQueryInput,
   AdvocateRequestInput,
   RecommendationsInput,
   SafetyPlanInput,
+  SupportServiceInput,
   UpdateSafetyPlanInput,
+  UpdateSupportServiceInput,
+  UpdateWarmReferralStatusInput,
   WarmReferralInput
 } from './support.schema';
 import {
   createAdvocateRequest,
   createSafetyPlan,
+  createSupportService,
   createWarmReferral,
+  deleteSupportService,
   getRecommendations,
   getSupportServiceById,
   listAdvocates,
+  listAdminSupportServices,
+  listAdminWarmReferrals,
   listSafetyPlans,
   listSupportServices,
+  updateWarmReferralStatus,
+  updateSupportService,
   updateSafetyPlan
 } from './support.service';
 
@@ -31,6 +41,63 @@ const getContext = (req: Request) => ({
   ip: req.ip,
   userAgent: req.get('user-agent')
 });
+
+const getAdminContext = (req: Request) => ({
+  adminUserId: req.user?.id ?? '',
+  ip: req.ip,
+  userAgent: req.get('user-agent')
+});
+
+export const listAdminServicesController = asyncHandler(async (req: Request, res: Response) => {
+  const services = await listAdminSupportServices(getAdminContext(req), req.query);
+
+  res.status(StatusCodes.OK).json(successResponse('Support services retrieved', { services }));
+});
+
+export const createAdminServiceController = asyncHandler(async (req: Request, res: Response) => {
+  const service = await createSupportService(getAdminContext(req), req.body as SupportServiceInput);
+
+  res.status(StatusCodes.CREATED).json(successResponse('Support service created', { service }));
+});
+
+export const updateAdminServiceController = asyncHandler(async (req: Request, res: Response) => {
+  const service = await updateSupportService(
+    getAdminContext(req),
+    req.params.id,
+    req.body as UpdateSupportServiceInput
+  );
+
+  res.status(StatusCodes.OK).json(successResponse('Support service updated', { service }));
+});
+
+export const deleteAdminServiceController = asyncHandler(async (req: Request, res: Response) => {
+  await deleteSupportService(getAdminContext(req), req.params.id);
+
+  res.status(StatusCodes.OK).json(successResponse('Support service deleted', null));
+});
+
+export const listAdminWarmReferralsController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const referrals = await listAdminWarmReferrals(
+      getAdminContext(req),
+      req.query as unknown as AdminWarmReferralQueryInput
+    );
+
+    res.status(StatusCodes.OK).json(successResponse('Warm referrals retrieved', { referrals }));
+  }
+);
+
+export const updateAdminWarmReferralController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const referral = await updateWarmReferralStatus(
+      getAdminContext(req),
+      req.params.id,
+      req.body as UpdateWarmReferralStatusInput
+    );
+
+    res.status(StatusCodes.OK).json(successResponse('Warm referral updated', { referral }));
+  }
+);
 
 export const listServicesController = asyncHandler(async (req: Request, res: Response) => {
   const services = await listSupportServices(getContext(req), req.query);

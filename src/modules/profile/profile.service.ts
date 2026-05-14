@@ -2,14 +2,16 @@ import { StatusCodes } from 'http-status-codes';
 
 import { ApiError } from '@common/errors/ApiError';
 import { createAuditLog } from '@modules/audit/audit.service';
+import {
+  getCommunityProfileOptions as getTaxonomyCommunityProfileOptions,
+  getCulturalProfileOptions as getTaxonomyCulturalProfileOptions,
+  getFaithProfileOptions as getTaxonomyFaithProfileOptions,
+  getProfileLanguageOptions
+} from '@modules/taxonomies/taxonomies.service';
 
 import {
-  COMMUNITY_PROFILE_OPTIONS,
-  CULTURAL_PROFILE_OPTIONS,
   DEFAULT_PROFILE_JURISDICTION,
-  DEFAULT_PROFILE_LANGUAGE,
-  FAITH_PROFILE_OPTIONS,
-  LANGUAGE_OPTIONS
+  DEFAULT_PROFILE_LANGUAGE
 } from './profile.constants';
 import { UserProfileModel } from './profile.model';
 import type { UpdateProfileInput } from './profile.schema';
@@ -74,9 +76,7 @@ export const updateProfile = async (
   return profile;
 };
 
-export const getLanguageOptions = (): typeof LANGUAGE_OPTIONS => LANGUAGE_OPTIONS;
-export const getCulturalProfileOptions = (): typeof CULTURAL_PROFILE_OPTIONS =>
-  CULTURAL_PROFILE_OPTIONS;
-export const getFaithProfileOptions = (): typeof FAITH_PROFILE_OPTIONS => FAITH_PROFILE_OPTIONS;
-export const getCommunityProfileOptions = (): typeof COMMUNITY_PROFILE_OPTIONS =>
-  COMMUNITY_PROFILE_OPTIONS;
+export const getLanguageOptions = getProfileLanguageOptions;
+export const getCulturalProfileOptions = getTaxonomyCulturalProfileOptions;
+export const getFaithProfileOptions = getTaxonomyFaithProfileOptions;
+export const getCommunityProfileOptions = getTaxonomyCommunityProfileOptions;

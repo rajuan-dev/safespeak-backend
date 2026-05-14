@@ -9,13 +9,16 @@ import {
   adminEducationalContentController,
   adminKnowledgeSourcesController,
   adminPrivacyRequestsController,
+  adminReportDeliveriesController,
   adminSubmissionTemplatesController,
+  adminTaxonomyController,
   adminTaxonomiesController,
   adminUsersController,
   createAdminUserController,
   createAdminDestinationController,
   createAdminSubmissionTemplateController,
   createAdminTaxonomyController,
+  deleteAdminTaxonomyController,
   updateAdminUserController,
   updateAdminDestinationController,
   updateAdminPrivacyRequestController,
@@ -28,6 +31,7 @@ import {
   destinationQuerySchema,
   destinationSchema,
   privacyRequestQuerySchema,
+  reportDeliveryQuerySchema,
   submissionTemplateQuerySchema,
   submissionTemplateSchema,
   taxonomyQuerySchema,
@@ -59,11 +63,21 @@ adminRoutes.patch(
   updateAdminUserController
 );
 adminRoutes.get('/taxonomies', validate({ query: taxonomyQuerySchema }), adminTaxonomiesController);
+adminRoutes.get(
+  '/taxonomies/:id',
+  validate({ params: adminParamsSchema }),
+  adminTaxonomyController
+);
 adminRoutes.post('/taxonomies', validate({ body: taxonomySchema }), createAdminTaxonomyController);
 adminRoutes.patch(
   '/taxonomies/:id',
   validate({ params: adminParamsSchema, body: updateTaxonomySchema }),
   updateAdminTaxonomyController
+);
+adminRoutes.delete(
+  '/taxonomies/:id',
+  validate({ params: adminParamsSchema }),
+  deleteAdminTaxonomyController
 );
 adminRoutes.get(
   '/destinations',
@@ -94,6 +108,11 @@ adminRoutes.patch(
   '/submission-templates/:id',
   validate({ params: adminParamsSchema, body: updateSubmissionTemplateSchema }),
   updateAdminSubmissionTemplateController
+);
+adminRoutes.get(
+  '/report-deliveries',
+  validate({ query: reportDeliveryQuerySchema }),
+  adminReportDeliveriesController
 );
 adminRoutes.get('/knowledge-sources', adminKnowledgeSourcesController);
 adminRoutes.get('/educational-content', adminEducationalContentController);

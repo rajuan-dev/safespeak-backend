@@ -8,6 +8,7 @@ import type {
   CreateAdminUserInput,
   DestinationInput,
   PrivacyRequestQueryInput,
+  ReportDeliveryQueryInput,
   SubmissionTemplateInput,
   TaxonomyInput,
   UpdateAdminUserInput,
@@ -22,12 +23,15 @@ import {
   createDestination,
   createSubmissionTemplate,
   createTaxonomy,
+  deleteTaxonomy,
   getEducationalContentOverview,
   getAdminAnalyticsOverview,
   getAdminDashboard,
+  getTaxonomy,
   listDestinations,
   listKnowledgeSourcesForAdmin,
   listPrivacyRequests,
+  listReportDeliveries,
   listSubmissionTemplates,
   listTaxonomies,
   listUsers,
@@ -76,6 +80,12 @@ export const adminTaxonomiesController = asyncHandler(async (req: Request, res: 
   res.status(StatusCodes.OK).json(successResponse('Admin taxonomies retrieved', { taxonomies }));
 });
 
+export const adminTaxonomyController = asyncHandler(async (req: Request, res: Response) => {
+  const taxonomy = await getTaxonomy(getContext(req), req.params.id);
+
+  res.status(StatusCodes.OK).json(successResponse('Admin taxonomy retrieved', { taxonomy }));
+});
+
 export const createAdminTaxonomyController = asyncHandler(async (req: Request, res: Response) => {
   const taxonomy = await createTaxonomy(getContext(req), req.body as TaxonomyInput);
 
@@ -90,6 +100,12 @@ export const updateAdminTaxonomyController = asyncHandler(async (req: Request, r
   );
 
   res.status(StatusCodes.OK).json(successResponse('Admin taxonomy updated', { taxonomy }));
+});
+
+export const deleteAdminTaxonomyController = asyncHandler(async (req: Request, res: Response) => {
+  const taxonomy = await deleteTaxonomy(getContext(req), req.params.id);
+
+  res.status(StatusCodes.OK).json(successResponse('Admin taxonomy deleted', { taxonomy }));
 });
 
 export const adminDestinationsController = asyncHandler(async (req: Request, res: Response) => {
@@ -156,6 +172,19 @@ export const updateAdminSubmissionTemplateController = asyncHandler(
     res
       .status(StatusCodes.OK)
       .json(successResponse('Admin submission template updated', { template }));
+  }
+);
+
+export const adminReportDeliveriesController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const deliveries = await listReportDeliveries(
+      getContext(req),
+      req.query as unknown as ReportDeliveryQueryInput
+    );
+
+    res.status(StatusCodes.OK).json(successResponse('Admin report deliveries retrieved', {
+      deliveries
+    }));
   }
 );
 

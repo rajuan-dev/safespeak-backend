@@ -1,4 +1,5 @@
 import { connectDatabase, disconnectDatabase } from '@config/database';
+import { logger } from '@common/utils/logger';
 import { RagKnowledgeSourceModel } from '@modules/rag/rag.model';
 
 const templates = {
@@ -97,15 +98,16 @@ const seedKnowledgeSources = async (): Promise<void> => {
     updatedCount += result.modifiedCount;
   }
 
-  console.log(
-    `Seeded knowledge source defaults. upserted=${upsertedCount} updated=${updatedCount} total=${defaultKnowledgeSources.length}`
+  logger.info(
+    { upsertedCount, updatedCount, total: defaultKnowledgeSources.length },
+    'Seeded knowledge source defaults'
   );
 
   await disconnectDatabase();
 };
 
 void seedKnowledgeSources().catch(async (error: unknown) => {
-  console.error(error);
+  logger.error({ error }, 'Failed to seed knowledge source defaults');
   await disconnectDatabase().catch(() => undefined);
   process.exit(1);
 });

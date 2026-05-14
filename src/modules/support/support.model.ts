@@ -1,7 +1,17 @@
 import { Schema, model, type Types } from 'mongoose';
 
-import { SUPPORT_REQUEST_STATUSES } from './support.constants';
-import type { SupportRequestStatus } from './support.types';
+import {
+  SUPPORT_REQUEST_STATUSES,
+  SUPPORT_SERVICE_CARD_ICONS,
+  SUPPORT_SERVICE_OVERLAY_TONES,
+  SUPPORT_SERVICE_TYPES
+} from './support.constants';
+import type {
+  SupportRequestStatus,
+  SupportServiceCardIcon,
+  SupportServiceOverlayTone,
+  SupportServiceType
+} from './support.types';
 
 interface SupportOwnedDocument {
   userId?: Types.ObjectId;
@@ -12,9 +22,27 @@ interface SupportOwnedDocument {
 
 export interface WarmReferralDocument extends SupportOwnedDocument {
   serviceId: string;
+  serviceName?: string;
+  serviceType?: string;
+  partnerKey?: string;
   contactPreference: 'phone' | 'email' | 'in_app';
   safeContact: string;
   notes?: string;
+  minimalSummary: {
+    incidentSummary?: string;
+    immediateSafetyConcerns?: string;
+    preferredContactMethod?: string;
+    interpreterPreference?: string;
+    culturalContext?: string;
+    informationOnlyDisclaimer: boolean;
+  };
+  includedFields: string[];
+  shareProfileContext: boolean;
+  consentSnapshot: {
+    warm_referral: boolean;
+    capturedAt: Date;
+  };
+  metadata?: Record<string, unknown>;
   status: SupportRequestStatus;
 }
 
@@ -33,6 +61,41 @@ export interface SafetyPlanDocument extends SupportOwnedDocument {
   copingStrategies: string[];
   emergencySteps: string[];
   isActive: boolean;
+}
+
+export interface SupportServiceDocument {
+  key: string;
+  name: string;
+  type: SupportServiceType;
+  description: string;
+  cardImageUrl?: string;
+  cardImageAlt?: string;
+  cardIcon: SupportServiceCardIcon;
+  cardOverlayTone: SupportServiceOverlayTone;
+  availabilityLabel: string;
+  referralTitle: string;
+  referralDescription: string;
+  resourceLinks: Array<{
+    label: string;
+    url: string;
+  }>;
+  jurisdiction: string;
+  regions: string[];
+  languages: string[];
+  eligibility: string[];
+  bookingUrl?: string;
+  websiteUrl?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  crisis: boolean;
+  informationOnly: boolean;
+  isPublished: boolean;
+  isActive: boolean;
+  sortOrder: number;
+  metadata?: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 const ownerFields = {
@@ -58,6 +121,22 @@ const warmReferralSchema = new Schema<WarmReferralDocument>(
       required: true,
       trim: true
     },
+    serviceName: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    serviceType: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    partnerKey: {
+      type: String,
+      required: false,
+      trim: true,
+      index: true
+    },
     contactPreference: {
       type: String,
       enum: ['phone', 'email', 'in_app'],
@@ -70,6 +149,62 @@ const warmReferralSchema = new Schema<WarmReferralDocument>(
     },
     notes: {
       type: String,
+      required: false
+    },
+    minimalSummary: {
+      incidentSummary: {
+        type: String,
+        required: false,
+        trim: true
+      },
+      immediateSafetyConcerns: {
+        type: String,
+        required: false,
+        trim: true
+      },
+      preferredContactMethod: {
+        type: String,
+        required: false,
+        trim: true
+      },
+      interpreterPreference: {
+        type: String,
+        required: false,
+        trim: true
+      },
+      culturalContext: {
+        type: String,
+        required: false,
+        trim: true
+      },
+      informationOnlyDisclaimer: {
+        type: Boolean,
+        default: true,
+        required: true
+      }
+    },
+    includedFields: {
+      type: [String],
+      default: []
+    },
+    shareProfileContext: {
+      type: Boolean,
+      default: false
+    },
+    consentSnapshot: {
+      warm_referral: {
+        type: Boolean,
+        default: true,
+        required: true
+      },
+      capturedAt: {
+        type: Date,
+        default: Date.now,
+        required: true
+      }
+    },
+    metadata: {
+      type: Schema.Types.Mixed,
       required: false
     },
     status: {
@@ -145,9 +280,169 @@ const safetyPlanSchema = new Schema<SafetyPlanDocument>(
   { timestamps: true }
 );
 
+warmReferralSchema.index({ status: 1, createdAt: -1 });
+warmReferralSchema.index({ serviceId: 1, createdAt: -1 });
+
+const supportServiceSchema = new Schema<SupportServiceDocument>(
+  {
+    key: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+      unique: true,
+      index: true
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    type: {
+      type: String,
+      enum: SUPPORT_SERVICE_TYPES,
+      required: true,
+      index: true
+    },
+    description: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    cardImageUrl: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    cardImageAlt: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    cardIcon: {
+      type: String,
+      enum: SUPPORT_SERVICE_CARD_ICONS,
+      default: 'shield',
+      required: true
+    },
+    cardOverlayTone: {
+      type: String,
+      enum: SUPPORT_SERVICE_OVERLAY_TONES,
+      default: 'default',
+      required: true
+    },
+    availabilityLabel: {
+      type: String,
+      required: true,
+      trim: true,
+      default: 'Available Now'
+    },
+    referralTitle: {
+      type: String,
+      required: true,
+      trim: true,
+      default: 'Warm Referral'
+    },
+    referralDescription: {
+      type: String,
+      required: true,
+      trim: true,
+      default:
+        'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.'
+    },
+    resourceLinks: {
+      type: [
+        {
+          label: { type: String, required: true, trim: true },
+          url: { type: String, required: true, trim: true }
+        }
+      ],
+      default: []
+    },
+    jurisdiction: {
+      type: String,
+      required: true,
+      trim: true,
+      index: true
+    },
+    regions: {
+      type: [String],
+      default: []
+    },
+    languages: {
+      type: [String],
+      default: ['en']
+    },
+    eligibility: {
+      type: [String],
+      default: []
+    },
+    bookingUrl: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    websiteUrl: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    phone: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    email: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    address: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    crisis: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+    informationOnly: {
+      type: Boolean,
+      default: true
+    },
+    isPublished: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true
+    },
+    sortOrder: {
+      type: Number,
+      default: 0
+    },
+    metadata: {
+      type: Schema.Types.Mixed,
+      required: false
+    }
+  },
+  { timestamps: true }
+);
+
+supportServiceSchema.index({ isPublished: 1, isActive: 1, type: 1, jurisdiction: 1 });
+supportServiceSchema.index({ sortOrder: 1, name: 1 });
+
 export const WarmReferralModel = model<WarmReferralDocument>('WarmReferral', warmReferralSchema);
 export const AdvocateRequestModel = model<AdvocateRequestDocument>(
   'AdvocateRequest',
   advocateRequestSchema
 );
 export const SafetyPlanModel = model<SafetyPlanDocument>('SafetyPlan', safetyPlanSchema);
+export const SupportServiceModel = model<SupportServiceDocument>(
+  'SupportService',
+  supportServiceSchema
+);

@@ -34,6 +34,7 @@ export interface ReportDestinationPreview {
   destinationKey: string;
   destinationType: string;
   destinationName: string;
+  reason: string;
   channel: string;
   jurisdiction: string;
   languages: string[];
@@ -59,4 +60,25 @@ export interface ReportDestinationPreview {
     structuredFields: Record<string, unknown>;
     evidence: Array<Record<string, unknown>>;
   };
+}
+
+export interface ReportSubmissionPayloadPreview {
+  destination: Omit<ReportDestinationPreview, 'payloadPreview'>;
+  template: {
+    templateId?: string;
+    templateKey?: string;
+    templateName?: string;
+    fieldMappings: Array<{
+      source: string;
+      target: string;
+      required: boolean;
+      transform?: string;
+    }>;
+  };
+  missingRequiredInfo: string[];
+  missingMappedFields: string[];
+  requiredConsentFlags: string[];
+  missingConsentFlags: string[];
+  payload: Record<string, unknown>;
+  evidence: Array<Record<string, unknown>>;
 }

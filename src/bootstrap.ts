@@ -3,15 +3,17 @@ import mongoose from 'mongoose';
 import { logger } from './common/utils/logger';
 import { connectDatabase } from './config/database';
 import { seedDefaultSuperAdmin } from './modules/admin/admin.seed';
+import { seedDefaultTaxonomies } from './modules/taxonomies/taxonomies.seed';
 
 let bootstrapPromise: Promise<void> | null = null;
 
 const initializeApp = async (): Promise<void> => {
-  if (mongoose.connection.readyState !== 1) {
+  if (mongoose.connection.readyState !== mongoose.ConnectionStates.connected) {
     await connectDatabase();
   }
 
   await seedDefaultSuperAdmin();
+  await seedDefaultTaxonomies();
 };
 
 export const bootstrapApp = async (): Promise<void> => {

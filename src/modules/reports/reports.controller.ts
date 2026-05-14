@@ -8,6 +8,7 @@ import {
   createReport,
   getReportById,
   getReportDestinationPreviews,
+  getReportSubmissionPayloadPreviews,
   getReportStatus,
   getReportTimeline,
   listReportSubmissions,
@@ -23,6 +24,7 @@ import type {
   AcknowledgeSubmissionInput,
   CreateReportInput,
   ReportDestinationPreviewQueryInput,
+  SubmissionPreviewInput,
   SubmitReportInput,
   UpdateReportInput
 } from './reports.schema';
@@ -124,6 +126,15 @@ export const listReportSubmissionsController = asyncHandler(async (req: Request,
 
   ApiResponse.success(res, 'Report submissions retrieved', { submissions });
 });
+
+export const previewReportSubmissionsController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const input = req.body as unknown as SubmissionPreviewInput;
+    const previews = await getReportSubmissionPayloadPreviews(getOwner(req), req.params.id, input);
+
+    ApiResponse.success(res, 'Report submission payload previews generated', { previews });
+  }
+);
 
 export const submitReportController = asyncHandler(async (req: Request, res: Response) => {
   const input = req.body as unknown as SubmitReportInput;

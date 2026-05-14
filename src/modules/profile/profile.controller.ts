@@ -31,24 +31,32 @@ export const updateProfileController = asyncHandler(async (req: Request, res: Re
   ApiResponse.success(res, 'Profile updated', { profile });
 });
 
-export const getLanguagesController = (_req: Request, res: Response): void => {
-  ApiResponse.success(res, 'Languages retrieved', { languages: getLanguageOptions() });
-};
+export const getLanguagesController = asyncHandler(async (_req: Request, res: Response) => {
+  const languages = await getLanguageOptions();
 
-export const getCulturalProfilesController = (_req: Request, res: Response): void => {
+  ApiResponse.success(res, 'Languages retrieved', { languages });
+});
+
+export const getCulturalProfilesController = asyncHandler(async (_req: Request, res: Response) => {
+  const culturalProfiles = await getCulturalProfileOptions();
+
   ApiResponse.success(res, 'Cultural profiles retrieved', {
-    culturalProfiles: getCulturalProfileOptions()
+    culturalProfiles
   });
-};
+});
 
-export const getFaithProfilesController = (_req: Request, res: Response): void => {
+export const getFaithProfilesController = asyncHandler(async (_req: Request, res: Response) => {
+  const faithProfiles = await getFaithProfileOptions();
+
   ApiResponse.success(res, 'Faith profiles retrieved', {
-    faithProfiles: getFaithProfileOptions()
+    faithProfiles
   });
-};
+});
 
-export const getCommunityProfilesController = (_req: Request, res: Response): void => {
+export const getCommunityProfilesController = asyncHandler(async (_req: Request, res: Response) => {
+  const communityProfiles = await getCommunityProfileOptions();
+
   ApiResponse.success(res, 'Community profiles retrieved', {
-    communityProfiles: getCommunityProfileOptions()
+    communityProfiles
   });
-};
+});

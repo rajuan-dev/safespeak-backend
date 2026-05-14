@@ -14,6 +14,7 @@ import {
   listReportSubmissionsController,
   listReportsController,
   markInfoOnlyController,
+  previewReportSubmissionsController,
   requestDeleteController,
   submitReportController,
   updateReportController,
@@ -24,6 +25,7 @@ import {
   createReportSchema,
   reportDestinationPreviewQuerySchema,
   reportParamsSchema,
+  submissionPreviewSchema,
   submissionParamsSchema,
   submitReportSchema,
   updateReportSchema
@@ -75,6 +77,11 @@ reportsRoutes.get(
   '/:id/submissions',
   validate({ params: reportParamsSchema }),
   listReportSubmissionsController
+);
+reportsRoutes.post(
+  '/:id/submission-previews',
+  validate({ params: reportParamsSchema, body: submissionPreviewSchema }),
+  previewReportSubmissionsController
 );
 reportsRoutes.post(
   '/:id/submissions',

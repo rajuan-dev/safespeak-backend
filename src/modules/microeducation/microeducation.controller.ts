@@ -6,12 +6,12 @@ import { successResponse } from '@common/responses/api-response';
 
 import type {
   CreateMicroEducationInput,
-  MicroEducationAdminQueryInput,
   UpdateMicroEducationInput
 } from './microeducation.schema';
 import {
   createMicroEducation,
   deleteMicroEducation,
+  getMicroEducationImage,
   listAdminMicroEducation,
   listPublicMicroEducation,
   updateMicroEducation
@@ -33,11 +33,27 @@ export const publicMicroEducationController = asyncHandler(
   }
 );
 
+export const publicMicroEducationImageController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const image = await getMicroEducationImage(getContext(req), req.params.id);
+
+    res.setHeader('Content-Type', image.mimeType);
+    res.setHeader('Content-Length', String(image.fileSizeBytes));
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${encodeURIComponent(image.originalFileName)}"`
+    );
+
+    image.stream.pipe(res);
+  }
+);
+
 export const adminMicroEducationListController = asyncHandler(
   async (req: Request, res: Response) => {
     const items = await listAdminMicroEducation(
       getContext(req),
-      req.query as unknown as MicroEducationAdminQueryInput
+      req.query
     );
 
     res
@@ -48,7 +64,11 @@ export const adminMicroEducationListController = asyncHandler(
 
 export const adminMicroEducationCreateController = asyncHandler(
   async (req: Request, res: Response) => {
-    const item = await createMicroEducation(getContext(req), req.body as CreateMicroEducationInput);
+    const item = await createMicroEducation(
+      getContext(req),
+      req.body as CreateMicroEducationInput,
+      req.file
+    );
 
     res.status(StatusCodes.CREATED).json(successResponse('Micro-education item created', { item }));
   }
@@ -59,7 +79,8 @@ export const adminMicroEducationUpdateController = asyncHandler(
     const item = await updateMicroEducation(
       getContext(req),
       req.params.id,
-      req.body as UpdateMicroEducationInput
+      req.body as UpdateMicroEducationInput,
+      req.file
     );
 
     res.status(StatusCodes.OK).json(successResponse('Micro-education item updated', { item }));

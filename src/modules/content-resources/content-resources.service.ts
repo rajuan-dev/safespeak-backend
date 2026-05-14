@@ -11,7 +11,9 @@ import { env } from '@config/env';
 
 import {
   CONTENT_RESOURCE_ACTIONS,
-  CONTENT_RESOURCE_ALLOWED_MIME_TYPES
+  CONTENT_RESOURCE_ALLOWED_IMAGE_MIME_TYPES,
+  CONTENT_RESOURCE_ALLOWED_MIME_TYPES,
+  CONTENT_RESOURCE_MAX_IMAGE_SIZE_BYTES
 } from './content-resources.constants';
 import {
   ContentResourceModel,
@@ -29,6 +31,7 @@ type UploadedFile = Express.Multer.File;
 const contentResourceRoot = path.resolve(env.CONTENT_RESOURCE_STORAGE_PATH);
 
 const allowedMimeTypes = new Set<string>(CONTENT_RESOURCE_ALLOWED_MIME_TYPES);
+const allowedImageMimeTypes = new Set<string>(CONTENT_RESOURCE_ALLOWED_IMAGE_MIME_TYPES);
 
 const getDisplayStatus = (resource: Pick<ContentResourceDocument, 'reviewDate' | 'status'>) => {
   if (resource.status === 'draft') {
@@ -77,6 +80,10 @@ const serializeContentResource = (resource: ContentResourceDocument | Record<str
     originalFileName: raw.originalFileName,
     mimeType: raw.mimeType,
     fileSizeBytes: raw.fileSizeBytes,
+    imageOriginalFileName: raw.imageOriginalFileName,
+    imageMimeType: raw.imageMimeType,
+    imageSizeBytes: raw.imageSizeBytes,
+    imagePath: raw.imageStorageKey ? `/content-resources/${raw._id.toString()}/image` : undefined,
     downloadPath: `/content-resources/${raw._id.toString()}/download`,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt
@@ -114,11 +121,24 @@ const ensureSupportedFile = (file: UploadedFile): void => {
   }
 };
 
-const createStorageKey = (originalFileName: string): string => {
+const ensureSupportedImage = (file: UploadedFile): void => {
+  if (!allowedImageMimeTypes.has(file.mimetype)) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Unsupported resource image type. Upload a JPG, PNG, WebP, or GIF image.'
+    );
+  }
+
+  if (file.size > CONTENT_RESOURCE_MAX_IMAGE_SIZE_BYTES) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Resource image exceeds the 10MB limit.');
+  }
+};
+
+const createStorageKey = (originalFileName: string, kind: 'file' | 'image'): string => {
   const extension = path.extname(originalFileName).toLowerCase();
   const dateSegment = new Date().toISOString().slice(0, 10);
 
-  return `${dateSegment}/${randomUUID()}${extension}`;
+  return `${dateSegment}/${kind}s/${randomUUID()}${extension}`;
 };
 
 const getStoragePath = (storageKey: string): string => {
@@ -134,7 +154,19 @@ const getStoragePath = (storageKey: string): string => {
 const saveUploadedFile = async (file: UploadedFile): Promise<string> => {
   ensureSupportedFile(file);
 
-  const storageKey = createStorageKey(file.originalname);
+  const storageKey = createStorageKey(file.originalname, 'file');
+  const absolutePath = getStoragePath(storageKey);
+
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, file.buffer);
+
+  return storageKey;
+};
+
+const saveUploadedImage = async (file: UploadedFile): Promise<string> => {
+  ensureSupportedImage(file);
+
+  const storageKey = createStorageKey(file.originalname, 'image');
   const absolutePath = getStoragePath(storageKey);
 
   await mkdir(path.dirname(absolutePath), { recursive: true });
@@ -157,7 +189,8 @@ const buildResourceSearchQuery = (query: ContentResourceQueryInput, publicOnly: 
             { language: { $regex: normalizedSearch, $options: 'i' } },
             { category: { $regex: normalizedSearch, $options: 'i' } },
             { jurisdiction: { $regex: normalizedSearch, $options: 'i' } },
-            { originalFileName: { $regex: normalizedSearch, $options: 'i' } }
+            { originalFileName: { $regex: normalizedSearch, $options: 'i' } },
+            { imageOriginalFileName: { $regex: normalizedSearch, $options: 'i' } }
           ]
         }
       : {})
@@ -212,19 +245,29 @@ export const getAdminContentResource = async (
 export const createContentResource = async (
   context: ContentResourceServiceContext,
   input: CreateContentResourceInput,
-  file?: UploadedFile
+  file?: UploadedFile,
+  image?: UploadedFile
 ): Promise<unknown> => {
   if (!file) {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'Resource file is required');
   }
 
   const storageKey = await saveUploadedFile(file);
+  const imageStorageKey = image ? await saveUploadedImage(image) : undefined;
   const resource = await ContentResourceModel.create({
     ...input,
     originalFileName: file.originalname,
     storageKey,
     mimeType: file.mimetype,
     fileSizeBytes: file.size,
+    ...(image
+      ? {
+          imageOriginalFileName: image.originalname,
+          imageStorageKey,
+          imageMimeType: image.mimetype,
+          imageSizeBytes: image.size
+        }
+      : {}),
     createdBy: context.actor?.userId,
     updatedBy: context.actor?.userId
   });
@@ -232,7 +275,8 @@ export const createContentResource = async (
   await auditContentResourceAction(context, CONTENT_RESOURCE_ACTIONS.create, resource._id.toString(), {
     category: input.category,
     status: input.status,
-    fileSizeBytes: file.size
+    fileSizeBytes: file.size,
+    imageSizeBytes: image?.size
   });
 
   return serializeContentResource(resource);
@@ -242,7 +286,8 @@ export const updateContentResource = async (
   context: ContentResourceServiceContext,
   id: string,
   input: UpdateContentResourceInput,
-  file?: UploadedFile
+  file?: UploadedFile,
+  image?: UploadedFile
 ): Promise<unknown> => {
   const resource = await ContentResourceModel.findOne({ _id: id, deletedAt: { $exists: false } });
 
@@ -263,12 +308,21 @@ export const updateContentResource = async (
     updatePayload.fileSizeBytes = file.size;
   }
 
+  if (image) {
+    const imageStorageKey = await saveUploadedImage(image);
+    updatePayload.imageOriginalFileName = image.originalname;
+    updatePayload.imageStorageKey = imageStorageKey;
+    updatePayload.imageMimeType = image.mimetype;
+    updatePayload.imageSizeBytes = image.size;
+  }
+
   resource.set(updatePayload);
   await resource.save();
 
   await auditContentResourceAction(context, CONTENT_RESOURCE_ACTIONS.update, resource._id.toString(), {
     changedFields: Object.keys(input),
-    fileReplaced: Boolean(file)
+    fileReplaced: Boolean(file),
+    imageReplaced: Boolean(image)
   });
 
   return serializeContentResource(resource);
@@ -322,5 +376,35 @@ export const getContentResourceDownload = async (
     originalFileName: resource.originalFileName,
     mimeType: resource.mimeType,
     fileSizeBytes: resource.fileSizeBytes
+  };
+};
+
+export const getContentResourceImage = async (
+  _context: ContentResourceServiceContext,
+  id: string
+): Promise<{
+  stream: NodeJS.ReadableStream;
+  originalFileName: string;
+  mimeType: string;
+  fileSizeBytes: number;
+}> => {
+  const resource = await ContentResourceModel.findOne({
+    _id: id,
+    status: 'published',
+    deletedAt: { $exists: false }
+  });
+
+  if (!resource?.imageStorageKey || !resource.imageMimeType || !resource.imageSizeBytes) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Content resource image not found');
+  }
+
+  const absolutePath = getStoragePath(resource.imageStorageKey);
+  await stat(absolutePath);
+
+  return {
+    stream: createReadStream(absolutePath),
+    originalFileName: resource.imageOriginalFileName ?? 'content-resource-image',
+    mimeType: resource.imageMimeType,
+    fileSizeBytes: resource.imageSizeBytes
   };
 };

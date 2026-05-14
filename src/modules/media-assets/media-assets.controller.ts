@@ -6,7 +6,6 @@ import { successResponse } from '@common/responses/api-response';
 
 import type {
   CreateMediaAssetInput,
-  MediaAssetQueryInput,
   UpdateMediaAssetInput
 } from './media-assets.schema';
 import {
@@ -31,7 +30,7 @@ export const publicMediaAssetsListController = asyncHandler(
   async (req: Request, res: Response) => {
     const assets = await listPublicMediaAssets(
       getContext(req),
-      req.query as unknown as MediaAssetQueryInput
+      req.query
     );
 
     res.status(StatusCodes.OK).json(successResponse('Media assets retrieved', { assets }));
@@ -57,7 +56,7 @@ export const adminMediaAssetsListController = asyncHandler(
   async (req: Request, res: Response) => {
     const assets = await listAdminMediaAssets(
       getContext(req),
-      req.query as unknown as MediaAssetQueryInput
+      req.query
     );
 
     res.status(StatusCodes.OK).json(successResponse('Admin media assets retrieved', { assets }));

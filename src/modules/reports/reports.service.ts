@@ -17,7 +17,8 @@ import { AnonymousSessionModel } from '@modules/sessions/sessions.model';
 
 import {
   buildSubmissionPayloadFromTemplate,
-  executeReportDelivery
+  executeReportDelivery,
+  getMissingRequiredTemplateFields
 } from './reports-delivery.service';
 import { WITHDRAW_BLOCKED_STATUSES } from './reports.constants';
 import { ReportModel, ReportSubmissionModel } from './reports.model';
@@ -26,10 +27,16 @@ import type {
   AcknowledgeSubmissionInput,
   CreateReportInput,
   ReportDestinationPreviewQueryInput,
+  SubmissionPreviewInput,
   SubmitReportInput,
   UpdateReportInput
 } from './reports.schema';
-import type { ReportDestinationPreview, ReportOwner, ReportStatus } from './reports.types';
+import type {
+  ReportDestinationPreview,
+  ReportOwner,
+  ReportStatus,
+  ReportSubmissionPayloadPreview
+} from './reports.types';
 
 const ownerFilter = (owner: ReportOwner): ReportOwner => {
   if (!owner.userId && !owner.sessionId) {
@@ -232,10 +239,13 @@ const getDestinationMetadata = (
 ): {
   requiredConsentFlags: string[];
   incidentTypes: string[];
+  recommendationReason?: string;
 } => {
   const metadata = destination.metadata as {
     requiredConsentFlags?: unknown;
     incidentTypes?: unknown;
+    recommendationReason?: unknown;
+    reason?: unknown;
   };
 
   return {
@@ -246,8 +256,39 @@ const getDestinationMetadata = (
         : [],
     incidentTypes: Array.isArray(metadata?.incidentTypes)
       ? metadata.incidentTypes.filter((value): value is string => typeof value === 'string')
-      : []
+      : [],
+    recommendationReason:
+      typeof metadata?.recommendationReason === 'string'
+        ? metadata.recommendationReason
+        : typeof metadata?.reason === 'string'
+          ? metadata.reason
+          : undefined
   };
+};
+
+const buildDestinationReason = (
+  report: HydratedDocument<ReportDocument>,
+  destination: AdminDestinationDocument,
+  incidentTypes: string[],
+  recommendationReason?: string
+): string => {
+  if (recommendationReason?.trim()) {
+    return recommendationReason.trim();
+  }
+
+  const reasonParts = [
+    report.incidentType && incidentTypes.includes(report.incidentType)
+      ? `matches the report incident type "${report.incidentType}"`
+      : undefined,
+    destination.jurisdiction === report.jurisdiction
+      ? `serves ${report.jurisdiction}`
+      : ['ALL', 'AU', 'National'].includes(destination.jurisdiction)
+        ? `accepts ${destination.jurisdiction} reports`
+        : undefined,
+    `supports ${destination.channel.replace(/_/g, ' ')} routing`
+  ].filter((part): part is string => Boolean(part));
+
+  return `Suggested because it ${reasonParts.join(', ')}.`;
 };
 
 const toSafeSubmission = <
@@ -281,16 +322,19 @@ const buildDestinationPreview = async (
     .sort({ createdAt: 1 })
     .lean();
 
-  const { requiredConsentFlags, incidentTypes } = getDestinationMetadata(destination);
+  const { requiredConsentFlags, incidentTypes, recommendationReason } =
+    getDestinationMetadata(destination);
   const missingRequiredInfo = destination.minimumRequiredInfo.filter(
     (field) => !hasMeaningfulFieldValue(getReportFieldValue(report, field, evidence.length))
   );
+  const reason = buildDestinationReason(report, destination, incidentTypes, recommendationReason);
 
   return {
     destinationId: destination._id.toString(),
     destinationKey: destination.key,
     destinationType: destination.type,
     destinationName: destination.name,
+    reason,
     channel: destination.channel,
     jurisdiction: destination.jurisdiction,
     languages: destination.languages,
@@ -347,6 +391,56 @@ const getMatchingSubmissionTemplate = async (
     jurisdiction: { $in: ['ALL', 'AU', 'National'] },
     isActive: true
   }).sort({ updatedAt: -1 });
+};
+
+const buildSubmissionBasePayload = (
+  preview: ReportDestinationPreview,
+  input: Pick<SubmissionPreviewInput, 'anonymityMode' | 'notes'>
+): Record<string, unknown> => ({
+  ...preview.payloadPreview,
+  destination: {
+    key: preview.destinationKey,
+    type: preview.destinationType,
+    name: preview.destinationName,
+    channel: preview.channel,
+    jurisdiction: preview.jurisdiction
+  },
+  anonymityMode: input.anonymityMode,
+  notes: input.notes ?? '',
+  consentFlags: preview.requiredConsentFlags
+});
+
+const buildSubmissionPayloadPreview = async (
+  report: HydratedDocument<ReportDocument>,
+  destination: AdminDestinationDocument,
+  consentSnapshot: Record<string, unknown>,
+  input: SubmissionPreviewInput
+): Promise<ReportSubmissionPayloadPreview> => {
+  const preview = await buildDestinationPreview(report, destination);
+  const template = await getMatchingSubmissionTemplate(destination);
+  const basePayload = buildSubmissionBasePayload(preview, input);
+  const payload = buildSubmissionPayloadFromTemplate(template, basePayload);
+  const missingMappedFields = getMissingRequiredTemplateFields(template, basePayload);
+  const missingConsentFlags = preview.requiredConsentFlags.filter(
+    (consentFlag) => !consentSnapshot[consentFlag]
+  );
+  const { payloadPreview, ...destinationPreview } = preview;
+
+  return {
+    destination: destinationPreview,
+    template: {
+      templateId: template?._id.toString(),
+      templateKey: template?.key,
+      templateName: template?.name,
+      fieldMappings: template?.fieldMappings ?? []
+    },
+    missingRequiredInfo: preview.missingRequiredInfo,
+    missingMappedFields,
+    requiredConsentFlags: preview.requiredConsentFlags,
+    missingConsentFlags,
+    payload,
+    evidence: payloadPreview.evidence
+  };
 };
 
 const getCandidateDestinations = async (
@@ -571,6 +665,40 @@ export const getReportDestinationPreviews = async (
   );
 };
 
+export const getReportSubmissionPayloadPreviews = async (
+  owner: ReportOwner,
+  reportId: string,
+  input: SubmissionPreviewInput
+): Promise<ReportSubmissionPayloadPreview[]> => {
+  const report = await getOwnedReport(owner, reportId);
+  const uniqueDestinationIds = [...new Set(input.destinationIds)];
+  const destinations = await AdminDestinationModel.find({
+    _id: { $in: uniqueDestinationIds },
+    isActive: true
+  });
+
+  if (destinations.length !== uniqueDestinationIds.length) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'One or more destinations were not found');
+  }
+
+  const destinationById = new Map(
+    destinations.map((destination) => [destination._id.toString(), destination])
+  );
+  const consentSnapshot = (await getCurrentConsent(owner)) as unknown as Record<string, unknown>;
+
+  return Promise.all(
+    uniqueDestinationIds.map((destinationId) => {
+      const destination = destinationById.get(destinationId);
+
+      if (!destination) {
+        throw new ApiError(StatusCodes.NOT_FOUND, 'Destination not found');
+      }
+
+      return buildSubmissionPayloadPreview(report, destination, consentSnapshot, input);
+    })
+  );
+};
+
 export const listReportSubmissions = async (
   owner: ReportOwner,
   reportId: string
@@ -630,19 +758,10 @@ export const submitReportToDestination = async (
   const now = new Date();
   const submissionId = new Types.ObjectId();
   const evidenceSnapshot = preview.payloadPreview.evidence;
-  const submissionPayload = buildSubmissionPayloadFromTemplate(template, {
-    ...preview.payloadPreview,
-    destination: {
-      key: preview.destinationKey,
-      type: preview.destinationType,
-      name: preview.destinationName,
-      channel: preview.channel,
-      jurisdiction: preview.jurisdiction
-    },
-    anonymityMode: input.anonymityMode,
-    notes: input.notes ?? '',
-    consentFlags: preview.requiredConsentFlags
-  });
+  const submissionPayload = buildSubmissionPayloadFromTemplate(
+    template,
+    buildSubmissionBasePayload(preview, input)
+  );
   const deliveryResult = await executeReportDelivery({
     submissionId: submissionId.toString(),
     refNo: report.refNo,

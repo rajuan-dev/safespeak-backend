@@ -6,7 +6,6 @@ import { successResponse } from '@common/responses/api-response';
 
 import type {
   CreateResourceInput,
-  ResourceAdminQueryInput,
   UpdateResourceInput
 } from './resources.schema';
 import {
@@ -34,7 +33,7 @@ export const publicResourcesController = asyncHandler(async (req: Request, res: 
 export const adminResourcesListController = asyncHandler(async (req: Request, res: Response) => {
   const resources = await listAdminResources(
     getContext(req),
-    req.query as unknown as ResourceAdminQueryInput
+    req.query
   );
 
   res.status(StatusCodes.OK).json(successResponse('Admin resources retrieved', { resources }));

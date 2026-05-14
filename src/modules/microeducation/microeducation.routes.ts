@@ -1,11 +1,14 @@
 import { Router } from 'express';
+import multer from 'multer';
 
 import { authenticateUser, requireAdminRole } from '@common/middleware/auth.middleware';
 import { validate } from '@common/middleware/validate.middleware';
+import { env } from '@config/env';
 
 import {
   adminMicroEducationCreateController,
   adminMicroEducationDeleteController,
+  publicMicroEducationImageController,
   adminMicroEducationListController,
   adminMicroEducationUpdateController,
   publicMicroEducationController
@@ -20,7 +23,20 @@ import {
 export const microEducationRoutes = Router();
 export const adminMicroEducationRoutes = Router();
 
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: env.MICRO_EDUCATION_IMAGE_MAX_FILE_SIZE_BYTES,
+    files: 1
+  }
+});
+
 microEducationRoutes.get('/', publicMicroEducationController);
+microEducationRoutes.get(
+  '/:id/image',
+  validate({ params: microEducationParamsSchema }),
+  publicMicroEducationImageController
+);
 
 adminMicroEducationRoutes.use(authenticateUser, requireAdminRole());
 adminMicroEducationRoutes.get(
@@ -30,11 +46,13 @@ adminMicroEducationRoutes.get(
 );
 adminMicroEducationRoutes.post(
   '/',
+  upload.single('image'),
   validate({ body: createMicroEducationSchema }),
   adminMicroEducationCreateController
 );
 adminMicroEducationRoutes.patch(
   '/:id',
+  upload.single('image'),
   validate({ params: microEducationParamsSchema, body: updateMicroEducationSchema }),
   adminMicroEducationUpdateController
 );

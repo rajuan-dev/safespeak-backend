@@ -183,15 +183,15 @@ For each feature, implement in this order:
 
 ### Task 6.1 Support/resource directory
 
-- Backend: support resources, categories, languages, regions, eligibility, booking links.
-- Admin: CRUD directory entries and publishing state.
-- Frontend: support navigator filters by language/profile/location.
+- Backend: support-service registry model/API with categories, languages, regions, eligibility, profile tags, contact details, and booking links.
+- Admin: CRUD directory entries and publishing/active state from the Crisis & Safety support-services page.
+- Frontend: support navigator filters by profile/location/service type and renders registry detail fields.
 - Validation: admin-published resource appears on frontend.
 
 ### Task 6.2 Warm referrals
 
-- Backend: referral request model with minimal summary and consent.
-- Admin: partner/org configuration and referral audit.
+- Backend: referral request model with minimal summary, included-field list, masked audit view, and consent snapshot.
+- Admin: support-service partner metadata plus warm-referral audit/status monitoring.
 - Frontend: user preview and consent before sharing summary.
 - Validation: referral payload contains only allowed minimal fields.
 

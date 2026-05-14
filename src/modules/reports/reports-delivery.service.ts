@@ -244,7 +244,7 @@ export const executeReportDelivery = async (
   }
 };
 
-const getValueAtPath = (record: Record<string, unknown>, source: string): unknown => {
+export const getValueAtPath = (record: Record<string, unknown>, source: string): unknown => {
   return source.split('.').reduce<unknown>((currentValue, segment) => {
     if (currentValue && typeof currentValue === 'object' && segment in currentValue) {
       return (currentValue as Record<string, unknown>)[segment];
@@ -302,4 +302,30 @@ export const buildSubmissionPayloadFromTemplate = (
     summary: renderTemplateString(template.summaryTemplate, basePayload),
     safespeak: basePayload
   };
+};
+
+export const getMissingRequiredTemplateFields = (
+  template: AdminSubmissionTemplateDocument | null | undefined,
+  basePayload: Record<string, unknown>
+): string[] => {
+  if (!template) {
+    return [];
+  }
+
+  return template.fieldMappings
+    .filter((mapping) => mapping.required)
+    .filter((mapping) => {
+      const value = getValueAtPath(basePayload, mapping.source);
+
+      if (typeof value === 'string') {
+        return !value.trim();
+      }
+
+      if (Array.isArray(value)) {
+        return value.length === 0;
+      }
+
+      return value === undefined || value === null;
+    })
+    .map((mapping) => mapping.source);
 };

@@ -11,7 +11,8 @@ import { MediaAssetModel } from '@modules/media-assets/media-assets.model';
 import { MicroEducationModel } from '@modules/microeducation/microeducation.model';
 import { RagKnowledgeSourceModel } from '@modules/rag/rag.model';
 import { ResourceModel } from '@modules/resources/resources.model';
-import { ReportModel } from '@modules/reports/reports.model';
+import { ReportModel, ReportSubmissionModel } from '@modules/reports/reports.model';
+import { buildTaxonomyMetadata } from '@modules/taxonomies/taxonomies.service';
 
 import { ADMIN_ACTIONS } from './admin.constants';
 import {
@@ -25,6 +26,7 @@ import type {
   DestinationQueryInput,
   CreateAdminUserInput,
   PrivacyRequestQueryInput,
+  ReportDeliveryQueryInput,
   SubmissionTemplateInput,
   SubmissionTemplateQueryInput,
   TaxonomyInput,
@@ -170,6 +172,7 @@ export const listTaxonomies = async (
   query: TaxonomyQueryInput
 ): Promise<unknown[]> => {
   const taxonomies = await AdminTaxonomyModel.find({
+    deletedAt: { $exists: false },
     ...(query.type ? { type: query.type } : {}),
     ...(query.isActive !== undefined ? { isActive: query.isActive } : {})
   })
@@ -181,11 +184,78 @@ export const listTaxonomies = async (
   return taxonomies;
 };
 
+export const getTaxonomy = async (
+  context: AdminServiceContext,
+  id: string
+): Promise<unknown> => {
+  const taxonomy = await AdminTaxonomyModel.findOne({
+    _id: id,
+    deletedAt: { $exists: false }
+  }).lean();
+
+  if (!taxonomy) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Taxonomy not found');
+  }
+
+  await audit(context, ADMIN_ACTIONS.taxonomyGet, id, {
+    type: taxonomy.type,
+    key: taxonomy.key
+  });
+
+  return taxonomy;
+};
+
 export const createTaxonomy = async (
   context: AdminServiceContext,
   input: TaxonomyInput
 ): Promise<unknown> => {
-  const taxonomy = await AdminTaxonomyModel.create(input);
+  const metadata = buildTaxonomyMetadata(input);
+  const existingTaxonomy = await AdminTaxonomyModel.findOne({
+    type: input.type,
+    key: input.key,
+    deletedAt: { $exists: false }
+  }).lean();
+
+  if (existingTaxonomy) {
+    throw new ApiError(StatusCodes.CONFLICT, 'This taxonomy key already exists for the selected type.', [
+      {
+        field: 'key',
+        type: input.type,
+        key: input.key,
+        message: 'Use a different key, or update the existing taxonomy record.'
+      }
+    ]);
+  }
+
+  const deletedTaxonomy = await AdminTaxonomyModel.findOneAndUpdate(
+    {
+      type: input.type,
+      key: input.key,
+      deletedAt: { $exists: true }
+    },
+    {
+      $set: {
+        ...input,
+        metadata
+      },
+      $unset: { deletedAt: '' }
+    },
+    { new: true }
+  );
+
+  if (deletedTaxonomy) {
+    await audit(context, ADMIN_ACTIONS.taxonomyCreate, deletedTaxonomy._id.toString(), {
+      type: input.type,
+      restoredDeletedRecord: true
+    });
+
+    return deletedTaxonomy;
+  }
+
+  const taxonomy = await AdminTaxonomyModel.create({
+    ...input,
+    metadata
+  });
   await audit(context, ADMIN_ACTIONS.taxonomyCreate, taxonomy._id.toString(), { type: input.type });
 
   return taxonomy;
@@ -196,16 +266,67 @@ export const updateTaxonomy = async (
   id: string,
   input: UpdateTaxonomyInput
 ): Promise<unknown> => {
-  const taxonomy = await AdminTaxonomyModel.findById(id);
+  const taxonomy = await AdminTaxonomyModel.findOne({
+    _id: id,
+    deletedAt: { $exists: false }
+  });
 
   if (!taxonomy) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Taxonomy not found');
   }
 
-  taxonomy.set(input);
+  const shouldRefreshMetadata =
+    input.metadata !== undefined
+    || input.type !== undefined
+    || input.key !== undefined
+    || input.label !== undefined
+    || input.description !== undefined
+    || Object.keys(taxonomy.metadata ?? {}).length === 0;
+
+  taxonomy.set({
+    ...input,
+    ...(shouldRefreshMetadata
+      ? {
+          metadata: buildTaxonomyMetadata({
+            type: input.type ?? taxonomy.type,
+            key: input.key ?? taxonomy.key,
+            label: input.label ?? taxonomy.label,
+            description: input.description ?? taxonomy.description,
+            metadata: {
+              ...(taxonomy.metadata ?? {}),
+              ...(input.metadata ?? {})
+            }
+          })
+        }
+      : {})
+  });
   await taxonomy.save();
   await audit(context, ADMIN_ACTIONS.taxonomyUpdate, taxonomy._id.toString(), {
     changedFields: Object.keys(input)
+  });
+
+  return taxonomy;
+};
+
+export const deleteTaxonomy = async (
+  context: AdminServiceContext,
+  id: string
+): Promise<unknown> => {
+  const taxonomy = await AdminTaxonomyModel.findOne({
+    _id: id,
+    deletedAt: { $exists: false }
+  });
+
+  if (!taxonomy) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Taxonomy not found');
+  }
+
+  taxonomy.isActive = false;
+  taxonomy.deletedAt = new Date();
+  await taxonomy.save();
+  await audit(context, ADMIN_ACTIONS.taxonomyDelete, taxonomy._id.toString(), {
+    type: taxonomy.type,
+    key: taxonomy.key
   });
 
   return taxonomy;
@@ -311,6 +432,46 @@ export const updateSubmissionTemplate = async (
   });
 
   return template;
+};
+
+export const listReportDeliveries = async (
+  context: AdminServiceContext,
+  query: ReportDeliveryQueryInput
+): Promise<unknown[]> => {
+  const submissions = await ReportSubmissionModel.find({
+    deletedAt: { $exists: false },
+    ...(query.status ? { status: query.status } : {}),
+    ...(query.destinationType ? { destinationType: query.destinationType } : {}),
+    ...(query.channel ? { channel: query.channel } : {})
+  })
+    .select({
+      payloadSnapshot: 0,
+      evidenceSnapshot: 0,
+      consentSnapshot: 0,
+      acknowledgementPayload: 0
+    })
+    .sort({ updatedAt: -1 })
+    .limit(query.limit)
+    .lean();
+
+  await audit(context, ADMIN_ACTIONS.reportDeliveriesList, undefined, {
+    count: submissions.length,
+    status: query.status,
+    destinationType: query.destinationType,
+    channel: query.channel
+  });
+
+  return submissions.map((submission) => ({
+    ...submission,
+    _id: submission._id.toString(),
+    reportId: submission.reportId.toString(),
+    destinationId: submission.destinationId.toString(),
+    templateId: submission.templateId?.toString(),
+    hasExternalReference: Boolean(submission.externalReference),
+    hasDeliveryArtifacts: Array.isArray(submission.deliveryArtifacts)
+      ? submission.deliveryArtifacts.length > 0
+      : false
+  }));
 };
 
 export const listKnowledgeSourcesForAdmin = async (

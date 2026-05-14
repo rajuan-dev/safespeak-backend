@@ -11,12 +11,14 @@ import {
   createKnowledgeSource,
   deleteKnowledgeSource,
   ingestKnowledgeSource,
+  listKnowledgeSourceChunks,
   listKnowledgeSources,
   rejectKnowledgeSource,
   reindexKnowledgeSource,
   refreshKnowledgeSource,
   runTimelineAssistant,
   searchRag,
+  uploadKnowledgeSourceDocument,
   updateKnowledgeSource
 } from './rag.service';
 import type { RagServiceContext } from './rag.types';
@@ -76,6 +78,14 @@ export const listKnowledgeSourcesController = asyncHandler(async (_req: Request,
   res.status(StatusCodes.OK).json(successResponse('Knowledge sources retrieved', { sources }));
 });
 
+export const listKnowledgeSourceChunksController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const chunks = await listKnowledgeSourceChunks(getContext(req), req.params.id);
+
+    res.status(StatusCodes.OK).json(successResponse('Knowledge source chunks retrieved', { chunks }));
+  }
+);
+
 export const createKnowledgeSourceController = asyncHandler(async (req: Request, res: Response) => {
   const source = await createKnowledgeSource(
     getContext(req),
@@ -100,6 +110,23 @@ export const deleteKnowledgeSourceController = asyncHandler(async (req: Request,
 
   res.status(StatusCodes.OK).json(successResponse('Knowledge source deleted', null));
 });
+
+export const uploadKnowledgeSourceDocumentController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await uploadKnowledgeSourceDocument(
+      getContext(req),
+      req.params.id,
+      req.file,
+      {
+        ingestImmediately: req.body?.ingestImmediately !== 'false'
+      }
+    );
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Knowledge source document uploaded', { result }, { informationOnly: true }));
+  }
+);
 
 export const ingestKnowledgeSourceController = asyncHandler(async (req: Request, res: Response) => {
   const result = await ingestKnowledgeSource(
