@@ -1,0 +1,961 @@
+import { StatusCodes } from 'http-status-codes';
+import type { HydratedDocument } from 'mongoose';
+
+import { ApiError } from '@common/errors/ApiError';
+import { createAuditLog } from '@modules/audit/audit.service';
+import { RagKnowledgeSourceModel } from '@modules/rag/rag.model';
+import { runTimelineAssistant } from '@modules/rag/rag.service';
+import { SupportServiceModel } from '@modules/support/support.model';
+
+import {
+  CONVERSATION_FLOW_ACTIONS
+} from './conversation-flow.constants';
+import {
+  ConversationFlowFactsModel,
+  ConversationFlowMessageModel,
+  ConversationFlowSessionModel,
+  ConversationFlowTriageModel,
+  type ConversationFlowFactsDocument,
+  type ConversationFlowSessionDocument
+} from './conversation-flow.model';
+import type {
+  AppendConversationFlowMessageInput,
+  CreateConversationFlowSessionInput
+} from './conversation-flow.schema';
+import type {
+  ConversationFlowCategory,
+  ConversationFlowContext,
+  ConversationFlowRiskLevel
+} from './conversation-flow.types';
+
+type HydratedConversationFlowSessionDocument = HydratedDocument<ConversationFlowSessionDocument>;
+
+const ownerFilter = (owner: ConversationFlowContext['owner']) => {
+  if (!owner.userId && !owner.sessionId) {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'User or anonymous session is required');
+  }
+
+  return owner.userId ? { userId: owner.userId } : { sessionId: owner.sessionId };
+};
+
+const audit = async (
+  context: ConversationFlowContext,
+  action: string,
+  resourceId?: string,
+  metadata?: Record<string, unknown>
+): Promise<void> => {
+  await createAuditLog({
+    actorType: context.owner.userId ? 'user' : 'anonymous_session',
+    actorId: context.owner.userId,
+    sessionId: context.owner.sessionId,
+    action,
+    resourceType: 'session',
+    resourceId,
+    ip: context.ip,
+    userAgent: context.userAgent,
+    metadata
+  });
+};
+
+const categoryDetectionRules: Array<{
+  category: ConversationFlowCategory;
+  keywords: RegExp[];
+  selectedTopics?: string[];
+  resourceTypes: string[];
+}> = [
+  {
+    category: 'domestic_violence',
+    keywords: [
+      /\b(partner|husband|wife|boyfriend|girlfriend|ex partner|ex-partner)\b/i,
+      /\b(domestic violence|family violence|family harm|controlling|coercive control)\b/i,
+      /\b(he hit me|she hit me|hurt me at home|threatened me at home)\b/i
+    ],
+    selectedTopics: ['domestic_violence'],
+    resourceTypes: [
+      'emergency',
+      'domestic_violence_agency',
+      'mental_health',
+      'safety_planning',
+      'evidence_guidance',
+      'council_support'
+    ]
+  },
+  {
+    category: 'workplace_bullying',
+    keywords: [
+      /\b(manager|supervisor|coworker|co-worker|colleague|hr|human resources|workplace)\b/i,
+      /\b(bullying at work|workplace bullying|unsafe at work)\b/i,
+      /\b(roster|shift|office|employer)\b/i
+    ],
+    resourceTypes: [
+      'workplace_body',
+      'legal',
+      'mental_health',
+      'government',
+      'evidence_guidance'
+    ]
+  },
+  {
+    category: 'racism_discrimination',
+    keywords: [
+      /\b(racist|racism|racial abuse|racial slur|discrimination|hate speech|vilification)\b/i,
+      /\b(because of my race|because i am muslim|because i am black|because of my skin)\b/i
+    ],
+    selectedTopics: ['racial_abuse'],
+    resourceTypes: [
+      'police',
+      'anti_discrimination_body',
+      'government',
+      'mental_health',
+      'council_support',
+      'evidence_guidance'
+    ]
+  },
+  {
+    category: 'online_abuse',
+    keywords: [
+      /\b(online abuse|cyberbullying|cyber bullying|image abuse|doxx|revenge porn|harassed online)\b/i,
+      /\b(instagram|facebook|tiktok|snapchat|discord|email|dm|message me online)\b/i
+    ],
+    resourceTypes: [
+      'online_safety',
+      'police',
+      'mental_health',
+      'evidence_guidance',
+      'safety_planning'
+    ]
+  },
+  {
+    category: 'scam_fraud',
+    keywords: [
+      /\b(scam|fraud|phishing|otp|one time code|one-time code|bank account|fake link)\b/i,
+      /\b(stole my money|took my money|account hacked)\b/i
+    ],
+    selectedTopics: ['cyber_scam', 'scamshield'],
+    resourceTypes: [
+      'scam_support',
+      'government',
+      'police',
+      'online_safety',
+      'evidence_guidance'
+    ]
+  },
+  {
+    category: 'theft_property',
+    keywords: [
+      /\b(stole|stolen|theft|robbed|robbery|took my phone|took my bag|took my wallet)\b/i
+    ],
+    resourceTypes: ['police', 'government', 'evidence_guidance', 'mental_health']
+  },
+  {
+    category: 'harassment',
+    keywords: [/\b(harassment|threatening me|stalking|followed me|intimidated)\b/i],
+    resourceTypes: ['police', 'legal', 'mental_health', 'evidence_guidance', 'safety_planning']
+  },
+  {
+    category: 'mental_health_distress',
+    keywords: [/\b(panic|anxious|anxiety|depressed|overwhelmed|can.t cope|mental health)\b/i],
+    resourceTypes: ['mental_health', 'community', 'safety_planning']
+  }
+];
+
+const selectedTopicFallbackCategory = (selectedTopic?: string): ConversationFlowCategory => {
+  switch (selectedTopic) {
+    case 'domestic_violence':
+      return 'domestic_violence';
+    case 'racial_abuse':
+      return 'racism_discrimination';
+    case 'cyber_scam':
+    case 'scamshield':
+      return 'scam_fraud';
+    case 'migrant_challenges':
+      return 'harassment';
+    default:
+      return 'general_support';
+  }
+};
+
+const categoryToRagIncidentCategory = (
+  category?: ConversationFlowCategory
+): 'domestic_violence' | 'racial_abuse' | 'migrant_challenges' | 'cyber_scam' | undefined => {
+  switch (category) {
+    case 'domestic_violence':
+      return 'domestic_violence';
+    case 'racism_discrimination':
+      return 'racial_abuse';
+    case 'scam_fraud':
+    case 'online_abuse':
+      return 'cyber_scam';
+    default:
+      return undefined;
+  }
+};
+
+const conversationCategoryToKnowledgeTopics: Record<ConversationFlowCategory, string[]> = {
+  domestic_violence: ['dv', 'support', 'crisis'],
+  workplace_bullying: ['workplace', 'support', 'discrimination'],
+  racism_discrimination: ['racial_hatred', 'discrimination', 'support'],
+  online_abuse: ['online_safety', 'evidence', 'support'],
+  scam_fraud: ['scam', 'online_safety', 'support'],
+  theft_property: ['evidence', 'support', 'other'],
+  harassment: ['discrimination', 'support', 'evidence'],
+  mental_health_distress: ['support', 'crisis', 'other'],
+  general_support: ['support', 'other']
+};
+
+const categoryLabels: Record<ConversationFlowCategory, string> = {
+  domestic_violence: 'Domestic violence',
+  workplace_bullying: 'Workplace bullying',
+  racism_discrimination: 'Racism or discrimination',
+  online_abuse: 'Online abuse',
+  scam_fraud: 'Scam or fraud',
+  theft_property: 'Theft or property harm',
+  harassment: 'Harassment',
+  mental_health_distress: 'Mental health distress',
+  general_support: 'General support'
+};
+
+const toSessionRecord = (session: ConversationFlowSessionDocument) => ({
+  id: session._id.toString(),
+  selectedTopic: session.selectedTopic,
+  detectedCategory: session.detectedCategory,
+  status: session.status,
+  safetyRiskLevel: session.safetyRiskLevel,
+  jurisdiction: session.jurisdiction,
+  location: session.location,
+  messageCount: session.messageCount,
+  userTurnCount: session.userTurnCount,
+  createdAt: session.createdAt,
+  updatedAt: session.updatedAt
+});
+
+const toMessageRecord = (message: {
+  _id: { toString: () => string };
+  role: string;
+  content: string;
+  turnNumber: number;
+  metadata?: Record<string, unknown>;
+  createdAt?: Date;
+}) => ({
+  id: message._id.toString(),
+  role: message.role,
+  content: message.content,
+  turnNumber: message.turnNumber,
+  metadata: message.metadata ?? {},
+  createdAt: message.createdAt
+});
+
+const buildFactsFromTimeline = (
+  conversationSessionId: string,
+  timeline: Record<string, string>
+): Omit<ConversationFlowFactsDocument, '_id' | 'createdAt' | 'updatedAt'> => {
+  const whatHappened = timeline.what?.trim() || undefined;
+  const whenHappened = timeline.when?.trim() || undefined;
+  const whereHappened = timeline.where?.trim() || undefined;
+  const peopleInvolved = [timeline.who, timeline.relationship].filter(Boolean).join(' - ') || undefined;
+  const safetyConcerns =
+    [timeline.unsafe_now, timeline.threats, timeline.injuries].filter(Boolean).join(' - ') ||
+    undefined;
+  const evidenceMentioned = timeline.evidence?.trim() || undefined;
+  const emotionalState = timeline.impact?.trim() || undefined;
+  const missingInformation = ['what', 'when', 'where', 'who']
+    .filter((key) => !timeline[key]?.trim())
+    .map((key) => `${key}_details`);
+  const extractedEvents = [whatHappened, whenHappened, whereHappened, peopleInvolved]
+    .filter(Boolean)
+    .map((value) => String(value));
+
+  return {
+    conversationSessionId: conversationSessionId as never,
+    whatHappened,
+    whenHappened,
+    whereHappened,
+    peopleInvolved,
+    safetyConcerns,
+    evidenceMentioned,
+    emotionalState,
+    extractedEvents,
+    missingInformation,
+    timeline
+  };
+};
+
+const buildFallbackAssistantResponse = (message: string, timeline: Record<string, string>) => {
+  const lowerMessage = message.toLowerCase();
+  const empatheticPrefix =
+    /(sorry|hurt|scared|afraid|threat|unsafe|panic|upset|cry)/i.test(lowerMessage)
+      ? 'I am sorry this happened to you. You are safe to take this one step at a time here.'
+      : 'Thank you for sharing that. You do not need to explain everything at once.';
+
+  let nextQuestion = 'What feels most important for me to understand next?';
+
+  if (!timeline.what) {
+    nextQuestion = 'Can you tell me a little more about what happened?';
+  } else if (!timeline.when) {
+    nextQuestion = 'Do you remember when this happened?';
+  } else if (!timeline.where) {
+    nextQuestion = 'Where did this happen?';
+  } else if (!timeline.who) {
+    nextQuestion = 'Who was involved?';
+  } else if (!timeline.unsafe_now) {
+    nextQuestion = 'Do you feel safe right now?';
+  }
+
+  return {
+    assistantMessage: empatheticPrefix,
+    nextQuestion,
+    readyForSubmission: false,
+    confidence: 'low' as const,
+    disclaimer: 'This is information only, not legal advice.',
+    citations: [],
+    rag: {
+      used: false,
+      unavailable: true,
+      resultCount: 0
+    },
+    reviewStatus: 'fallback_local'
+  };
+};
+
+const detectCategory = (input: {
+  text: string;
+  selectedTopic?: string;
+}): { category: ConversationFlowCategory; confidenceScore: number; matchedResourceTypes: string[] } => {
+  const matches = categoryDetectionRules
+    .map((rule) => {
+      let score = 0;
+
+      for (const keyword of rule.keywords) {
+        if (keyword.test(input.text)) {
+          score += 1;
+        }
+      }
+
+      if (rule.selectedTopics?.includes(input.selectedTopic ?? '')) {
+        score += 0.75;
+      }
+
+      return {
+        category: rule.category,
+        score,
+        matchedResourceTypes: rule.resourceTypes
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  if (matches.length === 0) {
+    return {
+      category: selectedTopicFallbackCategory(input.selectedTopic),
+      confidenceScore: input.selectedTopic ? 0.45 : 0.25,
+      matchedResourceTypes: ['government', 'mental_health', 'evidence_guidance']
+    };
+  }
+
+  const best = matches[0];
+  const confidenceScore = Math.min(0.95, 0.4 + best.score * 0.18);
+
+  return {
+    category: best.category,
+    confidenceScore,
+    matchedResourceTypes: best.matchedResourceTypes
+  };
+};
+
+const detectSafetyRiskLevel = (text: string, facts: Partial<ConversationFlowFactsDocument>): ConversationFlowRiskLevel => {
+  const combined = `${text}\n${facts.safetyConcerns ?? ''}\n${facts.emotionalState ?? ''}`.toLowerCase();
+
+  if (
+    /\b(immediate danger|kill me|kill him|kill her|call 000|unsafe now|weapon|strangled|strangle|can.t breathe)\b/i.test(
+      combined
+    )
+  ) {
+    return 'immediate';
+  }
+
+  if (/\b(threat|hit|assault|injured|stalking|followed|scared to go home|afraid to go home)\b/i.test(combined)) {
+    return 'high';
+  }
+
+  if (/\b(anxious|overwhelmed|panic|distress|worried|harassed)\b/i.test(combined)) {
+    return 'medium';
+  }
+
+  return 'low';
+};
+
+const shouldOfferTriage = (session: ConversationFlowSessionDocument, timeline: Record<string, string>) => {
+  const usefulTimelineFields = ['what', 'when', 'where', 'who', 'impact', 'evidence'].filter(
+    (key) => timeline[key]?.trim()
+  ).length;
+
+  return session.userTurnCount >= 4 && (usefulTimelineFields >= 3 || session.messageCount >= 8);
+};
+
+const buildReasoningSummary = (input: {
+  category: ConversationFlowCategory;
+  riskLevel: ConversationFlowRiskLevel;
+  facts: Partial<ConversationFlowFactsDocument>;
+  missingInformation: string[];
+}): string => {
+  const categoryLabel = categoryLabels[input.category];
+  const missingText =
+    input.missingInformation.length > 0
+      ? ` Some details are still missing, especially ${input.missingInformation
+          .slice(0, 2)
+          .map((item) => item.replace(/_/g, ' '))
+          .join(' and ')}.`
+      : '';
+  const riskText =
+    input.riskLevel === 'immediate'
+      ? ' There may be an immediate safety concern.'
+      : input.riskLevel === 'high'
+        ? ' There are signs this may involve a high level of risk.'
+        : '';
+
+  return `Based on what you shared so far, this looks most like ${categoryLabel.toLowerCase()}.${riskText}${missingText}`.trim();
+};
+
+const toKnowledgeSourceSummary = (source: {
+  _id: { toString: () => string };
+  title: string;
+  jurisdiction: string;
+  sourceCategory: string;
+  sourceType: string;
+  url?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+}) => ({
+  id: source._id.toString(),
+  title: source.title,
+  jurisdiction: source.jurisdiction,
+  sourceCategory: source.sourceCategory,
+  sourceType: source.sourceType,
+  url: source.url,
+  summary:
+    (typeof source.metadata?.plainEnglishSummary === 'string' && source.metadata.plainEnglishSummary) ||
+    source.description ||
+    'Approved knowledge source'
+});
+
+const matchKnowledgeSources = async (input: {
+  category: ConversationFlowCategory;
+  jurisdiction?: string;
+  text: string;
+}) => {
+  const candidateTopics = conversationCategoryToKnowledgeTopics[input.category];
+  const sources = await RagKnowledgeSourceModel.find({
+    status: 'approved',
+    legalReviewed: true,
+    topic: { $in: candidateTopics },
+    jurisdiction: {
+      $in: [input.jurisdiction, 'AU', 'Cth', 'Global'].filter(Boolean)
+    }
+  })
+    .sort({ updatedAt: -1 })
+    .limit(8)
+    .lean();
+
+  const summaries = sources.map((source) => toKnowledgeSourceSummary(source));
+  const legislationIds = sources
+    .filter((source) => source.sourceCategory === 'official_legal_source')
+    .map((source) => source._id.toString());
+
+  return {
+    matchedKnowledgeSources: summaries,
+    matchedLegislationIds: legislationIds
+  };
+};
+
+const buildRecommendationsFilter = (input: {
+  category: ConversationFlowCategory;
+  riskLevel: ConversationFlowRiskLevel;
+  matchedResourceTypes: string[];
+  jurisdiction?: string;
+}) => ({
+  isPublished: true,
+  isActive: true,
+  jurisdiction: { $in: [input.jurisdiction, 'AU', 'Cth', 'Global'].filter(Boolean) },
+  issueTypes: { $in: [input.category, 'general_support'] },
+  $or: [
+    { resourceType: { $in: input.matchedResourceTypes } },
+    { safetyRiskLevels: { $in: [input.riskLevel, 'all'] } }
+  ]
+});
+
+const buildDetailSections = (input: {
+  triage: {
+    likelyCategory: ConversationFlowCategory;
+    safetyRiskLevel: ConversationFlowRiskLevel;
+    reasoningSummary: string;
+    matchedKnowledgeSources: Array<Record<string, unknown>>;
+  };
+  recommendations: Array<Record<string, unknown>>;
+  facts: Partial<ConversationFlowFactsDocument>;
+}) => {
+  const reportingOptions = input.recommendations.filter((item) =>
+    ['emergency', 'police', 'government', 'workplace_body', 'anti_discrimination_body'].includes(
+      String(item.resourceType ?? '')
+    )
+  );
+  const supportServices = input.recommendations.filter((item) =>
+    ['mental_health', 'domestic_violence_agency', 'council_support', 'legal'].includes(
+      String(item.resourceType ?? '')
+    )
+  );
+  const evidenceGuide = input.recommendations.filter((item) =>
+    ['evidence_guidance'].includes(String(item.resourceType ?? ''))
+  );
+  const safetyPlanning = input.recommendations.filter((item) =>
+    ['safety_planning', 'emergency'].includes(String(item.resourceType ?? ''))
+  );
+
+  return {
+    overview: {
+      title: 'Overview',
+      body: input.triage.reasoningSummary
+    },
+    rights: {
+      title: 'Your Rights',
+      items: input.triage.matchedKnowledgeSources.map((source) => ({
+        title: String(source.title ?? 'Source'),
+        body: String(source.summary ?? 'Approved information source')
+      }))
+    },
+    reportingOptions: {
+      title: 'Reporting Options',
+      items: reportingOptions
+    },
+    evidenceGuide: {
+      title: 'Evidence Guide',
+      items:
+        evidenceGuide.length > 0
+          ? evidenceGuide
+          : [
+              {
+                title: 'Evidence tips',
+                description:
+                  'If it feels safe, keep screenshots, dates, locations, names, messages, and any photos or notes that help describe what happened.'
+              }
+            ]
+    },
+    supportServices: {
+      title: 'Support Services',
+      items: supportServices
+    },
+    safetyPlanning: {
+      title: 'Safety Planning',
+      items:
+        safetyPlanning.length > 0
+          ? safetyPlanning
+          : [
+              {
+                title: 'Safety planning',
+                description:
+                  input.triage.safetyRiskLevel === 'immediate'
+                    ? 'If you are in immediate danger, call 000 now.'
+                    : 'Think about where you can go, who you can contact, and what evidence or belongings you may need to keep safe.'
+              }
+            ]
+    }
+  };
+};
+
+const getOwnedConversationSession = async (
+  context: ConversationFlowContext,
+  sessionId: string
+): Promise<HydratedConversationFlowSessionDocument> => {
+  const session = await ConversationFlowSessionModel.findOne({
+    _id: sessionId,
+    ...ownerFilter(context.owner)
+  });
+
+  if (!session) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Conversation session not found');
+  }
+
+  return session;
+};
+
+const upsertFacts = async (
+  conversationSessionId: string,
+  timeline: Record<string, string>
+) => {
+  const factPayload = buildFactsFromTimeline(conversationSessionId, timeline);
+
+  return ConversationFlowFactsModel.findOneAndUpdate(
+    { conversationSessionId },
+    { $set: factPayload },
+    { new: true, upsert: true }
+  );
+};
+
+const buildTriageForSession = async (session: HydratedConversationFlowSessionDocument) => {
+  const messages = await ConversationFlowMessageModel.find({
+    conversationSessionId: session._id
+  })
+    .sort({ turnNumber: 1 })
+    .lean();
+  const facts = await ConversationFlowFactsModel.findOne({
+    conversationSessionId: session._id
+  }).lean();
+  const combinedText = messages.map((message) => message.content).join('\n');
+  const categoryDetection = detectCategory({
+    text: `${combinedText}\n${JSON.stringify(facts?.timeline ?? {})}`,
+    selectedTopic: session.selectedTopic
+  });
+  const riskLevel = detectSafetyRiskLevel(combinedText, facts ?? {});
+  const missingInformation = facts?.missingInformation ?? ['what_details', 'when_details', 'where_details'];
+  const knowledgeMatch = await matchKnowledgeSources({
+    category: categoryDetection.category,
+    jurisdiction: session.jurisdiction,
+    text: combinedText
+  });
+  const canProceedToRecommendations =
+    categoryDetection.confidenceScore >= 0.45 &&
+    Boolean(facts?.whatHappened) &&
+    Boolean(facts?.peopleInvolved || facts?.whereHappened || facts?.whenHappened);
+  const humanReviewRecommended =
+    !canProceedToRecommendations ||
+    knowledgeMatch.matchedLegislationIds.length === 0 ||
+    categoryDetection.confidenceScore < 0.6;
+  const reasoningSummary = buildReasoningSummary({
+    category: categoryDetection.category,
+    riskLevel,
+    facts: facts ?? {},
+    missingInformation
+  });
+
+  const triage = await ConversationFlowTriageModel.findOneAndUpdate(
+    { conversationSessionId: session._id },
+    {
+      $set: {
+        likelyCategory: categoryDetection.category,
+        confidenceScore: Number(categoryDetection.confidenceScore.toFixed(2)),
+        safetyRiskLevel: riskLevel,
+        reasoningSummary,
+        matchedLegislationIds: knowledgeMatch.matchedLegislationIds,
+        matchedKnowledgeSources: knowledgeMatch.matchedKnowledgeSources,
+        humanReviewRecommended,
+        missingInformation,
+        canProceedToRecommendations,
+        matchedResourceTypes: categoryDetection.matchedResourceTypes
+      }
+    },
+    { new: true, upsert: true }
+  ).lean();
+
+  session.detectedCategory = triage.likelyCategory;
+  session.safetyRiskLevel = triage.safetyRiskLevel;
+  session.status = canProceedToRecommendations ? 'triaged' : session.status === 'active' ? 'ready_for_triage' : session.status;
+  await session.save();
+
+  return triage;
+};
+
+export const createConversationFlowSession = async (
+  context: ConversationFlowContext,
+  input: CreateConversationFlowSessionInput
+) => {
+  const session = await ConversationFlowSessionModel.create({
+    ...ownerFilter(context.owner),
+    selectedTopic: input.selectedTopic,
+    jurisdiction: input.jurisdiction,
+    location: input.location,
+    status: 'active',
+    safetyRiskLevel: 'low',
+    messageCount: 0,
+    userTurnCount: 0
+  });
+
+  await audit(context, CONVERSATION_FLOW_ACTIONS.sessionCreate, session._id.toString(), {
+    selectedTopic: input.selectedTopic,
+    jurisdiction: input.jurisdiction
+  });
+
+  return {
+    session: toSessionRecord(session)
+  };
+};
+
+export const getConversationFlowSession = async (
+  context: ConversationFlowContext,
+  conversationSessionId: string
+) => {
+  const session = await getOwnedConversationSession(context, conversationSessionId);
+  const messages = await ConversationFlowMessageModel.find({
+    conversationSessionId: session._id
+  })
+    .sort({ turnNumber: 1 })
+    .lean();
+  const facts = await ConversationFlowFactsModel.findOne({
+    conversationSessionId: session._id
+  }).lean();
+  const triage = await ConversationFlowTriageModel.findOne({
+    conversationSessionId: session._id
+  }).lean();
+
+  await audit(context, CONVERSATION_FLOW_ACTIONS.sessionGet, conversationSessionId);
+
+  return {
+    session: toSessionRecord(session),
+    messages: messages.map((message) => toMessageRecord(message)),
+    factExtraction: facts ?? null,
+    triage: triage ?? null
+  };
+};
+
+export const appendConversationFlowMessage = async (
+  context: ConversationFlowContext,
+  conversationSessionId: string,
+  input: AppendConversationFlowMessageInput
+) => {
+  const session = await getOwnedConversationSession(context, conversationSessionId);
+  const existingMessages = await ConversationFlowMessageModel.find({
+    conversationSessionId: session._id
+  })
+    .sort({ turnNumber: 1 })
+    .lean();
+  const userMessage = await ConversationFlowMessageModel.create({
+    conversationSessionId: session._id,
+    role: 'user',
+    content: input.content,
+    turnNumber: existingMessages.length + 1,
+    metadata: {}
+  });
+
+  session.messageCount += 1;
+  session.userTurnCount += 1;
+
+  const conversationForAssistant = [
+    ...existingMessages.map((message) => ({
+      role: (message.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
+      content: message.content
+    })),
+    {
+      role: 'user' as const,
+      content: input.content
+    }
+  ];
+  const existingFacts = await ConversationFlowFactsModel.findOne({
+    conversationSessionId: session._id
+  }).lean();
+  const existingTimeline = (existingFacts?.timeline ?? {}) as Record<string, string>;
+  const detectedCategory = detectCategory({
+    text: `${input.content}\n${JSON.stringify(existingTimeline)}`,
+    selectedTopic: session.selectedTopic
+  }).category;
+
+  let assistantPayload: Record<string, unknown>;
+
+  try {
+    assistantPayload = await runTimelineAssistant(
+      {
+        owner: context.owner,
+        ip: context.ip,
+        userAgent: context.userAgent
+      },
+      {
+        message: input.content,
+        topK: 4,
+        conversation: conversationForAssistant,
+        timeline: existingTimeline,
+        language: input.language,
+        incidentCategory: categoryToRagIncidentCategory(detectedCategory),
+        jurisdiction: (session.jurisdiction as
+          | 'Cth'
+          | 'NSW'
+          | 'VIC'
+          | 'QLD'
+          | 'SA'
+          | 'WA'
+          | 'TAS'
+          | 'NT'
+          | 'ACT'
+          | 'AU'
+          | 'Global'
+          | 'Internal'
+          | undefined)
+      }
+    );
+  } catch {
+    assistantPayload = buildFallbackAssistantResponse(input.content, existingTimeline) as never;
+  }
+
+  const assistantMessageContent = [
+    typeof assistantPayload.assistantMessage === 'string' ? assistantPayload.assistantMessage.trim() : '',
+    typeof assistantPayload.nextQuestion === 'string' ? assistantPayload.nextQuestion.trim() : ''
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const assistantMessage = await ConversationFlowMessageModel.create({
+    conversationSessionId: session._id,
+    role: 'assistant',
+    content: assistantMessageContent || 'Thank you. What would feel helpful to share next?',
+    turnNumber: existingMessages.length + 2,
+    metadata: {
+      confidence: assistantPayload.confidence,
+      reviewStatus: assistantPayload.reviewStatus
+    }
+  });
+
+  session.messageCount += 1;
+
+  const nextTimeline = ((assistantPayload.timeline ?? existingTimeline) as Record<string, unknown>);
+  const normalizedTimeline = Object.fromEntries(
+    Object.entries(nextTimeline).map(([key, value]) => [key, String(value).trim()]).filter(([, value]) => value)
+  );
+  const facts = await upsertFacts(session._id.toString(), normalizedTimeline);
+  const offerTriage = shouldOfferTriage(session, normalizedTimeline);
+
+  if (offerTriage && !session.triageOfferedAt) {
+    session.triageOfferedAt = new Date();
+    session.status = 'ready_for_triage';
+  } else if (session.status === 'active') {
+    session.status = 'active';
+  }
+
+  const triage = offerTriage ? await buildTriageForSession(session) : null;
+  await session.save();
+
+  await audit(context, CONVERSATION_FLOW_ACTIONS.messageAppend, conversationSessionId, {
+    offeredTriage: offerTriage,
+    detectedCategory: triage?.likelyCategory ?? detectedCategory
+  });
+
+  return {
+    session: toSessionRecord(session),
+    userMessage: toMessageRecord(userMessage),
+    assistantMessage: toMessageRecord(assistantMessage),
+    factExtraction: facts,
+    triage,
+    transition: {
+      offerTriage,
+      prompt: offerTriage
+        ? 'I’m sorry this happened to you. You’re safe to explore your options here. Would you like help understanding reporting options, support services, evidence, or your rights?'
+        : null,
+      primaryCta: offerTriage ? 'Continue to Triage' : null,
+      secondaryCta: offerTriage ? 'Review my options' : null
+    },
+    responseMeta: {
+      confidence: assistantPayload.confidence ?? 'low',
+      disclaimer: 'This is information only, not legal advice.',
+      citations: Array.isArray(assistantPayload.citations) ? assistantPayload.citations : [],
+      rag: assistantPayload.rag ?? {
+        used: false,
+        unavailable: true,
+        resultCount: 0
+      },
+      reviewStatus: assistantPayload.reviewStatus ?? 'fallback_local'
+    }
+  };
+};
+
+export const getConversationFlowTriage = async (
+  context: ConversationFlowContext,
+  conversationSessionId: string
+) => {
+  const session = await getOwnedConversationSession(context, conversationSessionId);
+  const triage = await buildTriageForSession(session);
+
+  await audit(context, CONVERSATION_FLOW_ACTIONS.triageGet, conversationSessionId, {
+    likelyCategory: triage.likelyCategory
+  });
+
+  return {
+    session: toSessionRecord(session),
+    triage: {
+      ...triage,
+      likelyCategoryLabel: categoryLabels[triage.likelyCategory],
+      confidenceLabel:
+        triage.confidenceScore >= 0.75 ? 'high' : triage.confidenceScore >= 0.5 ? 'medium' : 'low',
+      disclaimer: 'This is information only, not legal advice.'
+    }
+  };
+};
+
+export const getConversationFlowRecommendations = async (
+  context: ConversationFlowContext,
+  conversationSessionId: string
+) => {
+  const session = await getOwnedConversationSession(context, conversationSessionId);
+  const triageRecord =
+    (await ConversationFlowTriageModel.findOne({
+      conversationSessionId: session._id
+    }).lean()) ?? (await buildTriageForSession(session));
+  const recommendations = await SupportServiceModel.find(
+    buildRecommendationsFilter({
+      category: triageRecord.likelyCategory,
+      riskLevel: triageRecord.safetyRiskLevel,
+      matchedResourceTypes: triageRecord.matchedResourceTypes,
+      jurisdiction: session.jurisdiction
+    })
+  )
+    .sort({ priority: -1, sortOrder: 1, name: 1 })
+    .limit(8)
+    .lean();
+
+  session.status = triageRecord.canProceedToRecommendations ? 'recommendation_ready' : session.status;
+  await session.save();
+
+  await audit(context, CONVERSATION_FLOW_ACTIONS.recommendationsGet, conversationSessionId, {
+    count: recommendations.length
+  });
+
+  return {
+    session: toSessionRecord(session),
+    recommendations: recommendations.map((item) => ({
+      id: item._id.toString(),
+      title: item.name,
+      description: item.description,
+      category: triageRecord.likelyCategory,
+      resourceType: item.resourceType,
+      ctaLabel: item.ctaLabel || 'View option',
+      phone: item.phone,
+      websiteUrl: item.websiteUrl,
+      priority: item.priority ?? item.sortOrder ?? 0,
+      jurisdiction: item.jurisdiction,
+      safetyNotes: item.safetyNotes,
+      eligibilityNotes: item.eligibilityNotes,
+      languageSupportNotes: item.languageSupportNotes,
+      active: item.isActive
+    })),
+    fallbackUsed: recommendations.length === 0
+  };
+};
+
+export const getConversationFlowDetails = async (
+  context: ConversationFlowContext,
+  conversationSessionId: string
+) => {
+  const session = await getOwnedConversationSession(context, conversationSessionId);
+  const triageRecord =
+    (await ConversationFlowTriageModel.findOne({
+      conversationSessionId: session._id
+    }).lean()) ?? (await buildTriageForSession(session));
+  const facts = await ConversationFlowFactsModel.findOne({
+    conversationSessionId: session._id
+  }).lean();
+  const recommendationsResponse = await getConversationFlowRecommendations(context, conversationSessionId);
+  const sections = buildDetailSections({
+    triage: triageRecord,
+    recommendations: recommendationsResponse.recommendations,
+    facts: facts ?? {}
+  });
+
+  await audit(context, CONVERSATION_FLOW_ACTIONS.detailsGet, conversationSessionId);
+
+  return {
+    session: toSessionRecord(session),
+    details: {
+      category: triageRecord.likelyCategory,
+      categoryLabel: categoryLabels[triageRecord.likelyCategory],
+      safetyRiskLevel: triageRecord.safetyRiskLevel,
+      matchedKnowledgeSources: triageRecord.matchedKnowledgeSources,
+      matchedLegislationIds: triageRecord.matchedLegislationIds,
+      humanReviewRecommended: triageRecord.humanReviewRecommended,
+      sections,
+      disclaimer: 'This is information only, not legal advice.'
+    }
+  };
+};

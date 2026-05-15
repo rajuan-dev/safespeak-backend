@@ -5,6 +5,7 @@ import { aiRoutes } from '@modules/ai/ai.routes';
 import { analyticsRoutes } from '@modules/analytics/analytics.routes';
 import { authRoutes } from '@modules/auth/auth.routes';
 import { consentRoutes } from '@modules/consent/consent.routes';
+import { conversationFlowRoutes } from '@modules/conversation-flow/conversation-flow.routes';
 import { evidenceRoutes } from '@modules/evidence/evidence.routes';
 import { healthRoutes } from '@modules/health/health.routes';
 import {
@@ -35,6 +36,7 @@ apiRouter.use('/health', healthRoutes);
 apiRouter.use('/auth', authRoutes);
 apiRouter.use('/sessions', sessionsRoutes);
 apiRouter.use('/consents', consentRoutes);
+apiRouter.use('/conversation-flow', conversationFlowRoutes);
 apiRouter.use('/', profileRoutes);
 apiRouter.use('/platform-settings', platformSettingsRoutes);
 apiRouter.use('/admin/platform-settings', adminPlatformSettingsRoutes);

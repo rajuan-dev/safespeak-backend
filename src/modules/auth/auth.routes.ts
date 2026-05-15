@@ -5,6 +5,8 @@ import { validate } from '@common/middleware/validate.middleware';
 
 import {
   adminLoginController,
+  googleCallbackController,
+  googleLoginController,
   loginController,
   logoutController,
   meController,
@@ -14,6 +16,15 @@ import {
 import { loginSchema, refreshTokenSchema, registerSchema } from './auth.schema';
 
 export const authRoutes = Router();
+export const googleAuthRoutes = Router();
+
+const registerGoogleAuthRoutes = (router: Router): void => {
+  router.get('/google', googleLoginController);
+  router.get('/google/callback', googleCallbackController);
+};
+
+registerGoogleAuthRoutes(authRoutes);
+registerGoogleAuthRoutes(googleAuthRoutes);
 
 authRoutes.post('/register', validate({ body: registerSchema }), registerController);
 authRoutes.post('/login', validate({ body: loginSchema }), loginController);

@@ -1,5 +1,6 @@
 import { StatusCodes } from 'http-status-codes';
 import type { HydratedDocument } from 'mongoose';
+import { randomBytes } from 'node:crypto';
 
 import { ApiError } from '@common/errors/ApiError';
 import { createAuditLog } from '@modules/audit/audit.service';
@@ -8,7 +9,7 @@ import { isAdminRole, isPublicRole } from '@modules/rbac/rbac.utils';
 import { UserModel } from './auth.model';
 import type { UserDocument } from './auth.model';
 import type { LoginInput, RegisterInput } from './auth.schema';
-import type { AuthTokens, SafeUser } from './auth.types';
+import type { AuthData, AuthTokens, SafeUser } from './auth.types';
 import {
   buildAuthTokens,
   deriveFullNameFromEmail,
@@ -19,6 +20,13 @@ import {
   verifyRefreshTokenHash
 } from './auth.utils';
 
+export interface GoogleProfileInput {
+  googleId: string;
+  email: string;
+  fullName: string;
+  avatarUrl?: string;
+}
+
 const toSafeUser = (user: HydratedDocument<UserDocument> | null): SafeUser => {
   if (!user) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'User not found');
@@ -28,6 +36,7 @@ const toSafeUser = (user: HydratedDocument<UserDocument> | null): SafeUser => {
     id: user._id.toString(),
     email: user.email,
     fullName: user.fullName,
+    avatarUrl: user.avatarUrl,
     role: user.role,
     status: user.status,
     isEmailVerified: user.isEmailVerified,
@@ -53,7 +62,7 @@ export const registerUser = async (
   input: RegisterInput,
   ip?: string,
   userAgent?: string
-): Promise<{ user: SafeUser; tokens: AuthTokens }> => {
+): Promise<AuthData> => {
   const email = input.email.toLowerCase();
   const existingUser = await UserModel.findOne({ email });
 
@@ -90,7 +99,7 @@ export const loginUser = async (
   adminOnly: boolean,
   ip?: string,
   userAgent?: string
-): Promise<{ user: SafeUser; tokens: AuthTokens }> => {
+): Promise<AuthData> => {
   const user = await UserModel.findOne({ email: input.email.toLowerCase() }).select(
     '+passwordHash +refreshTokenHash'
   );
@@ -127,9 +136,66 @@ export const loginUser = async (
   return { user: safeUser, tokens };
 };
 
+export const loginWithGoogleProfile = async (
+  input: GoogleProfileInput,
+  ip?: string,
+  userAgent?: string
+): Promise<AuthData> => {
+  const email = input.email.toLowerCase();
+  let user = await UserModel.findOne({
+    $or: [{ googleId: input.googleId }, { email }]
+  }).select('+refreshTokenHash');
+  let action = 'auth.google_login';
+
+  if (user) {
+    if (user.status !== 'active') {
+      throw new ApiError(StatusCodes.FORBIDDEN, 'User account is not active');
+    }
+
+    if (!isPublicRole(user.role)) {
+      throw new ApiError(StatusCodes.FORBIDDEN, 'Use the admin login endpoint for this account');
+    }
+
+    user.googleId = user.googleId ?? input.googleId;
+    user.authProvider = user.authProvider === 'local' ? 'local' : 'google';
+    user.isEmailVerified = true;
+    user.fullName = user.fullName || input.fullName;
+    user.avatarUrl = input.avatarUrl ?? user.avatarUrl;
+    await user.save();
+  } else {
+    action = 'auth.google_register';
+    user = await UserModel.create({
+      email,
+      fullName: input.fullName,
+      googleId: input.googleId,
+      authProvider: 'google',
+      avatarUrl: input.avatarUrl,
+      passwordHash: await hashPassword(randomBytes(32).toString('hex')),
+      role: 'public_user',
+      status: 'active',
+      isEmailVerified: true
+    });
+  }
+
+  const safeUser = toSafeUser(user);
+  const tokens = await issueTokens(safeUser.id, safeUser.role);
+
+  await createAuditLog({
+    actorType: 'user',
+    actorId: safeUser.id,
+    action,
+    resourceType: 'auth',
+    resourceId: safeUser.id,
+    ip,
+    userAgent
+  });
+
+  return { user: safeUser, tokens };
+};
+
 export const refreshUserToken = async (
   refreshToken: string
-): Promise<{ user: SafeUser; tokens: AuthTokens }> => {
+): Promise<AuthData> => {
   const payload = verifyRefreshToken(refreshToken);
   const user = await UserModel.findById(payload.userId).select('+refreshTokenHash');
 

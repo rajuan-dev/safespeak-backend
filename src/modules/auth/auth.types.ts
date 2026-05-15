@@ -6,6 +6,7 @@ export interface SafeUser {
   id: string;
   email: string;
   fullName: string;
+  avatarUrl?: string;
   role: UserRole;
   status: UserStatus;
   isEmailVerified: boolean;
@@ -17,6 +18,11 @@ export interface SafeUser {
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
+}
+
+export interface AuthData {
+  user: SafeUser;
+  tokens: AuthTokens;
 }
 
 export interface AuthenticatedUserPayload {

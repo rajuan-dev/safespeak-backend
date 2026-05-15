@@ -27,6 +27,42 @@ export const SUPPORT_SERVICE_TYPES = [
   'online_safety'
 ] as const;
 
+export const SUPPORT_RESOURCE_TYPES = [
+  'emergency',
+  'police',
+  'government',
+  'legal',
+  'mental_health',
+  'domestic_violence_agency',
+  'workplace_body',
+  'anti_discrimination_body',
+  'council_support',
+  'evidence_guidance',
+  'safety_planning',
+  'scam_support',
+  'online_safety'
+] as const;
+
+export const SUPPORT_ISSUE_TYPES = [
+  'domestic_violence',
+  'workplace_bullying',
+  'racism_discrimination',
+  'online_abuse',
+  'scam_fraud',
+  'theft_property',
+  'harassment',
+  'mental_health_distress',
+  'general_support'
+] as const;
+
+export const SUPPORT_RESOURCE_RISK_LEVELS = [
+  'low',
+  'medium',
+  'high',
+  'immediate',
+  'all'
+] as const;
+
 export const SUPPORT_SERVICE_CARD_ICONS = [
   'scale',
   'shield',
@@ -62,6 +98,10 @@ export interface SupportServiceDefinition {
   availabilityLabel?: string;
   referralTitle?: string;
   referralDescription?: string;
+  resourceType?: (typeof SUPPORT_RESOURCE_TYPES)[number];
+  issueTypes?: readonly (typeof SUPPORT_ISSUE_TYPES)[number][];
+  safetyRiskLevels?: readonly (typeof SUPPORT_RESOURCE_RISK_LEVELS)[number][];
+  ctaLabel?: string;
   resourceLinks?: readonly {
     label: string;
     url: string;
@@ -77,6 +117,10 @@ export interface SupportServiceDefinition {
   languages: readonly string[];
   eligibility?: readonly string[];
   crisis?: boolean;
+  priority?: number;
+  safetyNotes?: string;
+  eligibilityNotes?: string;
+  languageSupportNotes?: string;
   isPublished?: boolean;
   isActive?: boolean;
   sortOrder?: number;
@@ -96,6 +140,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     referralTitle: 'Warm Referral',
     referralDescription:
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.',
+    resourceType: 'legal',
+    issueTypes: ['workplace_bullying', 'racism_discrimination', 'general_support'],
+    safetyRiskLevels: ['low', 'medium', 'high'],
+    ctaLabel: 'Contact Legal Aid',
     phone: '1300 888 529',
     websiteUrl: 'https://www.legalaid.nsw.gov.au/contact-us',
     url: 'https://www.legalaid.nsw.gov.au/contact-us',
@@ -104,6 +152,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     languages: ['en'],
     eligibility: ['legal_help', 'racial_abuse', 'domestic_violence'],
     crisis: false,
+    priority: 72,
+    safetyNotes: 'Use when the person wants legal information or rights guidance.',
+    eligibilityNotes: 'Useful for legal information and referral support.',
+    languageSupportNotes: 'Interpreter options depend on the service.',
     isPublished: true,
     isActive: true,
     informationOnly: true
@@ -119,6 +171,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     referralTitle: 'Warm Referral',
     referralDescription:
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.',
+    resourceType: 'council_support',
+    issueTypes: ['domestic_violence', 'racism_discrimination', 'general_support'],
+    safetyRiskLevels: ['low', 'medium', 'high'],
+    ctaLabel: 'Find local support',
     phone: '1800 737 732',
     websiteUrl: 'https://www.1800respect.org.au',
     url: 'https://www.1800respect.org.au',
@@ -127,6 +183,8 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     languages: ['en'],
     eligibility: ['community_support', 'racial_abuse', 'migrant_support'],
     crisis: false,
+    priority: 60,
+    safetyNotes: 'Useful for local practical support and community referrals.',
     isPublished: true,
     isActive: true,
     informationOnly: true
@@ -142,6 +200,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     referralTitle: 'Warm Referral',
     referralDescription:
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.',
+    resourceType: 'mental_health',
+    issueTypes: ['domestic_violence', 'harassment', 'mental_health_distress', 'general_support'],
+    safetyRiskLevels: ['low', 'medium', 'high', 'immediate'],
+    ctaLabel: 'Call Lifeline',
     phone: '13 11 14',
     websiteUrl: 'https://www.lifeline.org.au',
     url: 'https://www.lifeline.org.au',
@@ -150,6 +212,8 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     languages: ['en'],
     eligibility: ['mental_health', 'domestic_violence', 'migrant_support'],
     crisis: false,
+    priority: 80,
+    languageSupportNotes: 'Ask about language support when calling.',
     isPublished: true,
     isActive: true,
     informationOnly: true
@@ -165,6 +229,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     referralTitle: 'Warm Referral',
     referralDescription:
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.',
+    resourceType: 'government',
+    issueTypes: ['general_support', 'mental_health_distress'],
+    safetyRiskLevels: ['low', 'medium'],
+    ctaLabel: 'Contact Healthdirect',
     phone: '1800 022 222',
     websiteUrl: 'https://www.healthdirect.gov.au/contact-us',
     url: 'https://www.healthdirect.gov.au/contact-us',
@@ -173,6 +241,7 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     languages: ['en'],
     eligibility: ['health', 'migrant_support'],
     crisis: false,
+    priority: 55,
     isPublished: true,
     isActive: true,
     informationOnly: true
@@ -188,6 +257,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     referralTitle: 'Warm Referral',
     referralDescription:
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.',
+    resourceType: 'council_support',
+    issueTypes: ['general_support'],
+    safetyRiskLevels: ['low', 'medium'],
+    ctaLabel: 'View elder support',
     phone: '1800 353 374',
     websiteUrl: 'https://www.health.gov.au/contacts/elder-abuse-phone-line',
     url: 'https://www.health.gov.au/contacts/elder-abuse-phone-line',
@@ -196,6 +269,7 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     languages: ['en'],
     eligibility: ['elder_support', 'community_support'],
     crisis: false,
+    priority: 40,
     isPublished: true,
     isActive: true,
     informationOnly: true
@@ -211,6 +285,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     referralTitle: 'Warm Referral',
     referralDescription:
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.',
+    resourceType: 'domestic_violence_agency',
+    issueTypes: ['domestic_violence', 'harassment'],
+    safetyRiskLevels: ['high', 'immediate'],
+    ctaLabel: 'Call 1800RESPECT',
     phone: '1800 737 732',
     websiteUrl: 'https://www.1800respect.org.au',
     url: 'https://www.1800respect.org.au',
@@ -219,6 +297,8 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     languages: ['en'],
     eligibility: ['crisis', 'domestic_violence', 'safety_plan'],
     crisis: true,
+    priority: 100,
+    safetyNotes: 'Escalate to emergency services when immediate danger is present.',
     isPublished: true,
     isActive: true,
     informationOnly: true
@@ -234,6 +314,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     referralTitle: 'Warm Referral',
     referralDescription:
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.',
+    resourceType: 'online_safety',
+    issueTypes: ['online_abuse', 'scam_fraud'],
+    safetyRiskLevels: ['low', 'medium', 'high'],
+    ctaLabel: 'Visit eSafety',
     websiteUrl: 'https://www.esafety.gov.au/report',
     url: 'https://www.esafety.gov.au/report',
     jurisdiction: 'AU',
@@ -241,6 +325,8 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     languages: ['en'],
     eligibility: ['online_safety', 'cyber_scam'],
     crisis: false,
+    priority: 78,
+    safetyNotes: 'Use for cyberbullying, image abuse, or other online abuse pathways.',
     isPublished: true,
     isActive: true,
     informationOnly: true
@@ -256,6 +342,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     referralTitle: 'Warm Referral',
     referralDescription:
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.',
+    resourceType: 'domestic_violence_agency',
+    issueTypes: ['domestic_violence'],
+    safetyRiskLevels: ['high', 'immediate'],
+    ctaLabel: 'Call 1800RESPECT',
     phone: '1800 737 732',
     websiteUrl: 'https://www.1800respect.org.au',
     url: 'https://www.1800respect.org.au',
@@ -264,6 +354,7 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     languages: ['en'],
     eligibility: ['domestic_violence', 'sexual_violence', 'family_violence'],
     crisis: true,
+    priority: 98,
     isPublished: true,
     isActive: true,
     informationOnly: true
@@ -279,6 +370,10 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     referralTitle: 'Warm Referral',
     referralDescription:
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.',
+    resourceType: 'mental_health',
+    issueTypes: ['mental_health_distress', 'harassment', 'general_support'],
+    safetyRiskLevels: ['medium', 'high', 'immediate'],
+    ctaLabel: 'Call Lifeline',
     phone: '13 11 14',
     websiteUrl: 'https://www.lifeline.org.au',
     url: 'https://www.lifeline.org.au',
@@ -287,6 +382,7 @@ export const DEFAULT_SUPPORT_SERVICES: readonly SupportServiceDefinition[] = [
     languages: ['en'],
     eligibility: ['crisis', 'mental_health', 'suicide_prevention'],
     crisis: true,
+    priority: 92,
     isPublished: true,
     isActive: true,
     informationOnly: true

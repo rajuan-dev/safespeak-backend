@@ -13,6 +13,19 @@ const optionalTrimmedString = (minimumLength = 1, maximumLength = 5000) =>
     z.string().trim().min(minimumLength).max(maximumLength).optional()
   );
 
+const optionalDate = z.preprocess(
+  emptyStringToUndefined,
+  z.coerce.date().optional()
+);
+
+const optionalBooleanFromString = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    return value.toLowerCase() === 'true';
+  }
+
+  return value;
+}, z.boolean().optional());
+
 export const mediaAssetParamsSchema = z.object({
   id: objectIdSchema
 });
@@ -28,6 +41,11 @@ export const createMediaAssetSchema = z.object({
   subtitle: z.string().trim().min(1).max(180),
   bodyText: z.string().trim().min(1).max(5000),
   category: z.string().trim().min(1).max(80),
+  createdDate: optionalDate,
+  expirationDate: optionalDate,
+  offlineCachingEnabled: optionalBooleanFromString.default(false),
+  primaryCta: optionalTrimmedString(1, 120),
+  secondaryButton: optionalTrimmedString(1, 120),
   status: z.enum(MEDIA_ASSET_STATUSES).default('published')
 });
 
@@ -36,6 +54,11 @@ export const updateMediaAssetSchema = z.object({
   subtitle: optionalTrimmedString(1, 180),
   bodyText: optionalTrimmedString(1, 5000),
   category: optionalTrimmedString(1, 80),
+  createdDate: optionalDate,
+  expirationDate: optionalDate,
+  offlineCachingEnabled: optionalBooleanFromString,
+  primaryCta: optionalTrimmedString(1, 120),
+  secondaryButton: optionalTrimmedString(1, 120),
   status: z.enum(MEDIA_ASSET_STATUSES).optional()
 });
 

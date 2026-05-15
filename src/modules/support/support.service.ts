@@ -135,6 +135,27 @@ const normalizeSupportServiceInput = (input: SupportServiceInput | UpdateSupport
     }
   }
 
+  if (!normalized.resourceType && typeof normalized.type === 'string') {
+    normalized.resourceType =
+      normalized.type === 'crisis'
+        ? 'emergency'
+        : normalized.type === 'online_safety'
+          ? 'online_safety'
+          : normalized.type === 'legal_information'
+            ? 'legal'
+            : normalized.type === 'counselling'
+              ? 'mental_health'
+              : 'government';
+  }
+
+  if (!Array.isArray(normalized.issueTypes) || normalized.issueTypes.length === 0) {
+    normalized.issueTypes = ['general_support'];
+  }
+
+  if (!Array.isArray(normalized.safetyRiskLevels) || normalized.safetyRiskLevels.length === 0) {
+    normalized.safetyRiskLevels = ['all'];
+  }
+
   return normalized;
 };
 
@@ -216,6 +237,14 @@ const buildPublicServiceFilter = (
 
   if (query.type) {
     filter.type = query.type;
+  }
+
+  if ('resourceType' in query && query.resourceType) {
+    filter.resourceType = query.resourceType;
+  }
+
+  if ('issueType' in query && query.issueType) {
+    filter.issueTypes = query.issueType;
   }
 
   if (query.jurisdiction) {
@@ -450,6 +479,8 @@ export const getRecommendations = async (
 ): Promise<unknown[]> => {
   ownerFilter(context.owner);
   const services = await listSupportServices(context, {
+    resourceType: input.resourceTypes[0],
+    issueType: input.issueType,
     jurisdiction: input.jurisdiction,
     language: input.language,
     region: input.region,
@@ -465,7 +496,47 @@ export const getRecommendations = async (
           input.needs.includes(serviceType as (typeof input.needs)[number])
         );
       })
-    : services;
+    : services.filter((service) => {
+        if (input.resourceTypes.length > 0) {
+          const resourceType = (service as { resourceType?: unknown }).resourceType;
+
+          if (
+            typeof resourceType !== 'string' ||
+            !input.resourceTypes.includes(resourceType as (typeof input.resourceTypes)[number])
+          ) {
+            return false;
+          }
+        }
+
+        if (input.issueType) {
+          const issueTypes = (service as { issueTypes?: unknown }).issueTypes;
+
+          if (
+            !Array.isArray(issueTypes) ||
+            !issueTypes.some(
+              (item) => typeof item === 'string' && (item === input.issueType || item === 'general_support')
+            )
+          ) {
+            return false;
+          }
+        }
+
+        if (input.safetyRiskLevel) {
+          const safetyRiskLevels = (service as { safetyRiskLevels?: unknown }).safetyRiskLevels;
+
+          if (
+            !Array.isArray(safetyRiskLevels) ||
+            !safetyRiskLevels.some(
+              (item) =>
+                typeof item === 'string' && (item === input.safetyRiskLevel || item === 'all')
+            )
+          ) {
+            return false;
+          }
+        }
+
+        return true;
+      });
 
   await audit(context, SUPPORT_ACTIONS.recommendations, input.reportId, {
     needs: input.needs,

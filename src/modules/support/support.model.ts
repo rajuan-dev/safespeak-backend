@@ -1,6 +1,9 @@
 import { Schema, model, type Types } from 'mongoose';
 
 import {
+  SUPPORT_ISSUE_TYPES,
+  SUPPORT_RESOURCE_RISK_LEVELS,
+  SUPPORT_RESOURCE_TYPES,
   SUPPORT_REQUEST_STATUSES,
   SUPPORT_SERVICE_CARD_ICONS,
   SUPPORT_SERVICE_OVERLAY_TONES,
@@ -10,7 +13,10 @@ import type {
   SupportRequestStatus,
   SupportServiceCardIcon,
   SupportServiceOverlayTone,
-  SupportServiceType
+  SupportServiceType,
+  SupportResourceRiskLevel,
+  SupportResourceType,
+  SupportIssueType
 } from './support.types';
 
 interface SupportOwnedDocument {
@@ -75,6 +81,10 @@ export interface SupportServiceDocument {
   availabilityLabel: string;
   referralTitle: string;
   referralDescription: string;
+  resourceType: SupportResourceType;
+  issueTypes: SupportIssueType[];
+  safetyRiskLevels: SupportResourceRiskLevel[];
+  ctaLabel: string;
   resourceLinks: Array<{
     label: string;
     url: string;
@@ -90,6 +100,10 @@ export interface SupportServiceDocument {
   address?: string;
   crisis: boolean;
   informationOnly: boolean;
+  priority: number;
+  safetyNotes?: string;
+  eligibilityNotes?: string;
+  languageSupportNotes?: string;
   isPublished: boolean;
   isActive: boolean;
   sortOrder: number;
@@ -350,6 +364,30 @@ const supportServiceSchema = new Schema<SupportServiceDocument>(
       default:
         'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.'
     },
+    resourceType: {
+      type: String,
+      enum: SUPPORT_RESOURCE_TYPES,
+      default: 'government',
+      required: true,
+      index: true
+    },
+    issueTypes: {
+      type: [String],
+      enum: SUPPORT_ISSUE_TYPES,
+      default: ['general_support'],
+      index: true
+    },
+    safetyRiskLevels: {
+      type: [String],
+      enum: SUPPORT_RESOURCE_RISK_LEVELS,
+      default: ['all']
+    },
+    ctaLabel: {
+      type: String,
+      required: true,
+      trim: true,
+      default: 'View options'
+    },
     resourceLinks: {
       type: [
         {
@@ -411,6 +449,26 @@ const supportServiceSchema = new Schema<SupportServiceDocument>(
       type: Boolean,
       default: true
     },
+    priority: {
+      type: Number,
+      default: 50,
+      index: true
+    },
+    safetyNotes: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    eligibilityNotes: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    languageSupportNotes: {
+      type: String,
+      required: false,
+      trim: true
+    },
     isPublished: {
       type: Boolean,
       default: false,
@@ -433,7 +491,13 @@ const supportServiceSchema = new Schema<SupportServiceDocument>(
   { timestamps: true }
 );
 
-supportServiceSchema.index({ isPublished: 1, isActive: 1, type: 1, jurisdiction: 1 });
+supportServiceSchema.index({
+  isPublished: 1,
+  isActive: 1,
+  type: 1,
+  resourceType: 1,
+  jurisdiction: 1
+});
 supportServiceSchema.index({ sortOrder: 1, name: 1 });
 
 export const WarmReferralModel = model<WarmReferralDocument>('WarmReferral', warmReferralSchema);

@@ -10,6 +10,11 @@ export interface MediaAssetDocument {
   bodyText: string;
   category: string;
   status: MediaAssetStatus;
+  createdDate?: Date;
+  expirationDate?: Date;
+  offlineCachingEnabled: boolean;
+  primaryCta?: string;
+  secondaryButton?: string;
   originalFileName: string;
   storageKey: string;
   mimeType: string;
@@ -34,6 +39,11 @@ const mediaAssetSchema = new Schema<MediaAssetDocument>(
       required: true,
       index: true
     },
+    createdDate: { type: Date, required: false },
+    expirationDate: { type: Date, required: false },
+    offlineCachingEnabled: { type: Boolean, default: false, required: true },
+    primaryCta: { type: String, required: false, trim: true },
+    secondaryButton: { type: String, required: false, trim: true },
     originalFileName: { type: String, required: true, trim: true },
     storageKey: { type: String, required: true, unique: true },
     mimeType: { type: String, required: true, trim: true },

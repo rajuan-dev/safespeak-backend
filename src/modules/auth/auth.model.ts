@@ -7,6 +7,9 @@ export interface UserDocument {
   email: string;
   passwordHash: string;
   fullName: string;
+  googleId?: string;
+  authProvider: 'local' | 'google';
+  avatarUrl?: string;
   role: UserRole;
   status: UserStatus;
   isEmailVerified: boolean;
@@ -35,6 +38,22 @@ const userSchema = new Schema<UserDocument>(
       type: String,
       required: true,
       trim: true
+    },
+    googleId: {
+      type: String,
+      trim: true,
+      required: false
+    },
+    authProvider: {
+      type: String,
+      enum: ['local', 'google'],
+      default: 'local',
+      required: true
+    },
+    avatarUrl: {
+      type: String,
+      trim: true,
+      required: false
     },
     role: {
       type: String,
@@ -72,5 +91,6 @@ const userSchema = new Schema<UserDocument>(
 );
 
 userSchema.index({ role: 1, status: 1 });
+userSchema.index({ googleId: 1 }, { unique: true, sparse: true });
 
 export const UserModel = model<UserDocument>('User', userSchema);

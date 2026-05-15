@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
 import {
+  SUPPORT_ISSUE_TYPES,
+  SUPPORT_RESOURCE_RISK_LEVELS,
+  SUPPORT_RESOURCE_TYPES,
   SUPPORT_REQUEST_STATUSES,
   SUPPORT_SERVICE_CARD_ICONS,
   SUPPORT_SERVICE_OVERLAY_TONES,
@@ -25,6 +28,8 @@ export const adminSupportServiceParamsSchema = z.object({
 
 export const servicesQuerySchema = z.object({
   type: z.enum(SUPPORT_SERVICE_TYPES).optional(),
+  resourceType: z.enum(SUPPORT_RESOURCE_TYPES).optional(),
+  issueType: z.enum(SUPPORT_ISSUE_TYPES).optional(),
   jurisdiction: z.string().trim().max(120).optional(),
   language: z.string().trim().min(2).max(12).optional(),
   region: z.string().trim().max(120).optional(),
@@ -67,6 +72,10 @@ export const supportServiceSchema = z.object({
     .default(
       'A warm referral ensures the provider has the context they need to help you immediately without repeating your story. This secure transfer of information helps build trust and accelerates the support process.'
     ),
+  resourceType: z.enum(SUPPORT_RESOURCE_TYPES).default('government'),
+  issueTypes: z.array(z.enum(SUPPORT_ISSUE_TYPES)).default(['general_support']),
+  safetyRiskLevels: z.array(z.enum(SUPPORT_RESOURCE_RISK_LEVELS)).default(['all']),
+  ctaLabel: z.string().trim().min(1).max(120).default('View options'),
   resourceLinks: z
     .array(
       z.object({
@@ -87,6 +96,10 @@ export const supportServiceSchema = z.object({
   address: z.string().trim().max(500).optional(),
   crisis: z.boolean().default(false),
   informationOnly: z.boolean().default(true),
+  priority: z.number().int().min(0).max(100).default(50),
+  safetyNotes: z.string().trim().max(1200).optional(),
+  eligibilityNotes: z.string().trim().max(1200).optional(),
+  languageSupportNotes: z.string().trim().max(1200).optional(),
   isPublished: z.boolean().default(false),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().min(0).default(0),
@@ -98,6 +111,9 @@ export const updateSupportServiceSchema = supportServiceSchema.partial();
 export const recommendationsSchema = z.object({
   reportId: objectIdSchema.optional(),
   needs: z.array(z.enum(SUPPORT_SERVICE_TYPES)).default([]),
+  resourceTypes: z.array(z.enum(SUPPORT_RESOURCE_TYPES)).default([]),
+  issueType: z.enum(SUPPORT_ISSUE_TYPES).optional(),
+  safetyRiskLevel: z.enum(SUPPORT_RESOURCE_RISK_LEVELS).optional(),
   jurisdiction: z.string().trim().max(120).optional(),
   region: z.string().trim().max(120).optional(),
   eligibility: z.string().trim().max(160).optional(),
