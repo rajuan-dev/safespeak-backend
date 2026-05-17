@@ -9,6 +9,7 @@ import {
   getConversationFlowDetailsController,
   getConversationFlowRecommendationsController,
   getConversationFlowSessionController,
+  getConversationFlowSupportController,
   getConversationFlowTriageController
 } from './conversation-flow.controller';
 import {
@@ -42,6 +43,11 @@ conversationFlowRoutes.get(
   '/sessions/:id/triage',
   validate({ params: conversationFlowSessionParamsSchema }),
   getConversationFlowTriageController
+);
+conversationFlowRoutes.get(
+  '/sessions/:id/support',
+  validate({ params: conversationFlowSessionParamsSchema }),
+  getConversationFlowSupportController
 );
 conversationFlowRoutes.get(
   '/sessions/:id/recommendations',

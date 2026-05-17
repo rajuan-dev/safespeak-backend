@@ -8,12 +8,7 @@ export const CONVERSATION_FLOW_STATUSES = [
 
 export const CONVERSATION_FLOW_MESSAGE_ROLES = ['user', 'assistant', 'system'] as const;
 
-export const CONVERSATION_FLOW_RISK_LEVELS = [
-  'low',
-  'medium',
-  'high',
-  'immediate'
-] as const;
+export const CONVERSATION_FLOW_RISK_LEVELS = ['low', 'medium', 'high', 'immediate'] as const;
 
 export const CONVERSATION_FLOW_CATEGORIES = [
   'domestic_violence',
@@ -32,6 +27,7 @@ export const CONVERSATION_FLOW_ACTIONS = {
   sessionGet: 'conversation_flow.session.get',
   messageAppend: 'conversation_flow.message.append',
   triageGet: 'conversation_flow.triage.get',
+  supportGet: 'conversation_flow.support.get',
   recommendationsGet: 'conversation_flow.recommendations.get',
   detailsGet: 'conversation_flow.details.get'
 } as const;

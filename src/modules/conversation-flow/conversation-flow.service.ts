@@ -3,13 +3,13 @@ import type { HydratedDocument } from 'mongoose';
 
 import { ApiError } from '@common/errors/ApiError';
 import { createAuditLog } from '@modules/audit/audit.service';
+import { MicroEducationModel } from '@modules/microeducation/microeducation.model';
+import type { MicroEducationChip } from '@modules/microeducation/microeducation.types';
 import { RagKnowledgeSourceModel } from '@modules/rag/rag.model';
 import { runTimelineAssistant } from '@modules/rag/rag.service';
 import { SupportServiceModel } from '@modules/support/support.model';
 
-import {
-  CONVERSATION_FLOW_ACTIONS
-} from './conversation-flow.constants';
+import { CONVERSATION_FLOW_ACTIONS } from './conversation-flow.constants';
 import {
   ConversationFlowFactsModel,
   ConversationFlowMessageModel,
@@ -87,13 +87,7 @@ const categoryDetectionRules: Array<{
       /\b(bullying at work|workplace bullying|unsafe at work)\b/i,
       /\b(roster|shift|office|employer)\b/i
     ],
-    resourceTypes: [
-      'workplace_body',
-      'legal',
-      'mental_health',
-      'government',
-      'evidence_guidance'
-    ]
+    resourceTypes: ['workplace_body', 'legal', 'mental_health', 'government', 'evidence_guidance']
   },
   {
     category: 'racism_discrimination',
@@ -133,19 +127,11 @@ const categoryDetectionRules: Array<{
       /\b(stole my money|took my money|account hacked)\b/i
     ],
     selectedTopics: ['cyber_scam', 'scamshield'],
-    resourceTypes: [
-      'scam_support',
-      'government',
-      'police',
-      'online_safety',
-      'evidence_guidance'
-    ]
+    resourceTypes: ['scam_support', 'government', 'police', 'online_safety', 'evidence_guidance']
   },
   {
     category: 'theft_property',
-    keywords: [
-      /\b(stole|stolen|theft|robbed|robbery|took my phone|took my bag|took my wallet)\b/i
-    ],
+    keywords: [/\b(stole|stolen|theft|robbed|robbery|took my phone|took my bag|took my wallet)\b/i],
     resourceTypes: ['police', 'government', 'evidence_guidance', 'mental_health']
   },
   {
@@ -256,7 +242,8 @@ const buildFactsFromTimeline = (
   const whatHappened = timeline.what?.trim() || undefined;
   const whenHappened = timeline.when?.trim() || undefined;
   const whereHappened = timeline.where?.trim() || undefined;
-  const peopleInvolved = [timeline.who, timeline.relationship].filter(Boolean).join(' - ') || undefined;
+  const peopleInvolved =
+    [timeline.who, timeline.relationship].filter(Boolean).join(' - ') || undefined;
   const safetyConcerns =
     [timeline.unsafe_now, timeline.threats, timeline.injuries].filter(Boolean).join(' - ') ||
     undefined;
@@ -286,10 +273,11 @@ const buildFactsFromTimeline = (
 
 const buildFallbackAssistantResponse = (message: string, timeline: Record<string, string>) => {
   const lowerMessage = message.toLowerCase();
-  const empatheticPrefix =
-    /(sorry|hurt|scared|afraid|threat|unsafe|panic|upset|cry)/i.test(lowerMessage)
-      ? 'I am sorry this happened to you. You are safe to take this one step at a time here.'
-      : 'Thank you for sharing that. You do not need to explain everything at once.';
+  const empatheticPrefix = /(sorry|hurt|scared|afraid|threat|unsafe|panic|upset|cry)/i.test(
+    lowerMessage
+  )
+    ? 'I am sorry this happened to you. You are safe to take this one step at a time here.'
+    : 'Thank you for sharing that. You do not need to explain everything at once.';
 
   let nextQuestion = 'What feels most important for me to understand next?';
 
@@ -324,7 +312,11 @@ const buildFallbackAssistantResponse = (message: string, timeline: Record<string
 const detectCategory = (input: {
   text: string;
   selectedTopic?: string;
-}): { category: ConversationFlowCategory; confidenceScore: number; matchedResourceTypes: string[] } => {
+}): {
+  category: ConversationFlowCategory;
+  confidenceScore: number;
+  matchedResourceTypes: string[];
+} => {
   const matches = categoryDetectionRules
     .map((rule) => {
       let score = 0;
@@ -366,8 +358,12 @@ const detectCategory = (input: {
   };
 };
 
-const detectSafetyRiskLevel = (text: string, facts: Partial<ConversationFlowFactsDocument>): ConversationFlowRiskLevel => {
-  const combined = `${text}\n${facts.safetyConcerns ?? ''}\n${facts.emotionalState ?? ''}`.toLowerCase();
+const detectSafetyRiskLevel = (
+  text: string,
+  facts: Partial<ConversationFlowFactsDocument>
+): ConversationFlowRiskLevel => {
+  const combined =
+    `${text}\n${facts.safetyConcerns ?? ''}\n${facts.emotionalState ?? ''}`.toLowerCase();
 
   if (
     /\b(immediate danger|kill me|kill him|kill her|call 000|unsafe now|weapon|strangled|strangle|can.t breathe)\b/i.test(
@@ -377,7 +373,11 @@ const detectSafetyRiskLevel = (text: string, facts: Partial<ConversationFlowFact
     return 'immediate';
   }
 
-  if (/\b(threat|hit|assault|injured|stalking|followed|scared to go home|afraid to go home)\b/i.test(combined)) {
+  if (
+    /\b(threat|hit|assault|injured|stalking|followed|scared to go home|afraid to go home)\b/i.test(
+      combined
+    )
+  ) {
     return 'high';
   }
 
@@ -388,7 +388,10 @@ const detectSafetyRiskLevel = (text: string, facts: Partial<ConversationFlowFact
   return 'low';
 };
 
-const shouldOfferTriage = (session: ConversationFlowSessionDocument, timeline: Record<string, string>) => {
+const shouldOfferTriage = (
+  session: ConversationFlowSessionDocument,
+  timeline: Record<string, string>
+) => {
   const usefulTimelineFields = ['what', 'when', 'where', 'who', 'impact', 'evidence'].filter(
     (key) => timeline[key]?.trim()
   ).length;
@@ -446,7 +449,8 @@ const toKnowledgeSourceSummary = (source: {
   sourceType: source.sourceType,
   url: source.url,
   summary:
-    (typeof source.metadata?.plainEnglishSummary === 'string' && source.metadata.plainEnglishSummary) ||
+    (typeof source.metadata?.plainEnglishSummary === 'string' &&
+      source.metadata.plainEnglishSummary) ||
     source.description ||
     'Approved knowledge source'
 });
@@ -494,6 +498,288 @@ const buildRecommendationsFilter = (input: {
     { resourceType: { $in: input.matchedResourceTypes } },
     { safetyRiskLevels: { $in: [input.riskLevel, 'all'] } }
   ]
+});
+
+const toRecommendationRecord = (
+  item: Record<string, unknown> & { _id?: { toString: () => string } },
+  category: ConversationFlowCategory
+) => ({
+  id: item._id?.toString() ?? String(item.id ?? item.key ?? ''),
+  title: String(item.name ?? item.title ?? ''),
+  description: String(item.description ?? ''),
+  category,
+  resourceType: String(item.resourceType ?? ''),
+  ctaLabel: typeof item.ctaLabel === 'string' ? item.ctaLabel : 'View option',
+  phone: typeof item.phone === 'string' ? item.phone : undefined,
+  email: typeof item.email === 'string' ? item.email : undefined,
+  websiteUrl: typeof item.websiteUrl === 'string' ? item.websiteUrl : undefined,
+  priority:
+    typeof item.priority === 'number'
+      ? item.priority
+      : typeof item.sortOrder === 'number'
+        ? item.sortOrder
+        : 0,
+  jurisdiction: typeof item.jurisdiction === 'string' ? item.jurisdiction : undefined,
+  safetyNotes: typeof item.safetyNotes === 'string' ? item.safetyNotes : undefined,
+  eligibilityNotes: typeof item.eligibilityNotes === 'string' ? item.eligibilityNotes : undefined,
+  languageSupportNotes:
+    typeof item.languageSupportNotes === 'string' ? item.languageSupportNotes : undefined,
+  active: typeof item.isActive === 'boolean' ? item.isActive : undefined
+});
+
+const violenceTerms = [
+  'abuse',
+  'assault',
+  'bullying',
+  'coercive',
+  'domestic',
+  'discrimination',
+  'family violence',
+  'harassment',
+  'harm',
+  'intimidation',
+  'racial',
+  'racial abuse',
+  'racism',
+  'sexual violence',
+  'stalking',
+  'threat',
+  'violence',
+  'workplace bullying'
+];
+
+type MicroEducationSuggestionProfile = {
+  safetyRiskLevel: ConversationFlowRiskLevel;
+  preferredChips: MicroEducationChip[];
+  keywords: string[];
+};
+
+const buildSupportSearchText = (triage: {
+  likelyCategory: ConversationFlowCategory;
+  reasoningSummary: string;
+  matchedResourceTypes: string[];
+  missingInformation: string[];
+  matchedKnowledgeSources: Array<Record<string, unknown>>;
+}) =>
+  [
+    triage.likelyCategory,
+    categoryLabels[triage.likelyCategory],
+    triage.reasoningSummary,
+    ...triage.matchedResourceTypes,
+    ...triage.missingInformation,
+    ...triage.matchedKnowledgeSources.flatMap((source) => [
+      source.title,
+      source.summary,
+      source.sourceCategory,
+      source.sourceType
+    ])
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+const reorderRiskFirst = (
+  chips: MicroEducationChip[],
+  safetyRiskLevel: ConversationFlowRiskLevel
+): MicroEducationChip[] => {
+  if (safetyRiskLevel !== 'high' && safetyRiskLevel !== 'immediate') {
+    return chips;
+  }
+
+  const urgentOrder: MicroEducationChip[] = ['safety', 'mentalHealth', 'harassment', 'rights'];
+
+  return urgentOrder.filter((chip) => chips.includes(chip));
+};
+
+const buildMicroEducationSuggestionProfile = (triage: {
+  likelyCategory: ConversationFlowCategory;
+  safetyRiskLevel: ConversationFlowRiskLevel;
+  reasoningSummary: string;
+  matchedResourceTypes: string[];
+  missingInformation: string[];
+  matchedKnowledgeSources: Array<Record<string, unknown>>;
+}): MicroEducationSuggestionProfile | null => {
+  const searchText = buildSupportSearchText(triage);
+
+  if (!violenceTerms.some((term) => searchText.includes(term))) {
+    return null;
+  }
+
+  let preferredChips: MicroEducationChip[] = ['harassment', 'safety', 'rights', 'mentalHealth'];
+  let keywords = ['abuse', 'bullying', 'harassment', 'threat', 'safety', 'violence'];
+
+  if (
+    searchText.includes('domestic') ||
+    searchText.includes('family violence') ||
+    searchText.includes('sexual violence')
+  ) {
+    preferredChips = ['safety', 'mentalHealth', 'harassment', 'rights'];
+    keywords = ['domestic', 'family', 'violence', 'safety', 'mental', 'support'];
+  } else if (
+    searchText.includes('racial') ||
+    searchText.includes('racism') ||
+    searchText.includes('discrimination')
+  ) {
+    preferredChips = ['harassment', 'rights', 'safety', 'mentalHealth'];
+    keywords = ['racial', 'discrimination', 'rights', 'harassment', 'report'];
+  } else if (
+    searchText.includes('online') ||
+    searchText.includes('cyber') ||
+    searchText.includes('digital')
+  ) {
+    preferredChips = ['safety', 'harassment', 'rights', 'mentalHealth'];
+    keywords = ['online', 'cyber', 'digital', 'privacy', 'abuse', 'safety'];
+  } else if (
+    searchText.includes('workplace') ||
+    searchText.includes('bullying') ||
+    searchText.includes('harassment')
+  ) {
+    preferredChips = ['harassment', 'rights', 'safety', 'mentalHealth'];
+    keywords = ['bullying', 'harassment', 'workplace', 'document', 'rights'];
+  }
+
+  return {
+    safetyRiskLevel: triage.safetyRiskLevel,
+    preferredChips: reorderRiskFirst(preferredChips, triage.safetyRiskLevel),
+    keywords
+  };
+};
+
+const buildMicroCardSearchText = (card: {
+  title?: string;
+  tag?: string;
+  summary?: string;
+  detailHeading?: string;
+  detailSummary?: string;
+  detailBody?: string;
+  detailTakeaway?: string;
+  chips?: MicroEducationChip[];
+}) =>
+  [
+    card.title,
+    card.tag,
+    card.summary,
+    card.detailHeading,
+    card.detailSummary,
+    card.detailBody,
+    card.detailTakeaway,
+    ...(card.chips ?? [])
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+const scoreMicroCardForProfile = (
+  card: {
+    title?: string;
+    tag?: string;
+    summary?: string;
+    detailHeading?: string;
+    detailSummary?: string;
+    detailBody?: string;
+    detailTakeaway?: string;
+    chips?: MicroEducationChip[];
+  },
+  profile: MicroEducationSuggestionProfile
+) => {
+  const searchText = buildMicroCardSearchText(card);
+  let score = 0;
+
+  (card.chips ?? []).forEach((chip) => {
+    const chipIndex = profile.preferredChips.indexOf(chip);
+
+    if (chipIndex >= 0) {
+      score += (profile.preferredChips.length - chipIndex) * 12;
+    }
+  });
+
+  profile.keywords.forEach((keyword) => {
+    if (searchText.includes(keyword)) {
+      score += 8;
+    }
+  });
+
+  if (
+    (profile.safetyRiskLevel === 'high' || profile.safetyRiskLevel === 'immediate') &&
+    card.chips?.includes('safety')
+  ) {
+    score += 18;
+  }
+
+  if (
+    (profile.safetyRiskLevel === 'high' || profile.safetyRiskLevel === 'immediate') &&
+    card.chips?.includes('mentalHealth')
+  ) {
+    score += 10;
+  }
+
+  return score;
+};
+
+const getSuggestedMicroCardIds = async (triage: {
+  likelyCategory: ConversationFlowCategory;
+  safetyRiskLevel: ConversationFlowRiskLevel;
+  reasoningSummary: string;
+  matchedResourceTypes: string[];
+  missingInformation: string[];
+  matchedKnowledgeSources: Array<Record<string, unknown>>;
+}) => {
+  const profile = buildMicroEducationSuggestionProfile(triage);
+
+  if (!profile) {
+    return [];
+  }
+
+  const cards = await MicroEducationModel.find({
+    status: 'published',
+    deletedAt: { $exists: false }
+  })
+    .select(
+      'title tag summary detailHeading detailSummary detailBody detailTakeaway chips sortOrder'
+    )
+    .sort({ sortOrder: 1, createdAt: -1 })
+    .lean();
+
+  return cards
+    .map((card) => ({
+      id: card._id.toString(),
+      sortOrder: card.sortOrder,
+      score: scoreMicroCardForProfile(
+        {
+          title: card.title,
+          tag: card.tag,
+          summary: card.summary,
+          detailHeading: card.detailHeading,
+          detailSummary: card.detailSummary,
+          detailBody: card.detailBody,
+          detailTakeaway: card.detailTakeaway,
+          chips: card.chips
+        },
+        profile
+      )
+    }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return left.sortOrder - right.sortOrder;
+    })
+    .map((item) => item.id)
+    .slice(0, 8);
+};
+
+const toSupportAction = (
+  slot: 'immediateDanger' | 'esafety' | 'counselling',
+  recommendation?: ReturnType<typeof toRecommendationRecord>
+) => ({
+  slot,
+  serviceId: recommendation?.id,
+  resourceType: recommendation?.resourceType,
+  ctaLabel: recommendation?.ctaLabel,
+  phone: recommendation?.phone,
+  websiteUrl: recommendation?.websiteUrl
 });
 
 const buildDetailSections = (input: {
@@ -590,10 +876,7 @@ const getOwnedConversationSession = async (
   return session;
 };
 
-const upsertFacts = async (
-  conversationSessionId: string,
-  timeline: Record<string, string>
-) => {
+const upsertFacts = async (conversationSessionId: string, timeline: Record<string, string>) => {
   const factPayload = buildFactsFromTimeline(conversationSessionId, timeline);
 
   return ConversationFlowFactsModel.findOneAndUpdate(
@@ -618,7 +901,11 @@ const buildTriageForSession = async (session: HydratedConversationFlowSessionDoc
     selectedTopic: session.selectedTopic
   });
   const riskLevel = detectSafetyRiskLevel(combinedText, facts ?? {});
-  const missingInformation = facts?.missingInformation ?? ['what_details', 'when_details', 'where_details'];
+  const missingInformation = facts?.missingInformation ?? [
+    'what_details',
+    'when_details',
+    'where_details'
+  ];
   const knowledgeMatch = await matchKnowledgeSources({
     category: categoryDetection.category,
     jurisdiction: session.jurisdiction,
@@ -660,7 +947,11 @@ const buildTriageForSession = async (session: HydratedConversationFlowSessionDoc
 
   session.detectedCategory = triage.likelyCategory;
   session.safetyRiskLevel = triage.safetyRiskLevel;
-  session.status = canProceedToRecommendations ? 'triaged' : session.status === 'active' ? 'ready_for_triage' : session.status;
+  session.status = canProceedToRecommendations
+    ? 'triaged'
+    : session.status === 'active'
+      ? 'ready_for_triage'
+      : session.status;
   await session.save();
 
   return triage;
@@ -775,7 +1066,7 @@ export const appendConversationFlowMessage = async (
         timeline: existingTimeline,
         language: input.language,
         incidentCategory: categoryToRagIncidentCategory(detectedCategory),
-        jurisdiction: (session.jurisdiction as
+        jurisdiction: session.jurisdiction as
           | 'Cth'
           | 'NSW'
           | 'VIC'
@@ -788,7 +1079,7 @@ export const appendConversationFlowMessage = async (
           | 'AU'
           | 'Global'
           | 'Internal'
-          | undefined)
+          | undefined
       }
     );
   } catch {
@@ -796,7 +1087,9 @@ export const appendConversationFlowMessage = async (
   }
 
   const assistantMessageContent = [
-    typeof assistantPayload.assistantMessage === 'string' ? assistantPayload.assistantMessage.trim() : '',
+    typeof assistantPayload.assistantMessage === 'string'
+      ? assistantPayload.assistantMessage.trim()
+      : '',
     typeof assistantPayload.nextQuestion === 'string' ? assistantPayload.nextQuestion.trim() : ''
   ]
     .filter(Boolean)
@@ -814,9 +1107,11 @@ export const appendConversationFlowMessage = async (
 
   session.messageCount += 1;
 
-  const nextTimeline = ((assistantPayload.timeline ?? existingTimeline) as Record<string, unknown>);
+  const nextTimeline = (assistantPayload.timeline ?? existingTimeline) as Record<string, unknown>;
   const normalizedTimeline = Object.fromEntries(
-    Object.entries(nextTimeline).map(([key, value]) => [key, String(value).trim()]).filter(([, value]) => value)
+    Object.entries(nextTimeline)
+      .map(([key, value]) => [key, String(value).trim()])
+      .filter(([, value]) => value)
   );
   const facts = await upsertFacts(session._id.toString(), normalizedTimeline);
   const enoughConversationForTriage = shouldOfferTriage(session, normalizedTimeline);
@@ -892,6 +1187,81 @@ export const getConversationFlowTriage = async (
   };
 };
 
+export const getConversationFlowSupport = async (
+  context: ConversationFlowContext,
+  conversationSessionId: string
+) => {
+  const session = await getOwnedConversationSession(context, conversationSessionId);
+  const triage = await buildTriageForSession(session);
+  const recommendationDocs = await SupportServiceModel.find(
+    buildRecommendationsFilter({
+      category: triage.likelyCategory,
+      riskLevel: triage.safetyRiskLevel,
+      matchedResourceTypes: triage.matchedResourceTypes,
+      jurisdiction: session.jurisdiction
+    })
+  )
+    .sort({ priority: -1, sortOrder: 1, name: 1 })
+    .limit(8)
+    .lean();
+  const recommendations = recommendationDocs.map((item) =>
+    toRecommendationRecord(
+      item as Record<string, unknown> & { _id?: { toString: () => string } },
+      triage.likelyCategory
+    )
+  );
+  const emergencyRecommendation = recommendations.find((item) =>
+    ['emergency', 'police'].includes(item.resourceType)
+  );
+  const esafetyRecommendation = recommendations.find(
+    (item) => item.resourceType === 'online_safety' || /esafety/i.test(item.title)
+  );
+  const counsellingRecommendation = recommendations.find(
+    (item) =>
+      ['mental_health', 'domestic_violence_agency'].includes(item.resourceType) ||
+      /counsell?ing|lifeline|1800respect/i.test(item.title)
+  );
+  const suggestedMicroCardIds = await getSuggestedMicroCardIds({
+    likelyCategory: triage.likelyCategory,
+    safetyRiskLevel: triage.safetyRiskLevel,
+    reasoningSummary: triage.reasoningSummary,
+    matchedResourceTypes: triage.matchedResourceTypes,
+    missingInformation: triage.missingInformation,
+    matchedKnowledgeSources: triage.matchedKnowledgeSources as Array<Record<string, unknown>>
+  });
+
+  await audit(context, CONVERSATION_FLOW_ACTIONS.supportGet, conversationSessionId, {
+    likelyCategory: triage.likelyCategory,
+    suggestedMicroCardCount: suggestedMicroCardIds.length,
+    recommendationCount: recommendations.length
+  });
+
+  return {
+    session: toSessionRecord(session),
+    triage: {
+      ...triage,
+      likelyCategoryLabel: categoryLabels[triage.likelyCategory],
+      confidenceLabel:
+        triage.confidenceScore >= 0.75 ? 'high' : triage.confidenceScore >= 0.5 ? 'medium' : 'low',
+      disclaimer: 'This is information only, not legal advice.'
+    },
+    support: {
+      suggestedMicroCardIds,
+      recommendedActions: [
+        toSupportAction('immediateDanger', emergencyRecommendation),
+        toSupportAction('esafety', esafetyRecommendation),
+        toSupportAction('counselling', counsellingRecommendation)
+      ],
+      additionalResources: [
+        toSupportAction('esafety', esafetyRecommendation),
+        toSupportAction('counselling', counsellingRecommendation)
+      ],
+      matchedSupportServices: recommendations,
+      fallbackUsed: recommendations.length === 0
+    }
+  };
+};
+
 export const getConversationFlowRecommendations = async (
   context: ConversationFlowContext,
   conversationSessionId: string
@@ -913,7 +1283,9 @@ export const getConversationFlowRecommendations = async (
     .limit(8)
     .lean();
 
-  session.status = triageRecord.canProceedToRecommendations ? 'recommendation_ready' : session.status;
+  session.status = triageRecord.canProceedToRecommendations
+    ? 'recommendation_ready'
+    : session.status;
   await session.save();
 
   await audit(context, CONVERSATION_FLOW_ACTIONS.recommendationsGet, conversationSessionId, {
@@ -922,22 +1294,12 @@ export const getConversationFlowRecommendations = async (
 
   return {
     session: toSessionRecord(session),
-    recommendations: recommendations.map((item) => ({
-      id: item._id.toString(),
-      title: item.name,
-      description: item.description,
-      category: triageRecord.likelyCategory,
-      resourceType: item.resourceType,
-      ctaLabel: item.ctaLabel || 'View option',
-      phone: item.phone,
-      websiteUrl: item.websiteUrl,
-      priority: item.priority ?? item.sortOrder ?? 0,
-      jurisdiction: item.jurisdiction,
-      safetyNotes: item.safetyNotes,
-      eligibilityNotes: item.eligibilityNotes,
-      languageSupportNotes: item.languageSupportNotes,
-      active: item.isActive
-    })),
+    recommendations: recommendations.map((item) =>
+      toRecommendationRecord(
+        item as Record<string, unknown> & { _id?: { toString: () => string } },
+        triageRecord.likelyCategory
+      )
+    ),
     fallbackUsed: recommendations.length === 0
   };
 };
@@ -954,7 +1316,10 @@ export const getConversationFlowDetails = async (
   const facts = await ConversationFlowFactsModel.findOne({
     conversationSessionId: session._id
   }).lean();
-  const recommendationsResponse = await getConversationFlowRecommendations(context, conversationSessionId);
+  const recommendationsResponse = await getConversationFlowRecommendations(
+    context,
+    conversationSessionId
+  );
   const sections = buildDetailSections({
     triage: triageRecord,
     recommendations: recommendationsResponse.recommendations,

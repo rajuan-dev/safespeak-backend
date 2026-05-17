@@ -1,4 +1,4 @@
-export const SCAMSHIELD_ANALYSIS_TYPES = ['text', 'email', 'screenshot', 'url'] as const;
+export const SCAMSHIELD_ANALYSIS_TYPES = ['text', 'email', 'screenshot', 'evidence', 'url'] as const;
 
 export const SCAMSHIELD_STATUSES = ['draft', 'submitted', 'archived'] as const;
 

@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 
 import { StatusCodes } from 'http-status-codes';
 import type { HydratedDocument } from 'mongoose';
+import mammoth from 'mammoth';
+import { PDFParse } from 'pdf-parse';
 
 import { env } from '@config/env';
 import { ApiError } from '@common/errors/ApiError';
@@ -26,6 +29,19 @@ import type {
 } from './scamshield.types';
 
 type HydratedScamShieldAnalysisDocument = HydratedDocument<ScamShieldAnalysisDocument>;
+type UploadedScamShieldEvidenceFile = Express.Multer.File;
+type ExtractedEvidenceText = {
+  fileName: string;
+  mimeType: string;
+  size: number;
+  extractor: string;
+  text: string;
+};
+type AnalyzeScamEvidenceInput = AnalyzeScreenshotInput & {
+  files?: UploadedScamShieldEvidenceFile[];
+};
+
+const MAX_SCAMSHIELD_ANALYSIS_TEXT_LENGTH = 20000;
 
 const ownerFilter = (owner: ScamShieldOwner): ScamShieldOwner => {
   if (!owner.userId && !owner.sessionId) {
@@ -37,6 +53,21 @@ const ownerFilter = (owner: ScamShieldOwner): ScamShieldOwner => {
 
 const hashValue = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+const getFileExtension = (fileName: string): string => path.extname(fileName).toLowerCase();
+
+const isImageEvidenceFile = (file: UploadedScamShieldEvidenceFile): boolean =>
+  file.mimetype.startsWith('image/');
+
+const extractBestEffortLegacyDocText = (file: UploadedScamShieldEvidenceFile): string =>
+  file.buffer
+    .toString('latin1')
+    .split(/[^\x20-\x7E]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 4)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
 const extractTextFromScreenshot = async (input: AnalyzeScreenshotInput): Promise<string> => {
   if (input.imageText?.trim()) {
@@ -104,6 +135,128 @@ const extractTextFromScreenshot = async (input: AnalyzeScreenshotInput): Promise
   }
 
   return extractedText.trim();
+};
+
+const extractTextFromEvidenceFile = async (
+  file: UploadedScamShieldEvidenceFile
+): Promise<ExtractedEvidenceText> => {
+  const extension = getFileExtension(file.originalname);
+  const mimeType = file.mimetype.toLowerCase();
+
+  if (isImageEvidenceFile(file)) {
+    const text = await extractTextFromScreenshot({
+      imageBase64: file.buffer.toString('base64'),
+      mimeType: file.mimetype,
+      metadata: {}
+    });
+
+    return {
+      fileName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      extractor: 'openai-vision-ocr',
+      text
+    };
+  }
+
+  if (extension === '.pdf' || mimeType === 'application/pdf') {
+    const parser = new PDFParse({ data: file.buffer });
+
+    try {
+      const parsed = await parser.getText();
+
+      return {
+        fileName: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+        extractor: 'pdf-parse',
+        text: parsed.text.trim()
+      };
+    } finally {
+      await parser.destroy();
+    }
+  }
+
+  if (
+    extension === '.docx' ||
+    mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ) {
+    const parsed = await mammoth.extractRawText({ buffer: file.buffer });
+
+    return {
+      fileName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      extractor: 'mammoth',
+      text: parsed.value.trim()
+    };
+  }
+
+  if (extension === '.doc' || mimeType === 'application/msword') {
+    return {
+      fileName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      extractor: 'legacy-doc-best-effort',
+      text: extractBestEffortLegacyDocText(file)
+    };
+  }
+
+  throw new ApiError(
+    StatusCodes.BAD_REQUEST,
+    'Unsupported ScamShield evidence file type. Upload an image, screenshot, PDF, or Word document.'
+  );
+};
+
+const buildEvidenceAnalysisText = async (
+  input: AnalyzeScamEvidenceInput
+): Promise<{
+  text: string;
+  extractedFiles: ExtractedEvidenceText[];
+  ocrApplied: boolean;
+}> => {
+  const directText = input.imageText?.trim();
+  const files = input.files ?? [];
+  const extractedFiles = await Promise.all(
+    files.map((file) => {
+      if (directText && isImageEvidenceFile(file)) {
+        return Promise.resolve({
+          fileName: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+          extractor: 'user-provided-visible-text',
+          text: ''
+        });
+      }
+
+      return extractTextFromEvidenceFile(file);
+    })
+  );
+  const uploadedText = extractedFiles
+    .map((file) => file.text)
+    .filter((text) => text.trim().length > 0);
+  const fallbackScreenshotText =
+    !files.length && input.imageBase64 && !directText
+      ? await extractTextFromScreenshot(input)
+      : undefined;
+  const text = [directText, ...uploadedText, fallbackScreenshotText]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join('\n\n')
+    .trim();
+
+  if (!text) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Evidence text could not be extracted. Upload a clearer file or paste the visible message text.'
+    );
+  }
+
+  return {
+    text: text.slice(0, MAX_SCAMSHIELD_ANALYSIS_TEXT_LENGTH),
+    extractedFiles,
+    ocrApplied:
+      Boolean(input.imageBase64) || extractedFiles.some((file) => file.extractor === 'openai-vision-ocr')
+  };
 };
 
 const assertAiConsent = async (owner: ScamShieldOwner): Promise<void> => {
@@ -246,22 +399,36 @@ export const analyzeEmail = async (context: ScamShieldServiceContext, input: Ana
 
 export const analyzeScreenshot = async (
   context: ScamShieldServiceContext,
-  input: AnalyzeScreenshotInput
+  input: AnalyzeScamEvidenceInput
 ): Promise<ScamShieldAnalysisDocument> => {
-  const imageText = await extractTextFromScreenshot(input);
+  const evidenceText = await buildEvidenceAnalysisText(input);
+  const hasDocumentFiles = evidenceText.extractedFiles.some((file) => file.extractor !== 'openai-vision-ocr');
+  const analysisType: ScamShieldAnalysisType = hasDocumentFiles ? 'evidence' : 'screenshot';
 
   return createAnalysis(
     context,
-    'screenshot',
-    imageText,
+    analysisType,
+    evidenceText.text,
     {
       ...input,
       imageBase64: input.imageBase64 ? '[redacted-image-data]' : undefined,
-      imageText,
+      files: input.files?.map((file) => ({
+        fileName: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size
+      })),
+      imageText: evidenceText.text,
       metadata: {
         ...input.metadata,
-        ocrApplied: Boolean(input.imageBase64),
-        extractedTextLength: imageText.length
+        ocrApplied: evidenceText.ocrApplied,
+        extractedTextLength: evidenceText.text.length,
+        uploadedFiles: evidenceText.extractedFiles.map((file) => ({
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          size: file.size,
+          extractor: file.extractor,
+          extractedTextLength: file.text.length
+        }))
       }
     },
     SCAMSHIELD_ACTIONS.analyzeScreenshot

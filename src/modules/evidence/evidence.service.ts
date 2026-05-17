@@ -201,10 +201,7 @@ const assertTranscriptionConsent = async (owner: EvidenceOwner): Promise<void> =
 
 const assertAudioVideoEvidence = (evidence: EvidenceDocument): void => {
   if (!evidence.mimeType.startsWith('audio/') && !evidence.mimeType.startsWith('video/')) {
-    throw new ApiError(
-      StatusCodes.BAD_REQUEST,
-      'Only audio or video evidence can be transcribed'
-    );
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Only audio or video evidence can be transcribed');
   }
 
   assertSupportedTranscriptionMimeType(evidence.mimeType);
@@ -339,6 +336,25 @@ export const completeEvidenceUpload = async (
 
 export const getEvidenceById = async (owner: EvidenceOwner, evidenceId: string): Promise<unknown> =>
   getOwnedEvidence(owner, evidenceId).then(toSafeEvidence);
+
+export const listEvidenceForReport = async (
+  owner: EvidenceOwner,
+  reportId: string
+): Promise<unknown[]> => {
+  await assertOwnedReport(owner, reportId);
+
+  const evidence = await EvidenceModel.find({
+    reportId,
+    ...ownerFilter(owner),
+    deletedAt: {
+      $exists: false
+    }
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return evidence.map((item) => toSafeEvidence(item as EvidenceDocument));
+};
 
 export const getEvidenceMetadata = async (
   owner: EvidenceOwner,

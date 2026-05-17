@@ -11,6 +11,15 @@ import {
 import { ADMIN_ROLES } from '@modules/rbac/rbac.constants';
 
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
+const optionalClearedStringSchema = (max: number) =>
+  z
+    .union([z.string().trim().max(max), z.literal(null)])
+    .optional()
+    .transform((value) => (value === null || value === '' ? undefined : value));
+const optionalClearedEmailSchema = z
+  .union([z.string().trim().email().max(320), z.literal(''), z.literal(null)])
+  .optional()
+  .transform((value) => (value === null || value === '' ? undefined : value));
 
 export const adminParamsSchema = z.object({
   id: objectIdSchema
@@ -66,9 +75,9 @@ export const destinationSchema = z.object({
   channel: z.enum(ADMIN_DESTINATION_CHANNELS),
   jurisdiction: z.string().trim().min(2).max(80),
   languages: z.array(z.string().trim().min(2).max(20)).min(1).default(['en']),
-  endpoint: z.string().trim().max(500).optional(),
-  contactEmail: z.string().trim().email().max(320).optional(),
-  contactPhone: z.string().trim().max(80).optional(),
+  endpoint: optionalClearedStringSchema(500),
+  contactEmail: optionalClearedEmailSchema,
+  contactPhone: optionalClearedStringSchema(80),
   minimumRequiredInfo: z.array(z.string().trim().min(1).max(120)).default([]),
   anonymityOptions: z.array(z.string().trim().min(1).max(120)).default([]),
   expectedNextSteps: z.array(z.string().trim().min(1).max(240)).default([]),

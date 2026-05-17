@@ -6,7 +6,6 @@ import { successResponse } from '@common/responses/api-response';
 
 import type {
   AnalyzeEmailInput,
-  AnalyzeScreenshotInput,
   AnalyzeTextInput,
   CheckUrlInput,
   GenerateReportDraftByIdInput,
@@ -72,11 +71,13 @@ export const analyzeEmailController = asyncHandler(async (req: Request, res: Res
 
 export const analyzeScreenshotController = asyncHandler(async (req: Request, res: Response) => {
   const file = req.file;
+  const files = Array.isArray(req.files) ? req.files : file ? [file] : [];
   const body = req.body as ScreenshotRequestBody;
-  const input: AnalyzeScreenshotInput = {
+  const input = {
     imageText: body.imageText,
-    imageBase64: file?.buffer.toString('base64') ?? body.imageBase64,
-    mimeType: file?.mimetype ?? body.mimeType,
+    imageBase64: files.length ? undefined : body.imageBase64,
+    mimeType: files.length ? undefined : body.mimeType,
+    files,
     evidenceId: body.evidenceId,
     reportId: body.reportId,
     metadata: parseScreenshotMetadata(body.metadata)

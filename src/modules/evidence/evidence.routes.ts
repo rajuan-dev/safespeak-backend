@@ -13,6 +13,7 @@ import {
   getEvidenceController,
   getEvidenceMetadataController,
   getEvidenceTranscriptionController,
+  listReportEvidenceController,
   transcribeEvidenceController,
   verifyHashController
 } from './evidence.controller';
@@ -20,6 +21,7 @@ import {
   completeUploadBodySchema,
   createUploadUrlSchema,
   evidenceParamsSchema,
+  reportEvidenceParamsSchema,
   transcribeEvidenceBodySchema,
   verifyHashBodySchema
 } from './evidence.schema';
@@ -45,6 +47,11 @@ evidenceRoutes.post(
   upload.single('file'),
   validate({ body: completeUploadBodySchema }),
   completeUploadController
+);
+evidenceRoutes.get(
+  '/reports/:reportId/evidence',
+  validate({ params: reportEvidenceParamsSchema }),
+  listReportEvidenceController
 );
 evidenceRoutes.get(
   '/evidence/:id',

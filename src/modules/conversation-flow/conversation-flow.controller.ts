@@ -13,6 +13,7 @@ import {
   getConversationFlowDetails,
   getConversationFlowRecommendations,
   getConversationFlowSession,
+  getConversationFlowSupport,
   getConversationFlowTriage
 } from './conversation-flow.service';
 
@@ -61,6 +62,14 @@ export const getConversationFlowTriageController = asyncHandler(
     const result = await getConversationFlowTriage(getContext(req), req.params.id);
 
     ApiResponse.success(res, 'Conversation triage retrieved', result);
+  }
+);
+
+export const getConversationFlowSupportController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await getConversationFlowSupport(getContext(req), req.params.id);
+
+    ApiResponse.success(res, 'Conversation support bundle retrieved', result);
   }
 );
 

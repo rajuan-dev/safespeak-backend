@@ -23,6 +23,7 @@ const structuredFieldsSchema = z
     witnesses: z.string().max(2000).optional(),
     repeatedIncidents: z.boolean().optional(),
     injuries: z.string().max(2000).optional(),
+    supportMessage: z.string().max(2000).optional(),
     evidenceItems: z.array(z.unknown()).optional()
   })
   .strict();

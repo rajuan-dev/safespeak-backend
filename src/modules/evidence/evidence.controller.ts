@@ -16,6 +16,7 @@ import {
   getEvidenceById,
   getEvidenceMetadata,
   getEvidenceTranscription,
+  listEvidenceForReport,
   softDeleteEvidence,
   transcribeEvidenceById,
   verifyEvidenceHash
@@ -53,6 +54,12 @@ export const getEvidenceController = asyncHandler(async (req: Request, res: Resp
   const evidence = await getEvidenceById(getOwner(req), req.params.id);
 
   ApiResponse.success(res, 'Evidence retrieved', { evidence });
+});
+
+export const listReportEvidenceController = asyncHandler(async (req: Request, res: Response) => {
+  const evidence = await listEvidenceForReport(getOwner(req), req.params.reportId);
+
+  ApiResponse.success(res, 'Report evidence retrieved', { evidence });
 });
 
 export const getEvidenceMetadataController = asyncHandler(async (req: Request, res: Response) => {

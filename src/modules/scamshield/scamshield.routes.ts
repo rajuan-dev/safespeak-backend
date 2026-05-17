@@ -29,14 +29,34 @@ import {
 } from './scamshield.schema';
 
 export const scamShieldRoutes = Router();
-const screenshotUpload = multer({
+const allowedEvidenceExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.pdf', '.doc', '.docx']);
+const allowedEvidenceMimeTypes = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+]);
+
+const getFileExtension = (fileName: string): string => {
+  const extension = fileName.toLowerCase().match(/\.[^.]+$/)?.[0];
+
+  return extension ?? '';
+};
+
+const evidenceUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024
+    fileSize: 15 * 1024 * 1024,
+    files: 8
   },
   fileFilter: (_req, file, callback) => {
-    if (!file.mimetype.startsWith('image/')) {
-      callback(new Error('Only image files are supported for screenshot analysis'));
+    const extension = getFileExtension(file.originalname);
+    const isAllowed =
+      file.mimetype.startsWith('image/') ||
+      allowedEvidenceMimeTypes.has(file.mimetype) ||
+      allowedEvidenceExtensions.has(extension);
+
+    if (!isAllowed) {
+      callback(new Error('Upload an image, screenshot, PDF, or Word document for ScamShield analysis'));
       return;
     }
 
@@ -58,7 +78,7 @@ scamShieldRoutes.post(
 );
 scamShieldRoutes.post(
   '/analyze-screenshot',
-  screenshotUpload.single('image'),
+  evidenceUpload.any(),
   analyzeScreenshotController
 );
 scamShieldRoutes.post('/check-url', validate({ body: checkUrlSchema }), checkUrlController);
