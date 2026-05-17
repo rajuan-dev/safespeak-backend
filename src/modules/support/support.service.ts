@@ -595,6 +595,8 @@ export const listAdvocates = async (context: SupportServiceContext): Promise<unk
       id: 'general-support',
       advocateType: 'general_support',
       languages: ['en'],
+      issueTypes: ['general_support', 'domestic_violence', 'racial_abuse', 'migrant_challenges', 'cyber_scam'],
+      regions: ['AU', 'national'],
       availability: 'request_based',
       informationOnly: true
     },
@@ -602,6 +604,8 @@ export const listAdvocates = async (context: SupportServiceContext): Promise<unk
       id: 'multilingual-support',
       advocateType: 'multilingual_support',
       languages: ['en', 'ar', 'es'],
+      issueTypes: ['general_support', 'migrant_challenges', 'racial_abuse'],
+      regions: ['AU', 'national'],
       availability: 'request_based',
       informationOnly: true
     }
@@ -624,7 +628,10 @@ export const createAdvocateRequest = async (
   });
 
   await audit(context, SUPPORT_ACTIONS.advocateRequest, request._id.toString(), {
-    advocateType: input.advocateType
+    advocateType: input.advocateType,
+    issueType: input.issueType,
+    region: input.region,
+    safeContactPreference: input.safeContactPreference
   });
 
   return request;

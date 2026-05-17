@@ -19,6 +19,11 @@ export const logoutSchema = z.object({
   refreshToken: z.string().min(20).optional()
 });
 
+export const deactivateAccountSchema = z.object({
+  confirmation: z.literal('DEACTIVATE')
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
+export type DeactivateAccountInput = z.infer<typeof deactivateAccountSchema>;

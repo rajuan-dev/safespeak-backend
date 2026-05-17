@@ -144,7 +144,13 @@ export const warmReferralSchema = z.object({
 export const advocateRequestSchema = z.object({
   advocateType: z.string().trim().min(1).max(120),
   language: z.string().trim().min(2).max(12).default('en'),
-  notes: z.string().trim().max(4000).optional()
+  issueType: z.string().trim().max(120).optional(),
+  region: z.string().trim().max(120).optional(),
+  safeContactPreference: z
+    .enum(['phone', 'email', 'in_app', 'no_direct_contact'])
+    .default('in_app'),
+  notes: z.string().trim().max(4000).optional(),
+  confirmationCopy: z.string().trim().max(1000).optional()
 });
 
 export const safetyPlanSchema = z.object({

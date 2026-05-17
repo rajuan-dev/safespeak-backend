@@ -227,6 +227,39 @@ export const logoutUser = async (userId?: string): Promise<void> => {
   });
 };
 
+export const deactivateUserAccount = async (
+  userId: string,
+  ip?: string,
+  userAgent?: string
+): Promise<SafeUser> => {
+  const user = await UserModel.findByIdAndUpdate(
+    userId,
+    {
+      status: 'inactive',
+      $unset: {
+        refreshTokenHash: ''
+      }
+    },
+    {
+      new: true
+    }
+  );
+
+  const safeUser = toSafeUser(user);
+
+  await createAuditLog({
+    actorType: 'user',
+    actorId: safeUser.id,
+    action: 'auth.deactivate',
+    resourceType: 'auth',
+    resourceId: safeUser.id,
+    ip,
+    userAgent
+  });
+
+  return safeUser;
+};
+
 export const getSafeUserById = async (userId: string): Promise<SafeUser> => {
   const user = await UserModel.findById(userId);
 

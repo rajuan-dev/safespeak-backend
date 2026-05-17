@@ -55,7 +55,11 @@ export interface WarmReferralDocument extends SupportOwnedDocument {
 export interface AdvocateRequestDocument extends SupportOwnedDocument {
   advocateType: string;
   language: string;
+  issueType?: string;
+  region?: string;
+  safeContactPreference: 'phone' | 'email' | 'in_app' | 'no_direct_contact';
   notes?: string;
+  confirmationCopy?: string;
   status: SupportRequestStatus;
 }
 
@@ -245,7 +249,27 @@ const advocateRequestSchema = new Schema<AdvocateRequestDocument>(
       required: true,
       default: 'en'
     },
+    issueType: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    region: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    safeContactPreference: {
+      type: String,
+      enum: ['phone', 'email', 'in_app', 'no_direct_contact'],
+      default: 'in_app',
+      required: true
+    },
     notes: {
+      type: String,
+      required: false
+    },
+    confirmationCopy: {
       type: String,
       required: false
     },

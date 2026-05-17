@@ -9,11 +9,23 @@ import {
   analyticsHeatmapController,
   analyticsLanguagesController,
   analyticsOverviewController,
-  analyticsTrendsController
+  analyticsTrendsController,
+  publicLocalIntelligenceController
 } from './analytics.controller';
-import { analyticsExportQuerySchema, analyticsQuerySchema } from './analytics.schema';
+import {
+  analyticsExportQuerySchema,
+  analyticsQuerySchema,
+  localIntelligenceQuerySchema
+} from './analytics.schema';
 
 export const analyticsRoutes = Router();
+export const publicAnalyticsRoutes = Router();
+
+publicAnalyticsRoutes.get(
+  '/public/local-intelligence',
+  validate({ query: localIntelligenceQuerySchema }),
+  publicLocalIntelligenceController
+);
 
 analyticsRoutes.use(authenticateUser, requireAdminRole());
 

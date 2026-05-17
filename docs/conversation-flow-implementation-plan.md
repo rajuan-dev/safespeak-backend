@@ -2,11 +2,13 @@
 
 Date: 16 May 2026
 
+Implementation status: implemented and verified on 16 May 2026.
+
 ## Current-State Assessment
 
 ### Backend
 
-Status: partially implemented, not correct for the required product flow
+Status: implemented for the conversation-first flow
 
 What already exists:
 
@@ -15,20 +17,19 @@ What already exists:
 - AI triage endpoint
 - RAG knowledge source management
 - Support service CRUD and recommendation endpoint
+- Dedicated conversation-flow APIs for sessions, messages, fact extraction, triage, recommendations, and details
 
-What is missing or incorrect:
+What was fixed:
 
-- No dedicated persisted conversation-flow domain for session, messages, fact extraction, triage state, and recommendation state
-- Triage is still report-shaped and narrative-first instead of conversation-session-first
-- Triage contract does not expose the required `likelyCategory`, `safetyRiskLevel`, `reasoningSummary`, `matchedLegislationIds`, `matchedKnowledgeSources`, `humanReviewRecommended`, and `canProceedToRecommendations` flow fields
-- Recommendation logic is still mostly generic support-service filtering by `needs`
-- Recommendation results are not sufficiently validated against issue type, safety level, jurisdiction, and resource type
-- No backend-managed transition state from conversation -> triage -> recommendations -> details -> optional report submission
-- No reliable backend persistence for background timeline/fact extraction from conversation turns
+- Added persisted conversation sessions, messages, fact extraction, and triage snapshots
+- Added conversation-first triage contract with `likelyCategory`, `safetyRiskLevel`, `reasoningSummary`, `matchedLegislationIds`, `matchedKnowledgeSources`, `humanReviewRecommended`, and `canProceedToRecommendations`
+- Added backend-managed transition state from conversation to triage, recommendations, details, and optional report submission
+- Added issue/risk/resource filtering for recommendations using admin-managed support resources
+- Added knowledge/legislation matching using approved RAG knowledge sources
 
 ### Admin Dashboard
 
-Status: partially implemented, not correct for the required resource/legislation management flow
+Status: implemented for resource and knowledge management
 
 What already exists:
 
@@ -37,17 +38,16 @@ What already exists:
 - Knowledge source management page
 - Content resource and media management
 
-What is missing or incorrect:
+What was fixed:
 
-- Support service schema is broader directory data, not a triage-resource data model
-- No dedicated admin resource type taxonomy matching the required categories
-- No simple category -> resource type -> legislation tag mapping workflow
-- Existing tables do not provide the exact filters required for issue-specific recommendation management
-- No clear distinction between user-facing recommendation resources and general content assets
+- Support service schema includes resource type, issue types, risk levels, CTA label, priority, safety notes, eligibility notes, and language support notes
+- Admin support-service UI includes filters for resource type, issue type, jurisdiction, and status
+- Knowledge source management is reused for legislation and approved source grounding
+- Category/resource/risk mapping is implemented through backend rules plus admin-managed resource metadata
 
 ### Frontend
 
-Status: not correct for the required conversation-first experience
+Status: implemented for the conversation-first experience
 
 What already exists:
 
@@ -56,14 +56,14 @@ What already exists:
 - Recommendation page
 - Detailed explanation/report flow screens
 
-What is missing or incorrect:
+What was fixed:
 
-- Visible live timeline builder is still shown
-- Chat entry still contains static topic/action patterns
-- Transition still points toward report submission too early
-- Recommendation screen is still static and can show mismatched cards
-- Triage and details screens are not fully driven by a stable backend flow contract
-- Mock fallback is not aligned to a shared conversation-flow DTO
+- Visible live timeline builder is hidden from the user-facing chat screen
+- Timeline/fact extraction stays in internal state and backend payloads
+- Conversation transition now points to triage/options, not direct report submission
+- Triage, recommendations, and details screens consume the shared conversation-flow DTOs
+- Recommendations are backend/admin-resource driven, with safe fallback if live endpoints are unavailable
+- The large background sphere is removed from the active chat screen
 
 ## Implementation Order
 
@@ -123,3 +123,9 @@ What is missing or incorrect:
 - Legal/context explanation comes from approved knowledge data or falls back safely
 - Admin can manage resources and knowledge used by triage/recommendations
 - Frontend/backend contracts are documented and typed
+
+## Verification
+
+- `safespeak-backend`: `npm run typecheck`
+- `safespeak-admin`: `npm run build`
+- `safespeak-frontend`: `npm run build`

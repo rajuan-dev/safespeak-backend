@@ -99,7 +99,8 @@ const categoryDetectionRules: Array<{
     category: 'racism_discrimination',
     keywords: [
       /\b(racist|racism|racial abuse|racial slur|discrimination|hate speech|vilification)\b/i,
-      /\b(because of my race|because i am muslim|because i am black|because of my skin)\b/i
+      /\b(because of my race|because i am muslim|because i am black|because of my skin)\b/i,
+      /\b(hijab|hijub|headscarf|veil)\b/i
     ],
     selectedTopics: ['racial_abuse'],
     resourceTypes: [
@@ -149,7 +150,10 @@ const categoryDetectionRules: Array<{
   },
   {
     category: 'harassment',
-    keywords: [/\b(harassment|threatening me|stalking|followed me|intimidated)\b/i],
+    keywords: [
+      /\b(harassment|threatening me|stalking|followed me|intimidated)\b/i,
+      /\b(grabbed|grab|pulled|pull|yanked|touched without permission)\b/i
+    ],
     resourceTypes: ['police', 'legal', 'mental_health', 'evidence_guidance', 'safety_planning']
   },
   {
@@ -391,6 +395,15 @@ const shouldOfferTriage = (session: ConversationFlowSessionDocument, timeline: R
 
   return session.userTurnCount >= 4 && (usefulTimelineFields >= 3 || session.messageCount >= 8);
 };
+
+const shouldBlockTriage = (triage: {
+  likelyCategory: ConversationFlowCategory;
+  confidenceScore: number;
+  canProceedToRecommendations: boolean;
+}) =>
+  triage.likelyCategory === 'general_support' ||
+  triage.confidenceScore < 0.45 ||
+  !triage.canProceedToRecommendations;
 
 const buildReasoningSummary = (input: {
   category: ConversationFlowCategory;
@@ -806,16 +819,19 @@ export const appendConversationFlowMessage = async (
     Object.entries(nextTimeline).map(([key, value]) => [key, String(value).trim()]).filter(([, value]) => value)
   );
   const facts = await upsertFacts(session._id.toString(), normalizedTimeline);
-  const offerTriage = shouldOfferTriage(session, normalizedTimeline);
+  const enoughConversationForTriage = shouldOfferTriage(session, normalizedTimeline);
+  const triage = enoughConversationForTriage ? await buildTriageForSession(session) : null;
+  const offerTriage = Boolean(triage && !shouldBlockTriage(triage));
 
   if (offerTriage && !session.triageOfferedAt) {
     session.triageOfferedAt = new Date();
+    session.status = 'ready_for_triage';
+  } else if (enoughConversationForTriage && triage) {
     session.status = 'ready_for_triage';
   } else if (session.status === 'active') {
     session.status = 'active';
   }
 
-  const triage = offerTriage ? await buildTriageForSession(session) : null;
   await session.save();
 
   await audit(context, CONVERSATION_FLOW_ACTIONS.messageAppend, conversationSessionId, {
@@ -832,8 +848,10 @@ export const appendConversationFlowMessage = async (
     transition: {
       offerTriage,
       prompt: offerTriage
-        ? 'I’m sorry this happened to you. You’re safe to explore your options here. Would you like help understanding reporting options, support services, evidence, or your rights?'
-        : null,
+        ? 'I am sorry this happened to you. You are safe to explore your options here. Would you like help understanding reporting options, support services, evidence, or your rights?'
+        : enoughConversationForTriage
+          ? 'Based on what you shared so far, this does not appear to fit the harm, safety, scam, violence, harassment, or discrimination categories that move to triage here. You can keep chatting if there is more context.'
+          : null,
       primaryCta: offerTriage ? 'Continue to Triage' : null,
       secondaryCta: offerTriage ? 'Review my options' : null
     },

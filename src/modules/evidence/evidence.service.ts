@@ -164,13 +164,21 @@ const assertOwnedReport = async (owner: EvidenceOwner, reportId: string) => {
   return report;
 };
 
-const getOwnedEvidence = async (owner: EvidenceOwner, evidenceId: string) => {
+const getOwnedEvidence = async (
+  owner: EvidenceOwner,
+  evidenceId: string,
+  options: { includeDeleted?: boolean } = {}
+) => {
   const evidence = await EvidenceModel.findOne({
     _id: evidenceId,
     ...ownerFilter(owner),
-    deletedAt: {
-      $exists: false
-    }
+    ...(options.includeDeleted
+      ? {}
+      : {
+          deletedAt: {
+            $exists: false
+          }
+        })
   });
 
   if (!evidence) {
@@ -336,7 +344,7 @@ export const getEvidenceMetadata = async (
   owner: EvidenceOwner,
   evidenceId: string
 ): Promise<unknown> => {
-  const evidence = await getOwnedEvidence(owner, evidenceId);
+  const evidence = await getOwnedEvidence(owner, evidenceId, { includeDeleted: true });
 
   return {
     id: evidence._id,
@@ -423,7 +431,7 @@ export const getEvidenceAuditChain = async (
   owner: EvidenceOwner,
   evidenceId: string
 ): Promise<unknown[]> => {
-  const evidence = await getOwnedEvidence(owner, evidenceId);
+  const evidence = await getOwnedEvidence(owner, evidenceId, { includeDeleted: true });
 
   return EvidenceAuditChainModel.find({ evidenceId: evidence._id }).sort({ sequence: 1 }).lean();
 };

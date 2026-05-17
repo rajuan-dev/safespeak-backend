@@ -5,6 +5,7 @@ import { validate } from '@common/middleware/validate.middleware';
 
 import {
   adminLoginController,
+  deactivateController,
   googleCallbackController,
   googleLoginController,
   loginController,
@@ -13,7 +14,12 @@ import {
   refreshController,
   registerController
 } from './auth.controller';
-import { loginSchema, refreshTokenSchema, registerSchema } from './auth.schema';
+import {
+  deactivateAccountSchema,
+  loginSchema,
+  refreshTokenSchema,
+  registerSchema
+} from './auth.schema';
 
 export const authRoutes = Router();
 export const googleAuthRoutes = Router();
@@ -32,3 +38,9 @@ authRoutes.post('/admin/login', validate({ body: loginSchema }), adminLoginContr
 authRoutes.post('/refresh', validate({ body: refreshTokenSchema }), refreshController);
 authRoutes.post('/logout', authenticateUser, logoutController);
 authRoutes.get('/me', authenticateUser, meController);
+authRoutes.post(
+  '/deactivate',
+  authenticateUser,
+  validate({ body: deactivateAccountSchema }),
+  deactivateController
+);

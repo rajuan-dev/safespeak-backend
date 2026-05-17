@@ -9,6 +9,7 @@ import { ApiResponse } from '@common/responses/api-response';
 import { env } from '@config/env';
 
 import {
+  deactivateUserAccount,
   getSafeUserById,
   loginUser,
   logoutUser,
@@ -85,6 +86,16 @@ export const meController = asyncHandler(async (req: Request, res: Response) => 
   const user = await getSafeUserById(req.user.id);
 
   ApiResponse.success(res, 'Current user retrieved successfully', { user });
+});
+
+export const deactivateController = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Authentication is required');
+  }
+
+  const user = await deactivateUserAccount(req.user.id, req.ip, req.get('user-agent'));
+
+  ApiResponse.success(res, 'Account deactivated', { user });
 });
 
 export const googleLoginController: RequestHandler = (req, res, next) => {

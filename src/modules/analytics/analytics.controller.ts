@@ -4,14 +4,15 @@ import { StatusCodes } from 'http-status-codes';
 import { asyncHandler } from '@common/errors/asyncHandler';
 import { successResponse } from '@common/responses/api-response';
 
-import type { AnalyticsExportQueryInput } from './analytics.schema';
+import type { AnalyticsExportQueryInput, LocalIntelligenceQueryInput } from './analytics.schema';
 import {
   exportAnalytics,
   getAnalyticsCategories,
   getAnalyticsHeatmap,
   getAnalyticsLanguages,
   getAnalyticsOverview,
-  getAnalyticsTrends
+  getAnalyticsTrends,
+  getPublicLocalIntelligence
 } from './analytics.service';
 
 const getContext = (req: Request) => ({
@@ -21,6 +22,28 @@ const getContext = (req: Request) => ({
   ip: req.ip,
   userAgent: req.get('user-agent')
 });
+
+const getPublicContext = (req: Request) => ({
+  ip: req.ip,
+  userAgent: req.get('user-agent')
+});
+
+export const publicLocalIntelligenceController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const localIntelligence = await getPublicLocalIntelligence(
+      getPublicContext(req),
+      req.query as LocalIntelligenceQueryInput
+    );
+
+    res
+      .status(StatusCodes.OK)
+      .json(
+        successResponse('Public local intelligence retrieved', {
+          localIntelligence
+        })
+      );
+  }
+);
 
 export const analyticsOverviewController = asyncHandler(async (req: Request, res: Response) => {
   const overview = await getAnalyticsOverview(getContext(req), req.query);

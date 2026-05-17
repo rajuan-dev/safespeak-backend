@@ -7,3 +7,8 @@ export interface AnalyticsServiceContext {
   ip?: string;
   userAgent?: string;
 }
+
+export interface PublicAnalyticsServiceContext {
+  ip?: string;
+  userAgent?: string;
+}
