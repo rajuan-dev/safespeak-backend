@@ -22,6 +22,15 @@ export const ADMIN_ACTIONS = {
   reportDeliveriesList: 'admin.report_deliveries.list',
   knowledgeSourcesList: 'admin.knowledge_sources.list',
   educationalContentOverview: 'admin.educational_content.overview',
+  dataProtectionOverview: 'admin.data_protection.overview',
+  aiEngineOverview: 'admin.ai_engine.overview',
+  languagePacksOverview: 'admin.language_packs.overview',
+  intelligenceCenterOverview: 'admin.intelligence_center.overview',
+  culturalProfilesOverview: 'admin.cultural_profiles.overview',
+  culturalProfilesList: 'admin.cultural_profiles.list',
+  culturalProfileCreate: 'admin.cultural_profiles.create',
+  culturalProfileUpdate: 'admin.cultural_profiles.update',
+  culturalProfileDelete: 'admin.cultural_profiles.delete',
   privacyRequestsList: 'admin.privacy_requests.list',
   privacyRequestUpdate: 'admin.privacy_requests.update',
   analyticsOverview: 'admin.analytics.overview'
@@ -44,5 +53,13 @@ export const ADMIN_SUBMISSION_TEMPLATE_ATTACHMENT_MODES = [
   'metadata_only',
   'include_hashes',
   'include_manifest'
+] as const;
+export const ADMIN_CULTURAL_PROFILE_TYPES = ['cultural', 'faith', 'community'] as const;
+export const ADMIN_CULTURAL_PROFILE_STATUSES = [
+  'draft',
+  'pending_review',
+  'validated',
+  'needs_update',
+  'archived'
 ] as const;
 export const PRIVACY_REQUEST_STATUSES = ['pending', 'in_review', 'completed', 'rejected'] as const;

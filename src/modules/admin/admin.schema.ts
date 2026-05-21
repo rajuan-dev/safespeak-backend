@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import {
+  ADMIN_CULTURAL_PROFILE_STATUSES,
+  ADMIN_CULTURAL_PROFILE_TYPES,
   ADMIN_DESTINATION_CHANNELS,
   ADMIN_DESTINATION_TYPES,
   ADMIN_SUBMISSION_TEMPLATE_ACK_MODES,
@@ -60,6 +62,32 @@ export const taxonomySchema = z.object({
 });
 
 export const updateTaxonomySchema = taxonomySchema.partial();
+
+export const culturalProfileQuerySchema = z.object({
+  communityType: z.enum(ADMIN_CULTURAL_PROFILE_TYPES).optional(),
+  validationStatus: z.enum(ADMIN_CULTURAL_PROFILE_STATUSES).optional(),
+  isActive: z.coerce.boolean().optional(),
+  search: z.string().trim().max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+export const culturalProfileSchema = z.object({
+  key: z.string().trim().min(1).max(120),
+  name: z.string().trim().min(1).max(200),
+  communityType: z.enum(ADMIN_CULTURAL_PROFILE_TYPES),
+  languages: z.array(z.string().trim().min(2).max(40)).min(1).default(['en']),
+  faithPathway: optionalClearedStringSchema(160),
+  responseGuidance: z.string().trim().min(1).max(2500),
+  referralPreferences: z.array(z.string().trim().min(1).max(240)).default([]),
+  contentGuidance: z.array(z.string().trim().min(1).max(240)).default([]),
+  validationStatus: z.enum(ADMIN_CULTURAL_PROFILE_STATUSES).default('draft'),
+  reviewCadence: z.string().trim().min(1).max(160).default('Quarterly partner review'),
+  partnerReviewRequired: z.boolean().default(true),
+  isActive: z.boolean().default(true),
+  metadata: z.record(z.unknown()).default({})
+});
+
+export const updateCulturalProfileSchema = culturalProfileSchema.partial();
 
 export const destinationQuerySchema = z.object({
   type: z.enum(ADMIN_DESTINATION_TYPES).optional(),
@@ -144,6 +172,9 @@ export type UpdateAdminUserInput = z.infer<typeof updateAdminUserSchema>;
 export type TaxonomyQueryInput = z.infer<typeof taxonomyQuerySchema>;
 export type TaxonomyInput = z.infer<typeof taxonomySchema>;
 export type UpdateTaxonomyInput = z.infer<typeof updateTaxonomySchema>;
+export type CulturalProfileQueryInput = z.infer<typeof culturalProfileQuerySchema>;
+export type CulturalProfileInput = z.infer<typeof culturalProfileSchema>;
+export type UpdateCulturalProfileInput = z.infer<typeof updateCulturalProfileSchema>;
 export type DestinationQueryInput = z.infer<typeof destinationQuerySchema>;
 export type DestinationInput = z.infer<typeof destinationSchema>;
 export type UpdateDestinationInput = z.infer<typeof updateDestinationSchema>;

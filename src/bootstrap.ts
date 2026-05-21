@@ -2,7 +2,10 @@ import mongoose from 'mongoose';
 
 import { logger } from './common/utils/logger';
 import { connectDatabase } from './config/database';
-import { seedDefaultSuperAdmin } from './modules/admin/admin.seed';
+import {
+  seedDefaultReportDestinations,
+  seedDefaultSuperAdmin
+} from './modules/admin/admin.seed';
 import { seedDefaultTaxonomies } from './modules/taxonomies/taxonomies.seed';
 
 let bootstrapPromise: Promise<void> | null = null;
@@ -13,6 +16,7 @@ const initializeApp = async (): Promise<void> => {
   }
 
   await seedDefaultSuperAdmin();
+  await seedDefaultReportDestinations();
   await seedDefaultTaxonomies();
 };
 

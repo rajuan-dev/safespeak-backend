@@ -5,12 +5,15 @@ import { asyncHandler } from '@common/errors/asyncHandler';
 import { successResponse } from '@common/responses/api-response';
 
 import type {
+  CulturalProfileInput,
+  CulturalProfileQueryInput,
   CreateAdminUserInput,
   DestinationInput,
   PrivacyRequestQueryInput,
   ReportDeliveryQueryInput,
   SubmissionTemplateInput,
   TaxonomyInput,
+  UpdateCulturalProfileInput,
   UpdateAdminUserInput,
   UpdateDestinationInput,
   UpdatePrivacyRequestInput,
@@ -19,16 +22,24 @@ import type {
   UsersQueryInput
 } from './admin.schema';
 import {
+  createCulturalProfile,
   createAdminUser,
   createDestination,
   createSubmissionTemplate,
   createTaxonomy,
+  deleteCulturalProfile,
   deleteTaxonomy,
+  getAiEngineOverview,
+  getCulturalProfilesOverview,
+  getDataProtectionOverview,
   getEducationalContentOverview,
   getAdminAnalyticsOverview,
   getAdminDashboard,
+  getIntelligenceCenterOverview,
+  getLanguagePacksOverview,
   getTaxonomy,
   listDestinations,
+  listCulturalProfiles,
   listKnowledgeSourcesForAdmin,
   listPrivacyRequests,
   listReportDeliveries,
@@ -36,6 +47,7 @@ import {
   listTaxonomies,
   listUsers,
   updateAdminUser,
+  updateCulturalProfile,
   updateDestination,
   updatePrivacyRequest,
   updateSubmissionTemplate,
@@ -107,6 +119,66 @@ export const deleteAdminTaxonomyController = asyncHandler(async (req: Request, r
 
   res.status(StatusCodes.OK).json(successResponse('Admin taxonomy deleted', { taxonomy }));
 });
+
+export const adminCulturalProfilesOverviewController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const culturalProfiles = await getCulturalProfilesOverview(getContext(req));
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin cultural profiles overview retrieved', { culturalProfiles }));
+  }
+);
+
+export const adminCulturalProfilesController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const culturalProfiles = await listCulturalProfiles(
+      getContext(req),
+      req.query as unknown as CulturalProfileQueryInput
+    );
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin cultural profiles retrieved', { culturalProfiles }));
+  }
+);
+
+export const createAdminCulturalProfileController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const culturalProfile = await createCulturalProfile(
+      getContext(req),
+      req.body as CulturalProfileInput
+    );
+
+    res
+      .status(StatusCodes.CREATED)
+      .json(successResponse('Admin cultural profile created', { culturalProfile }));
+  }
+);
+
+export const updateAdminCulturalProfileController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const culturalProfile = await updateCulturalProfile(
+      getContext(req),
+      req.params.id,
+      req.body as UpdateCulturalProfileInput
+    );
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin cultural profile updated', { culturalProfile }));
+  }
+);
+
+export const deleteAdminCulturalProfileController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const culturalProfile = await deleteCulturalProfile(getContext(req), req.params.id);
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin cultural profile deleted', { culturalProfile }));
+  }
+);
 
 export const adminDestinationsController = asyncHandler(async (req: Request, res: Response) => {
   const destinations = await listDestinations(getContext(req), req.query);
@@ -203,6 +275,48 @@ export const adminEducationalContentController = asyncHandler(
     res
       .status(StatusCodes.OK)
       .json(successResponse('Admin educational content overview retrieved', { educationalContent }));
+  }
+);
+
+export const adminDataProtectionOverviewController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const dataProtection = await getDataProtectionOverview(getContext(req));
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin data protection overview retrieved', { dataProtection }));
+  }
+);
+
+export const adminAiEngineOverviewController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const aiEngine = await getAiEngineOverview(getContext(req));
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin AI engine overview retrieved', { aiEngine }));
+  }
+);
+
+export const adminLanguagePacksOverviewController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const languagePacks = await getLanguagePacksOverview(getContext(req));
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin language packs overview retrieved', { languagePacks }));
+  }
+);
+
+export const adminIntelligenceCenterOverviewController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const intelligenceCenter = await getIntelligenceCenterOverview(getContext(req));
+
+    res
+      .status(StatusCodes.OK)
+      .json(
+        successResponse('Admin intelligence center overview retrieved', { intelligenceCenter })
+      );
   }
 );
 

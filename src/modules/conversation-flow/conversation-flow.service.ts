@@ -273,15 +273,23 @@ const buildFactsFromTimeline = (
 
 const buildFallbackAssistantResponse = (message: string, timeline: Record<string, string>) => {
   const lowerMessage = message.toLowerCase();
-  const empatheticPrefix = /(sorry|hurt|scared|afraid|threat|unsafe|panic|upset|cry)/i.test(
-    lowerMessage
-  )
-    ? 'I am sorry this happened to you. You are safe to take this one step at a time here.'
-    : 'Thank you for sharing that. You do not need to explain everything at once.';
+  const hasImmediateSafetySignal =
+    /\b(immediate danger|unsafe now|kill me|suicide|self[- ]?harm|weapon|strangled|can.t breathe)\b/i.test(
+      lowerMessage
+    );
+  const empatheticPrefix = hasImmediateSafetySignal
+    ? 'I am sorry you are dealing with this. If you are in immediate danger, you can call 000 now.'
+    : /(sorry|hurt|scared|afraid|threat|unsafe|panic|upset|cry|lonely|stressed|overwhelmed)/i.test(
+          lowerMessage
+        )
+      ? 'I am sorry this is happening. You can take this one step at a time here.'
+      : 'Thank you for sharing that. You do not need to explain everything at once.';
 
   let nextQuestion = 'What feels most important for me to understand next?';
 
-  if (!timeline.what) {
+  if (hasImmediateSafetySignal && !timeline.unsafe_now) {
+    nextQuestion = 'Are you safe right now?';
+  } else if (!timeline.what) {
     nextQuestion = 'Can you tell me a little more about what happened?';
   } else if (!timeline.when) {
     nextQuestion = 'Do you remember when this happened?';
@@ -549,9 +557,15 @@ const violenceTerms = [
 ];
 
 type MicroEducationSuggestionProfile = {
+  category: ConversationFlowCategory;
   safetyRiskLevel: ConversationFlowRiskLevel;
   preferredChips: MicroEducationChip[];
   keywords: string[];
+  anchorPatterns: RegExp[];
+  bridgePatterns: RegExp[];
+  protectedPatterns: RegExp[];
+  excludedPatterns: RegExp[];
+  minimumScore: number;
 };
 
 const buildSupportSearchText = (triage: {
@@ -600,48 +614,186 @@ const buildMicroEducationSuggestionProfile = (triage: {
   matchedKnowledgeSources: Array<Record<string, unknown>>;
 }): MicroEducationSuggestionProfile | null => {
   const searchText = buildSupportSearchText(triage);
+  const supportedCategory =
+    triage.likelyCategory === 'domestic_violence' ||
+    triage.likelyCategory === 'racism_discrimination' ||
+    triage.likelyCategory === 'online_abuse' ||
+    triage.likelyCategory === 'scam_fraud' ||
+    triage.likelyCategory === 'workplace_bullying' ||
+    triage.likelyCategory === 'mental_health_distress' ||
+    triage.likelyCategory === 'theft_property' ||
+    triage.likelyCategory === 'harassment';
 
-  if (!violenceTerms.some((term) => searchText.includes(term))) {
+  if (!supportedCategory && !violenceTerms.some((term) => searchText.includes(term))) {
     return null;
   }
 
   let preferredChips: MicroEducationChip[] = ['harassment', 'safety', 'rights', 'mentalHealth'];
   let keywords = ['abuse', 'bullying', 'harassment', 'threat', 'safety', 'violence'];
+  let anchorPatterns: RegExp[] = [
+    /\babuse\b/i,
+    /\bviolence\b/i,
+    /\bthreat/i,
+    /\bharass/i
+  ];
+  let bridgePatterns: RegExp[] = [
+    /\bevidence\b/i,
+    /\bsupport\b/i,
+    /\bright/i,
+    /\bsafety plan/i,
+    /\bsafety planning/i
+  ];
+  let protectedPatterns: RegExp[] = [
+    /\blegal aid\b/i,
+    /\bmental health\b/i,
+    /\bcounsell?ing\b/i,
+    /\bevidence\b/i,
+    /\bsafety plan/i,
+    /\bsafety planning/i
+  ];
+  let excludedPatterns: RegExp[] = [];
+  let minimumScore = 18;
 
-  if (
-    searchText.includes('domestic') ||
-    searchText.includes('family violence') ||
-    searchText.includes('sexual violence')
-  ) {
+  if (triage.likelyCategory === 'domestic_violence') {
     preferredChips = ['safety', 'mentalHealth', 'harassment', 'rights'];
     keywords = ['domestic', 'family', 'violence', 'safety', 'mental', 'support'];
-  } else if (
-    searchText.includes('racial') ||
-    searchText.includes('racism') ||
-    searchText.includes('discrimination')
-  ) {
+    anchorPatterns = [
+      /\bdomestic\b/i,
+      /\bfamily violence\b/i,
+      /\bfamily harm\b/i,
+      /\bpartner\b/i,
+      /\bcoercive\b/i,
+      /\babuse\b/i,
+      /\bviolence\b/i,
+      /\b1800respect\b/i
+    ];
+    bridgePatterns = [
+      /\bsafety plan/i,
+      /\bsafety planning/i,
+      /\bunsafe\b/i,
+      /\bthreat/i,
+      /\bevidence\b/i,
+      /\bsupport service\b/i,
+      /\bconfidential support\b/i,
+      /\bright/i
+    ];
+    protectedPatterns = [
+      /\blegal aid\b/i,
+      /\bmental health\b/i,
+      /\bcounsell?ing\b/i,
+      /\bcrisis\b/i,
+      /\bevidence\b/i,
+      /\bsafety plan/i,
+      /\bsafety planning/i,
+      /\b1800respect\b/i
+    ];
+    excludedPatterns = [
+      /\bonline\b/i,
+      /\bcyber\b/i,
+      /\bdigital footprint\b/i,
+      /\bbullying\b/i,
+      /\bdiscrimination\b/i,
+      /\bscam\b/i,
+      /\bfraud\b/i,
+      /\bworkplace\b/i
+    ];
+    minimumScore = 20;
+  } else if (triage.likelyCategory === 'racism_discrimination') {
     preferredChips = ['harassment', 'rights', 'safety', 'mentalHealth'];
     keywords = ['racial', 'discrimination', 'rights', 'harassment', 'report'];
-  } else if (
-    searchText.includes('online') ||
-    searchText.includes('cyber') ||
-    searchText.includes('digital')
-  ) {
+    anchorPatterns = [
+      /\bracis[mt]\b/i,
+      /\bracial\b/i,
+      /\bdiscriminat/i,
+      /\bhate\b/i,
+      /\bvilification\b/i,
+      /\bhijab\b/i
+    ];
+    excludedPatterns = [/\bdomestic\b/i, /\bscam\b/i, /\bfraud\b/i];
+  } else if (triage.likelyCategory === 'online_abuse') {
     preferredChips = ['safety', 'harassment', 'rights', 'mentalHealth'];
     keywords = ['online', 'cyber', 'digital', 'privacy', 'abuse', 'safety'];
-  } else if (
-    searchText.includes('workplace') ||
-    searchText.includes('bullying') ||
-    searchText.includes('harassment')
-  ) {
+    anchorPatterns = [
+      /\bonline\b/i,
+      /\bcyber\b/i,
+      /\bdigital\b/i,
+      /\beSafety\b/i,
+      /\bprivacy\b/i,
+      /\bimage-based\b/i,
+      /\bdoxx/i,
+      /\baccount\b/i
+    ];
+    excludedPatterns = [/\bdomestic\b/i, /\bworkplace\b/i, /\bscam\b/i];
+  } else if (triage.likelyCategory === 'scam_fraud') {
+    preferredChips = ['safety', 'rights', 'mentalHealth'];
+    keywords = ['scam', 'fraud', 'online', 'privacy', 'bank', 'safety'];
+    anchorPatterns = [
+      /\bscam\b/i,
+      /\bfraud\b/i,
+      /\bphishing\b/i,
+      /\bbank\b/i,
+      /\bpassword\b/i,
+      /\botp\b/i,
+      /\baccount\b/i
+    ];
+    bridgePatterns = [/\bevidence\b/i, /\bsupport\b/i, /\bonline safety\b/i, /\bprivacy\b/i];
+    excludedPatterns = [/\bdomestic\b/i, /\bworkplace\b/i, /\bracial\b/i];
+  } else if (triage.likelyCategory === 'workplace_bullying') {
     preferredChips = ['harassment', 'rights', 'safety', 'mentalHealth'];
     keywords = ['bullying', 'harassment', 'workplace', 'document', 'rights'];
+    anchorPatterns = [
+      /\bworkplace\b/i,
+      /\bat work\b/i,
+      /\bboss\b/i,
+      /\bmanager\b/i,
+      /\bemployer\b/i,
+      /\bbully/i,
+      /\bharass/i
+    ];
+    excludedPatterns = [/\bdomestic\b/i, /\bscam\b/i, /\bonline abuse\b/i];
+  } else if (triage.likelyCategory === 'mental_health_distress') {
+    preferredChips = ['mentalHealth', 'safety', 'rights'];
+    keywords = ['mental', 'stress', 'support', 'grounding', 'safety'];
+    anchorPatterns = [
+      /\bmental health\b/i,
+      /\bstress/i,
+      /\banxiety\b/i,
+      /\blonely\b/i,
+      /\bgrounding\b/i,
+      /\bcounsell?ing\b/i,
+      /\bsupport\b/i
+    ];
+    bridgePatterns = [/\bsafety\b/i, /\bsupport\b/i, /\bwellbeing\b/i];
+    protectedPatterns = [/\bmental health\b/i, /\bcounsell?ing\b/i, /\bcrisis\b/i];
+    excludedPatterns = [
+      /\bdomestic\b/i,
+      /\bscam\b/i,
+      /\bfraud\b/i,
+      /\bdiscrimination\b/i,
+      /\bbullying\b/i
+    ];
+  } else if (triage.likelyCategory === 'theft_property') {
+    preferredChips = ['safety', 'rights', 'mentalHealth'];
+    keywords = ['theft', 'stolen', 'evidence', 'safety', 'rights'];
+    anchorPatterns = [/\btheft\b/i, /\bstolen\b/i, /\brobbed\b/i, /\bproperty\b/i];
+    bridgePatterns = [/\bevidence\b/i, /\bpolice\b/i, /\bright/i, /\bsafety\b/i];
+  } else if (triage.likelyCategory === 'harassment') {
+    preferredChips = ['harassment', 'safety', 'rights', 'mentalHealth'];
+    keywords = ['harassment', 'threat', 'safety', 'document', 'rights'];
+    anchorPatterns = [/\bharass/i, /\bthreat/i, /\bstalk/i, /\bintimidat/i];
+    bridgePatterns = [/\bevidence\b/i, /\bright/i, /\bsafety plan/i, /\bsupport\b/i];
   }
 
   return {
+    category: triage.likelyCategory,
     safetyRiskLevel: triage.safetyRiskLevel,
     preferredChips: reorderRiskFirst(preferredChips, triage.safetyRiskLevel),
-    keywords
+    keywords,
+    anchorPatterns,
+    bridgePatterns,
+    protectedPatterns,
+    excludedPatterns,
+    minimumScore
   };
 };
 
@@ -669,6 +821,53 @@ const buildMicroCardSearchText = (card: {
     .join(' ')
     .toLowerCase();
 
+const hasAnyPattern = (text: string, patterns: RegExp[]): boolean =>
+  patterns.some((pattern) => pattern.test(text));
+
+const isPlaceholderMicroCard = (card: {
+  title?: string;
+  tag?: string;
+  summary?: string;
+  detailHeading?: string;
+  detailSummary?: string;
+  detailBody?: string;
+  detailTakeaway?: string;
+  chips?: MicroEducationChip[];
+}): boolean =>
+  /\b(test|testing|sample|dummy|placeholder|lorem|new educational content|new description|create educational content)\b/i.test(
+    buildMicroCardSearchText(card)
+  );
+
+const isMicroCardEligibleForProfile = (
+  card: {
+    title?: string;
+    tag?: string;
+    summary?: string;
+    detailHeading?: string;
+    detailSummary?: string;
+    detailBody?: string;
+    detailTakeaway?: string;
+    chips?: MicroEducationChip[];
+  },
+  profile: MicroEducationSuggestionProfile
+): boolean => {
+  if (isPlaceholderMicroCard(card)) {
+    return false;
+  }
+
+  const searchText = buildMicroCardSearchText(card);
+  const hasAnchor = hasAnyPattern(searchText, profile.anchorPatterns);
+  const hasBridge = hasAnyPattern(searchText, profile.bridgePatterns);
+  const hasProtectedTopic = hasAnyPattern(searchText, profile.protectedPatterns);
+  const hasExcludedTopic = hasAnyPattern(searchText, profile.excludedPatterns);
+
+  if (hasExcludedTopic && !hasAnchor && !hasProtectedTopic) {
+    return false;
+  }
+
+  return hasAnchor || hasBridge || hasProtectedTopic;
+};
+
 const scoreMicroCardForProfile = (
   card: {
     title?: string;
@@ -682,6 +881,10 @@ const scoreMicroCardForProfile = (
   },
   profile: MicroEducationSuggestionProfile
 ) => {
+  if (!isMicroCardEligibleForProfile(card, profile)) {
+    return 0;
+  }
+
   const searchText = buildMicroCardSearchText(card);
   let score = 0;
 
@@ -696,6 +899,24 @@ const scoreMicroCardForProfile = (
   profile.keywords.forEach((keyword) => {
     if (searchText.includes(keyword)) {
       score += 8;
+    }
+  });
+
+  profile.anchorPatterns.forEach((pattern) => {
+    if (pattern.test(searchText)) {
+      score += 18;
+    }
+  });
+
+  profile.bridgePatterns.forEach((pattern) => {
+    if (pattern.test(searchText)) {
+      score += 8;
+    }
+  });
+
+  profile.protectedPatterns.forEach((pattern) => {
+    if (pattern.test(searchText)) {
+      score += 10;
     }
   });
 
@@ -758,7 +979,7 @@ const getSuggestedMicroCardIds = async (triage: {
         profile
       )
     }))
-    .filter((item) => item.score > 0)
+    .filter((item) => item.score >= profile.minimumScore)
     .sort((left, right) => {
       if (right.score !== left.score) {
         return right.score - left.score;

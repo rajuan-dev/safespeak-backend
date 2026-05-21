@@ -14,9 +14,38 @@ import {
   getTaxonomyCatalog,
   toScopeLanguageOptions
 } from '@modules/taxonomies/taxonomies.service';
+import { AdminCulturalProfileModel } from '@modules/admin/admin.model';
+
+export const getPublicCulturalProfileGuidance = async () => {
+  const profiles = await AdminCulturalProfileModel.find({
+    isActive: true,
+    validationStatus: 'validated',
+    deletedAt: { $exists: false }
+  })
+    .select(
+      'key name communityType languages faithPathway responseGuidance referralPreferences contentGuidance updatedAt'
+    )
+    .sort({ communityType: 1, name: 1 })
+    .lean();
+
+  return profiles.map((profile) => ({
+    key: profile.key,
+    name: profile.name,
+    communityType: profile.communityType,
+    languages: profile.languages,
+    faithPathway: profile.faithPathway,
+    responseGuidance: profile.responseGuidance,
+    referralPreferences: profile.referralPreferences,
+    contentGuidance: profile.contentGuidance,
+    updatedAt: profile.updatedAt
+  }));
+};
 
 export const getScopeBootstrap = async () => {
-  const taxonomyCatalog = await getTaxonomyCatalog();
+  const [taxonomyCatalog, culturalProfileGuidance] = await Promise.all([
+    getTaxonomyCatalog(),
+    getPublicCulturalProfileGuidance()
+  ]);
 
   return {
     scopeVersion: SAFE_SPEAK_SCOPE_VERSION,
@@ -25,6 +54,7 @@ export const getScopeBootstrap = async () => {
     culturalProfiles: getProfileCultureLabels(taxonomyCatalog.cultures, 'cultural'),
     faithProfiles: getProfileCultureLabels(taxonomyCatalog.cultures, 'faith'),
     communityProfiles: getProfileCultureLabels(taxonomyCatalog.cultures, 'community'),
+    culturalProfileGuidance,
     consentFlags: SAFE_SPEAK_CONSENT_FLAGS,
     incidentTypes: taxonomyCatalog.incidentTypes.map((record) => record.key),
     supportNeeds: taxonomyCatalog.supportNeeds.map((record) => record.key),

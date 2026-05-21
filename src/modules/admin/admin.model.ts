@@ -1,6 +1,8 @@
 import { Schema, model, type Types } from 'mongoose';
 
 import {
+  ADMIN_CULTURAL_PROFILE_STATUSES,
+  ADMIN_CULTURAL_PROFILE_TYPES,
   ADMIN_DESTINATION_CHANNELS,
   ADMIN_DESTINATION_TYPES,
   ADMIN_SUBMISSION_TEMPLATE_ACK_MODES,
@@ -9,6 +11,8 @@ import {
   PRIVACY_REQUEST_STATUSES
 } from './admin.constants';
 import type {
+  AdminCulturalProfileStatus,
+  AdminCulturalProfileType,
   AdminDestinationChannel,
   AdminDestinationType,
   AdminSubmissionTemplateAckMode,
@@ -16,6 +20,28 @@ import type {
   AdminTaxonomyType,
   PrivacyRequestStatus
 } from './admin.types';
+
+export interface AdminCulturalProfileDocument {
+  _id: Types.ObjectId;
+  key: string;
+  name: string;
+  communityType: AdminCulturalProfileType;
+  languages: string[];
+  faithPathway?: string;
+  responseGuidance: string;
+  referralPreferences: string[];
+  contentGuidance: string[];
+  validationStatus: AdminCulturalProfileStatus;
+  reviewCadence: string;
+  partnerReviewRequired: boolean;
+  reviewedBy?: Types.ObjectId;
+  reviewedAt?: Date;
+  isActive: boolean;
+  metadata: Record<string, unknown>;
+  deletedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 export interface AdminTaxonomyDocument {
   _id: Types.ObjectId;
@@ -88,6 +114,95 @@ export interface PrivacyRequestDocument {
   createdAt: Date;
   updatedAt: Date;
 }
+
+const adminCulturalProfileSchema = new Schema<AdminCulturalProfileDocument>(
+  {
+    key: {
+      type: String,
+      required: true,
+      trim: true,
+      unique: true
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    communityType: {
+      type: String,
+      enum: ADMIN_CULTURAL_PROFILE_TYPES,
+      required: true,
+      index: true
+    },
+    languages: {
+      type: [String],
+      required: true,
+      default: ['en']
+    },
+    faithPathway: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    responseGuidance: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    referralPreferences: {
+      type: [String],
+      required: true,
+      default: []
+    },
+    contentGuidance: {
+      type: [String],
+      required: true,
+      default: []
+    },
+    validationStatus: {
+      type: String,
+      enum: ADMIN_CULTURAL_PROFILE_STATUSES,
+      required: true,
+      default: 'draft',
+      index: true
+    },
+    reviewCadence: {
+      type: String,
+      required: true,
+      trim: true,
+      default: 'Quarterly partner review'
+    },
+    partnerReviewRequired: {
+      type: Boolean,
+      required: true,
+      default: true
+    },
+    reviewedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: false
+    },
+    reviewedAt: {
+      type: Date,
+      required: false
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true
+    },
+    metadata: {
+      type: Schema.Types.Mixed,
+      default: {}
+    },
+    deletedAt: {
+      type: Date,
+      required: false,
+      index: true
+    }
+  },
+  { timestamps: true }
+);
 
 const adminTaxonomySchema = new Schema<AdminTaxonomyDocument>(
   {
@@ -344,6 +459,9 @@ const privacyRequestSchema = new Schema<PrivacyRequestDocument>(
   { timestamps: true }
 );
 
+adminCulturalProfileSchema.index(
+  { communityType: 1, validationStatus: 1, isActive: 1, deletedAt: 1 }
+);
 adminTaxonomySchema.index({ type: 1, key: 1 }, { unique: true });
 adminDestinationSchema.index({ type: 1, key: 1 }, { unique: true });
 adminSubmissionTemplateSchema.index({ destinationType: 1, channel: 1, jurisdiction: 1, isActive: 1 });
@@ -351,6 +469,10 @@ adminSubmissionTemplateSchema.index({ destinationType: 1, channel: 1, jurisdicti
 export const AdminTaxonomyModel = model<AdminTaxonomyDocument>(
   'AdminTaxonomy',
   adminTaxonomySchema
+);
+export const AdminCulturalProfileModel = model<AdminCulturalProfileDocument>(
+  'AdminCulturalProfile',
+  adminCulturalProfileSchema
 );
 export const AdminDestinationModel = model<AdminDestinationDocument>(
   'AdminDestination',

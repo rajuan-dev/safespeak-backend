@@ -1,4 +1,6 @@
 import type {
+  ADMIN_CULTURAL_PROFILE_STATUSES,
+  ADMIN_CULTURAL_PROFILE_TYPES,
   ADMIN_DESTINATION_CHANNELS,
   ADMIN_DESTINATION_TYPES,
   ADMIN_SUBMISSION_TEMPLATE_ACK_MODES,
@@ -7,6 +9,8 @@ import type {
   PRIVACY_REQUEST_STATUSES
 } from './admin.constants';
 
+export type AdminCulturalProfileType = (typeof ADMIN_CULTURAL_PROFILE_TYPES)[number];
+export type AdminCulturalProfileStatus = (typeof ADMIN_CULTURAL_PROFILE_STATUSES)[number];
 export type AdminTaxonomyType = (typeof ADMIN_TAXONOMY_TYPES)[number];
 export type AdminDestinationType = (typeof ADMIN_DESTINATION_TYPES)[number];
 export type AdminDestinationChannel = (typeof ADMIN_DESTINATION_CHANNELS)[number];

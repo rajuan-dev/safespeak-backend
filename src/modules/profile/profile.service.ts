@@ -2,6 +2,7 @@ import { StatusCodes } from 'http-status-codes';
 
 import { ApiError } from '@common/errors/ApiError';
 import { createAuditLog } from '@modules/audit/audit.service';
+import { AdminCulturalProfileModel } from '@modules/admin/admin.model';
 import {
   getCommunityProfileOptions as getTaxonomyCommunityProfileOptions,
   getCulturalProfileOptions as getTaxonomyCulturalProfileOptions,
@@ -16,6 +17,9 @@ import {
 import { UserProfileModel } from './profile.model';
 import type { UpdateProfileInput } from './profile.schema';
 import type { ProfileOwner } from './profile.types';
+
+const uniqueStrings = (values: string[]): string[] =>
+  Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 
 const ownerFilter = (owner: ProfileOwner): ProfileOwner => {
   if (!owner.userId && !owner.sessionId) {
@@ -76,7 +80,35 @@ export const updateProfile = async (
   return profile;
 };
 
+const getManagedProfileNames = async (
+  communityType: 'cultural' | 'faith' | 'community'
+): Promise<string[]> => {
+  const profiles = await AdminCulturalProfileModel.find({
+    communityType,
+    isActive: true,
+    validationStatus: 'validated',
+    deletedAt: { $exists: false }
+  })
+    .select('name')
+    .sort({ name: 1 })
+    .lean();
+
+  return profiles.map((profile) => profile.name);
+};
+
 export const getLanguageOptions = getProfileLanguageOptions;
-export const getCulturalProfileOptions = getTaxonomyCulturalProfileOptions;
-export const getFaithProfileOptions = getTaxonomyFaithProfileOptions;
-export const getCommunityProfileOptions = getTaxonomyCommunityProfileOptions;
+export const getCulturalProfileOptions = async (): Promise<string[]> =>
+  uniqueStrings([
+    ...(await getTaxonomyCulturalProfileOptions()),
+    ...(await getManagedProfileNames('cultural'))
+  ]);
+export const getFaithProfileOptions = async (): Promise<string[]> =>
+  uniqueStrings([
+    ...(await getTaxonomyFaithProfileOptions()),
+    ...(await getManagedProfileNames('faith'))
+  ]);
+export const getCommunityProfileOptions = async (): Promise<string[]> =>
+  uniqueStrings([
+    ...(await getTaxonomyCommunityProfileOptions()),
+    ...(await getManagedProfileNames('community'))
+  ]);

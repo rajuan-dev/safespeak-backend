@@ -58,7 +58,8 @@ import type {
   RagOwner,
   RagSearchResult,
   RagServiceContext,
-  RagSourceCategory
+  RagSourceCategory,
+  RagTopic
 } from './rag.types';
 
 const ownerFilter = (owner: RagOwner): RagOwner => {
@@ -1324,6 +1325,122 @@ const classifySourceCategory = (input: RagAnswerInput | RagSearchInput): RagSour
   return 'internal_product_rule';
 };
 
+const timelineIncidentTopics: Partial<Record<string, RagTopic[]>> = {
+  domestic_violence: ['dv', 'support', 'crisis', 'evidence'],
+  racial_abuse: ['racial_hatred', 'discrimination', 'support', 'evidence'],
+  migrant_challenges: ['support', 'discrimination', 'other'],
+  cyber_scam: ['scam', 'online_safety', 'support', 'evidence']
+};
+
+const timelineIncidentSourceCategories: Partial<Record<string, RagSourceCategory[]>> = {
+  domestic_violence: ['official_support_source', 'official_legal_source', 'admin_content'],
+  racial_abuse: ['official_legal_source', 'official_support_source', 'admin_content'],
+  migrant_challenges: ['official_support_source', 'official_legal_source', 'admin_content'],
+  cyber_scam: ['official_support_source', 'official_legal_source', 'admin_content']
+};
+
+const uniqueByChunkId = (results: RagSearchResult[]): RagSearchResult[] => {
+  const seen = new Set<string>();
+  const deduped: RagSearchResult[] = [];
+
+  for (const result of results) {
+    if (seen.has(result.chunkId)) {
+      continue;
+    }
+
+    seen.add(result.chunkId);
+    deduped.push(result);
+  }
+
+  return deduped;
+};
+
+const buildTimelineRagCategories = (input: RagTimelineAssistantInput): RagSourceCategory[] => {
+  const categories = new Set<RagSourceCategory>();
+  const classifiedCategory = classifySourceCategory({
+    query: input.message,
+    language: input.language,
+    jurisdiction: input.jurisdiction,
+    topK: input.topK
+  });
+
+  categories.add(classifiedCategory);
+
+  for (const category of timelineIncidentSourceCategories[input.incidentCategory ?? ''] ?? []) {
+    categories.add(category);
+  }
+
+  categories.add('admin_content');
+  categories.add('internal_product_rule');
+
+  return Array.from(categories);
+};
+
+type TimelineRagQuery = {
+  sourceCategory: RagSourceCategory;
+  topic?: RagTopic;
+};
+
+const buildTimelineRagQueries = (
+  input: RagTimelineAssistantInput
+): TimelineRagQuery[] => {
+  const categories = buildTimelineRagCategories(input);
+  const incidentTopics = timelineIncidentTopics[input.incidentCategory ?? ''] ?? [];
+
+  if (incidentTopics.length === 0) {
+    return categories.map((sourceCategory) => ({ sourceCategory }));
+  }
+
+  return categories.flatMap<TimelineRagQuery>((sourceCategory) => {
+    if (sourceCategory === 'internal_product_rule') {
+      return [{ sourceCategory }];
+    }
+
+    return [
+      ...incidentTopics.map((topic) => ({ sourceCategory, topic })),
+      { sourceCategory }
+    ];
+  });
+};
+
+const searchTimelineRag = async (
+  context: RagServiceContext,
+  input: RagTimelineAssistantInput
+): Promise<RagSearchResult[]> => {
+  const searches = buildTimelineRagQueries(input);
+  const maxResults = input.topK ?? DEFAULT_RAG_TOP_K;
+  const collected: RagSearchResult[] = [];
+
+  for (const search of searches) {
+    try {
+      const results = await searchRag(context, {
+        query: input.message,
+        topK: maxResults,
+        language: input.language,
+        jurisdiction: input.jurisdiction,
+        sourceCategory: search.sourceCategory,
+        topic: search.topic
+      });
+
+      collected.push(...results);
+    } catch (error) {
+      if (isVectorSearchUnavailable(error)) {
+        throw error;
+      }
+
+      throw error;
+    }
+
+    if (uniqueByChunkId(collected).length >= maxResults) {
+      break;
+    }
+  }
+
+  return uniqueByChunkId(collected)
+    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
+    .slice(0, maxResults);
+};
+
 const shouldAttachNswLegalAwareness = (input: {
   text: string;
   jurisdiction?: RagJurisdiction;
@@ -2123,12 +2240,7 @@ export const runTimelineAssistant = async (
   let ragUnavailable = false;
 
   try {
-    results = await searchRag(context, {
-      query: input.message,
-      topK: input.topK,
-      language: input.language,
-      jurisdiction: input.jurisdiction
-    });
+    results = await searchTimelineRag(context, input);
   } catch {
     ragUnavailable = true;
   }

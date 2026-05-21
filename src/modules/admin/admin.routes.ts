@@ -4,22 +4,31 @@ import { authenticateUser, requireAdminRole } from '@common/middleware/auth.midd
 import { validate } from '@common/middleware/validate.middleware';
 
 import {
+  adminAiEngineOverviewController,
+  adminCulturalProfilesController,
+  adminCulturalProfilesOverviewController,
   adminDashboardController,
+  adminDataProtectionOverviewController,
   adminDestinationsController,
   adminEducationalContentController,
+  adminIntelligenceCenterOverviewController,
   adminKnowledgeSourcesController,
+  adminLanguagePacksOverviewController,
   adminPrivacyRequestsController,
   adminReportDeliveriesController,
   adminSubmissionTemplatesController,
   adminTaxonomyController,
   adminTaxonomiesController,
   adminUsersController,
+  createAdminCulturalProfileController,
   createAdminUserController,
   createAdminDestinationController,
   createAdminSubmissionTemplateController,
   createAdminTaxonomyController,
+  deleteAdminCulturalProfileController,
   deleteAdminTaxonomyController,
   updateAdminUserController,
+  updateAdminCulturalProfileController,
   updateAdminDestinationController,
   updateAdminPrivacyRequestController,
   updateAdminSubmissionTemplateController,
@@ -27,6 +36,8 @@ import {
 } from './admin.controller';
 import {
   adminParamsSchema,
+  culturalProfileQuerySchema,
+  culturalProfileSchema,
   createAdminUserSchema,
   destinationQuerySchema,
   destinationSchema,
@@ -37,6 +48,7 @@ import {
   taxonomyQuerySchema,
   taxonomySchema,
   updateAdminUserSchema,
+  updateCulturalProfileSchema,
   updateDestinationSchema,
   updatePrivacyRequestSchema,
   updateSubmissionTemplateSchema,
@@ -79,6 +91,27 @@ adminRoutes.delete(
   validate({ params: adminParamsSchema }),
   deleteAdminTaxonomyController
 );
+adminRoutes.get('/cultural-profiles/overview', adminCulturalProfilesOverviewController);
+adminRoutes.get(
+  '/cultural-profiles',
+  validate({ query: culturalProfileQuerySchema }),
+  adminCulturalProfilesController
+);
+adminRoutes.post(
+  '/cultural-profiles',
+  validate({ body: culturalProfileSchema }),
+  createAdminCulturalProfileController
+);
+adminRoutes.patch(
+  '/cultural-profiles/:id',
+  validate({ params: adminParamsSchema, body: updateCulturalProfileSchema }),
+  updateAdminCulturalProfileController
+);
+adminRoutes.delete(
+  '/cultural-profiles/:id',
+  validate({ params: adminParamsSchema }),
+  deleteAdminCulturalProfileController
+);
 adminRoutes.get(
   '/destinations',
   validate({ query: destinationQuerySchema }),
@@ -116,6 +149,10 @@ adminRoutes.get(
 );
 adminRoutes.get('/knowledge-sources', adminKnowledgeSourcesController);
 adminRoutes.get('/educational-content', adminEducationalContentController);
+adminRoutes.get('/data-protection/overview', adminDataProtectionOverviewController);
+adminRoutes.get('/ai-engine/overview', adminAiEngineOverviewController);
+adminRoutes.get('/language-packs/overview', adminLanguagePacksOverviewController);
+adminRoutes.get('/insights/incident-insights/overview', adminIntelligenceCenterOverviewController);
 adminRoutes.get(
   '/privacy-requests',
   validate({ query: privacyRequestQuerySchema }),
