@@ -19,4 +19,11 @@ export const ADMIN_ROLES = [
   'analytics_viewer'
 ] as const;
 
+export const SCOPED_ADMIN_ROLES = [
+  'super_admin',
+  'content_admin',
+  'integration_admin',
+  'analytics_viewer'
+] as const;
+
 export const USER_STATUSES = ['active', 'inactive', 'suspended', 'deleted'] as const;

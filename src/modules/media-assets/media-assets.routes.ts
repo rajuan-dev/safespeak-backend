@@ -39,7 +39,7 @@ mediaAssetRoutes.get(
   publicMediaAssetFileController
 );
 
-adminMediaAssetRoutes.use(authenticateUser, requireAdminRole());
+adminMediaAssetRoutes.use(authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 adminMediaAssetRoutes.get(
   '/',
   validate({ query: mediaAssetQuerySchema }),

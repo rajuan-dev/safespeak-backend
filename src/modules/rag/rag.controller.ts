@@ -113,12 +113,13 @@ export const deleteKnowledgeSourceController = asyncHandler(async (req: Request,
 
 export const uploadKnowledgeSourceDocumentController = asyncHandler(
   async (req: Request, res: Response) => {
+    const body = req.body as { ingestImmediately?: unknown };
     const result = await uploadKnowledgeSourceDocument(
       getContext(req),
       req.params.id,
       req.file,
       {
-        ingestImmediately: req.body?.ingestImmediately !== 'false'
+        ingestImmediately: body.ingestImmediately !== 'false'
       }
     );
 

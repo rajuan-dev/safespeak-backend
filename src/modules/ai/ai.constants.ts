@@ -7,7 +7,8 @@ export const AI_ACTIONS = {
   redactPii: 'ai.redact_pii',
   ragAnswer: 'ai.rag_answer',
   timelineAssistant: 'ai.timeline_assistant',
-  audioTranscriptionRequested: 'ai.audio_transcription_requested'
+  audioTranscriptionRequested: 'ai.audio_transcription_requested',
+  speechSynthesisRequested: 'ai.speech_synthesis_requested'
 } as const;
 
 export const AI_REVIEW_STATUSES = ['pending_human_review', 'approved', 'rejected'] as const;

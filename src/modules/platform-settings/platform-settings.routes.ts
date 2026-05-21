@@ -16,7 +16,7 @@ export const adminPlatformSettingsRoutes = Router();
 
 platformSettingsRoutes.get('/', publicPlatformSettingsController);
 
-adminPlatformSettingsRoutes.use(authenticateUser, requireAdminRole());
+adminPlatformSettingsRoutes.use(authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 adminPlatformSettingsRoutes.get('/', adminPlatformSettingsController);
 adminPlatformSettingsRoutes.patch(
   '/draft',

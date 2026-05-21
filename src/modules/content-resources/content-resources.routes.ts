@@ -49,7 +49,7 @@ contentResourceRoutes.get(
   publicContentResourceImageController
 );
 
-adminContentResourceRoutes.use(authenticateUser, requireAdminRole());
+adminContentResourceRoutes.use(authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 adminContentResourceRoutes.get(
   '/',
   validate({ query: contentResourceQuerySchema }),

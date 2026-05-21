@@ -64,7 +64,7 @@ ragRoutes.post(
   validate({ body: ragTimelineAssistantSchema }),
   timelineAssistantController
 );
-ragRoutes.use('/knowledge-sources', authenticateUser, requireAdminRole());
+ragRoutes.use('/knowledge-sources', authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 ragRoutes.get('/knowledge-sources', listKnowledgeSourcesController);
 ragRoutes.post(
   '/knowledge-sources',

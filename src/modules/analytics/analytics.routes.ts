@@ -27,7 +27,7 @@ publicAnalyticsRoutes.get(
   publicLocalIntelligenceController
 );
 
-analyticsRoutes.use(authenticateUser, requireAdminRole());
+analyticsRoutes.use(authenticateUser, requireAdminRole('super_admin', 'analytics_viewer'));
 
 analyticsRoutes.get(
   '/overview',

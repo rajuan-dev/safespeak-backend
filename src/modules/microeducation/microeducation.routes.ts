@@ -38,7 +38,7 @@ microEducationRoutes.get(
   publicMicroEducationImageController
 );
 
-adminMicroEducationRoutes.use(authenticateUser, requireAdminRole());
+adminMicroEducationRoutes.use(authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 adminMicroEducationRoutes.get(
   '/',
   validate({ query: microEducationAdminQuerySchema }),

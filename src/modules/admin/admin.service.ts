@@ -1,10 +1,11 @@
 import { StatusCodes } from 'http-status-codes';
+import type { FilterQuery } from 'mongoose';
 
 import { ApiError } from '@common/errors/ApiError';
 import { UserModel } from '@modules/auth/auth.model';
 import { deriveFullNameFromEmail, hashPassword } from '@modules/auth/auth.utils';
 import { createAuditLog } from '@modules/audit/audit.service';
-import { AuditLogModel } from '@modules/audit/audit.model';
+import { AuditLogModel, type AuditLogDocument } from '@modules/audit/audit.model';
 import {
   getAnalyticsCategories,
   getAnalyticsHeatmap,
@@ -49,6 +50,7 @@ import type {
   DestinationQueryInput,
   CreateAdminUserInput,
   PrivacyRequestQueryInput,
+  AuditLogsQueryInput,
   ReportDeliveryQueryInput,
   SubmissionTemplateInput,
   SubmissionTemplateQueryInput,
@@ -91,6 +93,31 @@ const formatCount = (value: number): string => value.toLocaleString('en-AU');
 
 const getCountValue = (value: unknown): number => (typeof value === 'number' ? value : 0);
 
+const toSafeString = (value: unknown): string | undefined => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (value && typeof value === 'object' && 'toString' in value) {
+    const stringifier = (value as { toString?: unknown }).toString;
+
+    if (typeof stringifier === 'function') {
+      const stringValue = (value as { toString: () => string }).toString();
+      return stringValue === '[object Object]' ? undefined : stringValue;
+    }
+  }
+
+  return undefined;
+};
+
 const toAnalyticsCountRows = (rows: unknown[]): AnalyticsCountRow[] =>
   rows.filter((row): row is AnalyticsCountRow => typeof row === 'object' && row !== null);
 
@@ -101,7 +128,97 @@ const getTopAnalyticsLabel = (rows: unknown[], fallback: string): string => {
     return fallback;
   }
 
-  return String(firstRow._id);
+  return toSafeString(firstRow._id) ?? fallback;
+};
+
+const SENSITIVE_METADATA_KEYS = new Set([
+  'body',
+  'contactemail',
+  'contactphone',
+  'email',
+  'fullnarrative',
+  'minimalSummary',
+  'narrative',
+  'password',
+  'payload',
+  'phone',
+  'safecontactmasked',
+  'text',
+  'token'
+].map((key) => key.toLowerCase()));
+
+const maskAuditMetadataValue = (value: unknown): unknown => {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return `[array:${value.length}]`;
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (typeof value === 'object') {
+    return '[object]';
+  }
+
+  return undefined;
+};
+
+const maskAuditMetadata = (
+  metadata: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined => {
+  if (!metadata) {
+    return undefined;
+  }
+
+  const entries = Object.entries(metadata)
+    .filter(([key]) => !SENSITIVE_METADATA_KEYS.has(key.toLowerCase()))
+    .map(([key, value]) => [key, maskAuditMetadataValue(value)] as const)
+    .filter(([, value]) => value !== undefined);
+
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+};
+
+const toMaskedAuditLogRecord = (
+  log: AuditLogDocument & { _id?: unknown }
+): Record<string, unknown> => ({
+  id: toSafeString(log._id),
+  actorType: log.actorType,
+  actorId: toSafeString(log.actorId),
+  sessionId: toSafeString(log.sessionId),
+  action: log.action,
+  resourceType: log.resourceType,
+  resourceId: toSafeString(log.resourceId),
+  metadata: maskAuditMetadata(log.metadata),
+  ipHashPresent: Boolean(log.ipHash),
+  userAgentHashPresent: Boolean(log.userAgentHash),
+  createdAt: log.createdAt
+});
+
+export const listAuditLogs = async (
+  context: AdminServiceContext,
+  query: AuditLogsQueryInput
+): Promise<Array<Record<string, unknown>>> => {
+  const filter: FilterQuery<AuditLogDocument> = {
+    ...(query.actorType ? { actorType: query.actorType } : {}),
+    ...(query.resourceType ? { resourceType: query.resourceType } : {}),
+    ...(query.action ? { action: query.action } : {}),
+    ...(query.actorId ? { actorId: query.actorId } : {}),
+    ...(query.resourceId ? { resourceId: query.resourceId } : {})
+  };
+  const logs = await AuditLogModel.find(filter).sort({ createdAt: -1 }).limit(query.limit).lean();
+
+  await audit(context, ADMIN_ACTIONS.auditLogsList, undefined, { count: logs.length });
+
+  return logs.map((log) => toMaskedAuditLogRecord(log));
 };
 
 export const getAdminDashboard = async (

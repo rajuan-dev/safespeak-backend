@@ -104,11 +104,13 @@ export const googleLoginController: RequestHandler = (req, res, next) => {
     return;
   }
 
-  passport.authenticate('google', {
+  const authenticate = passport.authenticate('google', {
     scope: googleOAuthScopes,
     session: false,
     prompt: 'select_account'
-  })(req, res, next);
+  }) as RequestHandler;
+
+  authenticate(req, res, next);
 };
 
 export const googleCallbackController = (
@@ -121,7 +123,7 @@ export const googleCallbackController = (
     return;
   }
 
-  passport.authenticate('google', { session: false }, (error: unknown, user?: Express.User) => {
+  const authenticate = passport.authenticate('google', { session: false }, (error: unknown, user?: Express.User) => {
     if (error) {
       redirectToGoogleAuthError(res, 'Google sign-in failed. Please try again.');
       return;
@@ -135,5 +137,7 @@ export const googleCallbackController = (
     }
 
     redirectToClientAuthCallback(res, authData);
-  })(req, res, next);
+  }) as RequestHandler;
+
+  authenticate(req, res, next);
 };

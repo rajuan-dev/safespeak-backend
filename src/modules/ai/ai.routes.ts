@@ -10,6 +10,7 @@ import {
   extractIncidentFieldsController,
   generateSummaryController,
   redactPiiController,
+  synthesizeSpeechController,
   transcribeAudioController,
   translateController,
   triageReportController
@@ -19,6 +20,7 @@ import {
   extractIncidentFieldsSchema,
   generateSummarySchema,
   redactPiiSchema,
+  synthesizeSpeechSchema,
   transcribeAudioBodySchema,
   translateSchema,
   triageReportSchema
@@ -53,6 +55,11 @@ aiRoutes.post(
 );
 aiRoutes.post('/translate', validate({ body: translateSchema }), translateController);
 aiRoutes.post('/redact-pii', validate({ body: redactPiiSchema }), redactPiiController);
+aiRoutes.post(
+  '/synthesize-speech',
+  validate({ body: synthesizeSpeechSchema }),
+  synthesizeSpeechController
+);
 aiRoutes.post(
   '/transcribe-audio',
   upload.single('audio'),

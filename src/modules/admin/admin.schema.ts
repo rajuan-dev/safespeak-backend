@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+import { AUDIT_ACTOR_TYPES, AUDIT_RESOURCE_TYPES } from '@modules/audit/audit.constants';
+import { SCOPED_ADMIN_ROLES } from '@modules/rbac/rbac.constants';
+
 import {
   ADMIN_CULTURAL_PROFILE_STATUSES,
   ADMIN_CULTURAL_PROFILE_TYPES,
@@ -10,7 +13,6 @@ import {
   ADMIN_TAXONOMY_TYPES,
   PRIVACY_REQUEST_STATUSES
 } from './admin.constants';
-import { ADMIN_ROLES } from '@modules/rbac/rbac.constants';
 
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
 const optionalClearedStringSchema = (max: number) =>
@@ -38,12 +40,12 @@ export const createAdminUserSchema = z.object({
   email: z.string().trim().email().max(320),
   fullName: z.string().trim().min(1).max(200).optional(),
   password: z.string().min(12).max(200),
-  role: z.enum(ADMIN_ROLES).default('admin')
+  role: z.enum(SCOPED_ADMIN_ROLES).default('content_admin')
 });
 
 export const updateAdminUserSchema = z.object({
   fullName: z.string().trim().min(1).max(200).optional(),
-  role: z.enum(ADMIN_ROLES).optional(),
+  role: z.enum(SCOPED_ADMIN_ROLES).optional(),
   status: z.enum(['active', 'inactive', 'suspended', 'deleted']).optional()
 });
 
@@ -138,6 +140,15 @@ export const reportDeliveryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25)
 });
 
+export const auditLogsQuerySchema = z.object({
+  actorType: z.enum(AUDIT_ACTOR_TYPES).optional(),
+  resourceType: z.enum(AUDIT_RESOURCE_TYPES).optional(),
+  action: z.string().trim().max(160).optional(),
+  actorId: objectIdSchema.optional(),
+  resourceId: objectIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
 export const submissionTemplateSchema = z.object({
   key: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(200),
@@ -167,6 +178,7 @@ export const updatePrivacyRequestSchema = z.object({
 });
 
 export type UsersQueryInput = z.infer<typeof usersQuerySchema>;
+export type AuditLogsQueryInput = z.infer<typeof auditLogsQuerySchema>;
 export type CreateAdminUserInput = z.infer<typeof createAdminUserSchema>;
 export type UpdateAdminUserInput = z.infer<typeof updateAdminUserSchema>;
 export type TaxonomyQueryInput = z.infer<typeof taxonomyQuerySchema>;

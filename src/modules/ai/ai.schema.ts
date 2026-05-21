@@ -70,6 +70,16 @@ export const transcribeAudioBodySchema = z.object({
   }, z.boolean().optional())
 });
 
+export const synthesizeSpeechSchema = z.object({
+  text: z.string().trim().min(1).max(4000),
+  language: languageSchema.optional(),
+  voice: z
+    .string()
+    .trim()
+    .regex(/^[a-zA-Z0-9_-]{1,40}$/, 'Invalid voice identifier')
+    .optional()
+});
+
 export type ExtractIncidentFieldsInput = z.infer<typeof extractIncidentFieldsSchema>;
 export type TriageReportInput = z.infer<typeof triageReportSchema>;
 export type ClarifyingQuestionsInput = z.infer<typeof clarifyingQuestionsSchema>;
@@ -77,3 +87,4 @@ export type GenerateSummaryInput = z.infer<typeof generateSummarySchema>;
 export type TranslateInput = z.infer<typeof translateSchema>;
 export type RedactPiiInput = z.infer<typeof redactPiiSchema>;
 export type TranscribeAudioBodyInput = z.infer<typeof transcribeAudioBodySchema>;
+export type SynthesizeSpeechInput = z.infer<typeof synthesizeSpeechSchema>;

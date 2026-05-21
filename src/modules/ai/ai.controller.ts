@@ -9,6 +9,7 @@ import {
   generateClarifyingQuestions,
   generateSummary,
   redactPii,
+  synthesizeSpeech,
   transcribeAudio,
   translateText,
   triageReport
@@ -18,6 +19,7 @@ import type {
   ExtractIncidentFieldsInput,
   GenerateSummaryInput,
   RedactPiiInput,
+  SynthesizeSpeechInput,
   TranscribeAudioBodyInput,
   TranslateInput,
   TriageReportInput
@@ -93,7 +95,15 @@ export const transcribeAudioController = asyncHandler(async (req: Request, res: 
     req.file
   );
 
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(StatusCodes.OK).json(successResponse('Audio transcribed successfully', result, {}));
+});
+
+export const synthesizeSpeechController = asyncHandler(async (req: Request, res: Response) => {
+  const result = await synthesizeSpeech(getContext(req), req.body as SynthesizeSpeechInput);
+
+  res.setHeader('Cache-Control', 'no-store');
   res
     .status(StatusCodes.OK)
-    .json(successResponse('Audio transcribed successfully', result, {}));
+    .json(successResponse('Speech synthesized successfully', result, { informationOnly: true }));
 });

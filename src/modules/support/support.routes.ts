@@ -44,7 +44,7 @@ import {
 export const supportRoutes = Router();
 export const adminSupportServiceRoutes = Router();
 
-adminSupportServiceRoutes.use(authenticateUser, requireAdminRole());
+adminSupportServiceRoutes.use(authenticateUser, requireAdminRole('super_admin', 'integration_admin'));
 adminSupportServiceRoutes.get(
   '/',
   validate({ query: adminServicesQuerySchema }),

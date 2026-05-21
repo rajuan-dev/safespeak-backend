@@ -48,7 +48,10 @@ const envSchema = z
     EVIDENCE_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(10485760),
     CONTENT_RESOURCE_STORAGE_PATH: z.string().min(1).default('./storage/content-resources'),
     CONTENT_RESOURCE_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(52428800),
-    MICRO_EDUCATION_IMAGE_STORAGE_PATH: z.string().min(1).default('./storage/microeducation-images'),
+    MICRO_EDUCATION_IMAGE_STORAGE_PATH: z
+      .string()
+      .min(1)
+      .default('./storage/microeducation-images'),
     MICRO_EDUCATION_IMAGE_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(10485760),
     MEDIA_ASSET_STORAGE_PATH: z.string().min(1).default('./storage/media-assets'),
     MEDIA_ASSET_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(2097152),
@@ -56,6 +59,8 @@ const envSchema = z
     OPENAI_MODEL: z.string().min(1).default('gpt-4.1-mini'),
     OPENAI_EMBEDDING_MODEL: z.string().min(1).default('text-embedding-3-small'),
     OPENAI_TRANSCRIPTION_MODEL: z.string().min(1).default('gpt-4o-mini-transcribe'),
+    OPENAI_TTS_MODEL: z.string().min(1).default('gpt-4o-mini-tts'),
+    OPENAI_TTS_VOICE: z.string().min(1).default('alloy'),
     ASR_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(26214400),
     RAG_VECTOR_INDEX: z.string().min(1).default('rag_chunks_vector_index'),
     INTERNAL_KNOWLEDGE_DIR: z.string().min(1).default('knowledge/internal'),

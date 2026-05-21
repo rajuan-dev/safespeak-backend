@@ -22,7 +22,7 @@ export const adminResourceRoutes = Router();
 
 resourceRoutes.get('/', publicResourcesController);
 
-adminResourceRoutes.use(authenticateUser, requireAdminRole());
+adminResourceRoutes.use(authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 adminResourceRoutes.get('/', validate({ query: resourceAdminQuerySchema }), adminResourcesListController);
 adminResourceRoutes.post('/', validate({ body: createResourceSchema }), adminResourcesCreateController);
 adminResourceRoutes.patch(

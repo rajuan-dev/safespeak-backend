@@ -34,6 +34,7 @@ import type {
   ExtractIncidentFieldsInput,
   GenerateSummaryInput,
   RedactPiiInput,
+  SynthesizeSpeechInput,
   TranslateInput,
   TriageReportInput
 } from './ai.schema';
@@ -47,6 +48,8 @@ import type {
 import type { TranscribeAudioBodyInput } from './ai.schema';
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
+const OPENAI_SPEECH_URL = 'https://api.openai.com/v1/audio/speech';
+const MAX_SPEECH_TEXT_LENGTH = 4000;
 
 const ownerFilter = (owner: AiOwner): AiOwner => {
   if (!owner.userId && !owner.sessionId) {
@@ -58,6 +61,9 @@ const ownerFilter = (owner: AiOwner): AiOwner => {
 
 const hashValue = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+const normalizeSpeechText = (value: string): string =>
+  value.replace(/\s+/g, ' ').trim().slice(0, MAX_SPEECH_TEXT_LENGTH);
 
 const guardrailsForLanguage = (language = DEFAULT_AI_LANGUAGE): AiGuardrailResult => ({
   informationOnly: true,
@@ -339,8 +345,7 @@ type TriageResourceRecommendation = {
 
 const TRIAGE_SEVERITY_VALUES = new Set(['low', 'medium', 'high', 'urgent']);
 
-const toStringValue = (value: unknown): string =>
-  typeof value === 'string' ? value.trim() : '';
+const toStringValue = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
 
 const normalizeStringList = (value: unknown, fallback: string[] = []): string[] => {
   if (Array.isArray(value)) {
@@ -486,9 +491,7 @@ const normalizeTriageOutput = (input: {
       ? 'Immediate safety may be a concern. If there is immediate danger, call 000 now.'
       : input.fallbackText;
   const assessmentFallback =
-    fallbackReason === 'none'
-      ? input.fallbackText
-      : `${summaryFallback} ${input.humanReviewText}`;
+    fallbackReason === 'none' ? input.fallbackText : `${summaryFallback} ${input.humanReviewText}`;
   const normalizedSummary = sanitizeTriageText(
     input.modelOutput.summary,
     input.disclaimer,
@@ -502,12 +505,18 @@ const normalizeTriageOutput = (input: {
 
   return {
     severitySignal: normalizeTriageSeverity(input.modelOutput.severitySignal, flags),
-    primarySupportNeed:
-      sanitizeTriageText(input.modelOutput.primarySupportNeed, input.disclaimer, 'Support options'),
-    specialtyTag:
-      sanitizeTriageText(input.modelOutput.specialtyTag, input.disclaimer, 'general support')
-        .toLowerCase()
-        .slice(0, 80),
+    primarySupportNeed: sanitizeTriageText(
+      input.modelOutput.primarySupportNeed,
+      input.disclaimer,
+      'Support options'
+    ),
+    specialtyTag: sanitizeTriageText(
+      input.modelOutput.specialtyTag,
+      input.disclaimer,
+      'general support'
+    )
+      .toLowerCase()
+      .slice(0, 80),
     summary: normalizedSummary,
     assessmentBody: normalizedAssessment,
     riskFactors: normalizeStringList(input.modelOutput.riskFactors),
@@ -518,7 +527,9 @@ const normalizeTriageOutput = (input: {
       'Document what happened if safe to do so',
       'Consider contacting an official support service'
     ]),
-    resourceRecommendations: normalizeResourceRecommendations(input.modelOutput.resourceRecommendations),
+    resourceRecommendations: normalizeResourceRecommendations(
+      input.modelOutput.resourceRecommendations
+    ),
     nonLegalSafetyNotes: normalizeStringList(input.modelOutput.nonLegalSafetyNotes, [
       input.disclaimer
     ]),
@@ -849,16 +860,12 @@ export const transcribeAudio = async (
   });
 
   if (input.evidenceId && input.saveTranscript !== false) {
-    await saveTranscriptionToEvidence(
-      ownerFilter(context.owner),
-      input.evidenceId,
-      {
-        text: transcription.transcript,
-        language: transcription.language,
-        model: transcription.model,
-        provider: transcription.provider
-      }
-    );
+    await saveTranscriptionToEvidence(ownerFilter(context.owner), input.evidenceId, {
+      text: transcription.transcript,
+      language: transcription.language,
+      model: transcription.model,
+      provider: transcription.provider
+    });
   }
 
   if (input.reportId) {
@@ -914,5 +921,68 @@ export const transcribeAudio = async (
     reportId: input.reportId,
     evidenceId: input.evidenceId,
     saved: input.saveTranscript !== false
+  };
+};
+
+export const synthesizeSpeech = async (
+  context: AiServiceContext,
+  input: SynthesizeSpeechInput
+): Promise<Record<string, unknown>> => {
+  await assertAiConsent(context.owner);
+
+  const text = normalizeSpeechText(input.text);
+
+  if (!text) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'text is required');
+  }
+
+  if (!env.OPENAI_API_KEY) {
+    throw new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'OPENAI_API_KEY is not configured');
+  }
+
+  const voice = input.voice ?? env.OPENAI_TTS_VOICE;
+  const response = await fetch(OPENAI_SPEECH_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: env.OPENAI_TTS_MODEL,
+      voice,
+      input: text,
+      response_format: 'mp3'
+    })
+  });
+
+  if (!response.ok) {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI speech synthesis request failed');
+  }
+
+  const audioBuffer = Buffer.from(await response.arrayBuffer());
+
+  await createAuditLog({
+    actorType: context.owner.userId ? 'user' : 'anonymous_session',
+    actorId: context.owner.userId,
+    sessionId: context.owner.sessionId,
+    action: AI_ACTIONS.speechSynthesisRequested,
+    resourceType: 'system',
+    ip: context.ip,
+    userAgent: context.userAgent,
+    metadata: {
+      model: env.OPENAI_TTS_MODEL,
+      voice,
+      textHash: hashValue({ text }),
+      characterCount: text.length,
+      temporaryAudio: true
+    }
+  });
+
+  return {
+    audioBase64: audioBuffer.toString('base64'),
+    mimeType: 'audio/mpeg',
+    model: env.OPENAI_TTS_MODEL,
+    voice,
+    temporary: true
   };
 };

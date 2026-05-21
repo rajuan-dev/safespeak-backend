@@ -1,5 +1,5 @@
 import { StatusCodes } from 'http-status-codes';
-import type { HydratedDocument } from 'mongoose';
+import { Types, type HydratedDocument } from 'mongoose';
 
 import { ApiError } from '@common/errors/ApiError';
 import { createAuditLog } from '@modules/audit/audit.service';
@@ -235,6 +235,47 @@ const toMessageRecord = (message: {
   createdAt: message.createdAt
 });
 
+const toSafeString = (value: unknown, fallback = ''): string => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  return fallback;
+};
+
+const getRecordString = (
+  record: Record<string, unknown>,
+  key: string,
+  fallback = ''
+): string => toSafeString(record[key], fallback);
+
+const toStringRecord = (record: Record<string, unknown>): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(record)
+      .map(([key, value]) => [key, toSafeString(value).trim()] as const)
+      .filter(([, value]) => value)
+  );
+
+const toRecordArray = (items: unknown[]): Array<Record<string, unknown>> =>
+  items.filter(
+    (item): item is Record<string, unknown> =>
+      typeof item === 'object' && item !== null && !Array.isArray(item)
+  );
+
+const recommendationResourceType = (item: Record<string, unknown>): string =>
+  getRecordString(item, 'resourceType');
+
+const toAssistantConversationRole = (role: string): 'assistant' | 'user' =>
+  role === 'assistant' ? 'assistant' : 'user';
+
 const buildFactsFromTimeline = (
   conversationSessionId: string,
   timeline: Record<string, string>
@@ -254,10 +295,10 @@ const buildFactsFromTimeline = (
     .map((key) => `${key}_details`);
   const extractedEvents = [whatHappened, whenHappened, whereHappened, peopleInvolved]
     .filter(Boolean)
-    .map((value) => String(value));
+    .map((value) => toSafeString(value));
 
   return {
-    conversationSessionId: conversationSessionId as never,
+    conversationSessionId: new Types.ObjectId(conversationSessionId),
     whatHappened,
     whenHappened,
     whereHappened,
@@ -512,11 +553,11 @@ const toRecommendationRecord = (
   item: Record<string, unknown> & { _id?: { toString: () => string } },
   category: ConversationFlowCategory
 ) => ({
-  id: item._id?.toString() ?? String(item.id ?? item.key ?? ''),
-  title: String(item.name ?? item.title ?? ''),
-  description: String(item.description ?? ''),
+  id: (item._id?.toString() ?? getRecordString(item, 'id')) || getRecordString(item, 'key'),
+  title: getRecordString(item, 'name') || getRecordString(item, 'title'),
+  description: getRecordString(item, 'description'),
   category,
-  resourceType: String(item.resourceType ?? ''),
+  resourceType: getRecordString(item, 'resourceType'),
   ctaLabel: typeof item.ctaLabel === 'string' ? item.ctaLabel : 'View option',
   phone: typeof item.phone === 'string' ? item.phone : undefined,
   email: typeof item.email === 'string' ? item.email : undefined,
@@ -1015,19 +1056,19 @@ const buildDetailSections = (input: {
 }) => {
   const reportingOptions = input.recommendations.filter((item) =>
     ['emergency', 'police', 'government', 'workplace_body', 'anti_discrimination_body'].includes(
-      String(item.resourceType ?? '')
+      recommendationResourceType(item)
     )
   );
   const supportServices = input.recommendations.filter((item) =>
     ['mental_health', 'domestic_violence_agency', 'council_support', 'legal'].includes(
-      String(item.resourceType ?? '')
+      recommendationResourceType(item)
     )
   );
   const evidenceGuide = input.recommendations.filter((item) =>
-    ['evidence_guidance'].includes(String(item.resourceType ?? ''))
+    ['evidence_guidance'].includes(recommendationResourceType(item))
   );
   const safetyPlanning = input.recommendations.filter((item) =>
-    ['safety_planning', 'emergency'].includes(String(item.resourceType ?? ''))
+    ['safety_planning', 'emergency'].includes(recommendationResourceType(item))
   );
 
   return {
@@ -1038,8 +1079,8 @@ const buildDetailSections = (input: {
     rights: {
       title: 'Your Rights',
       items: input.triage.matchedKnowledgeSources.map((source) => ({
-        title: String(source.title ?? 'Source'),
-        body: String(source.summary ?? 'Approved information source')
+        title: getRecordString(source, 'title', 'Source'),
+        body: getRecordString(source, 'summary', 'Approved information source')
       }))
     },
     reportingOptions: {
@@ -1254,7 +1295,7 @@ export const appendConversationFlowMessage = async (
 
   const conversationForAssistant = [
     ...existingMessages.map((message) => ({
-      role: (message.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
+      role: toAssistantConversationRole(message.role),
       content: message.content
     })),
     {
@@ -1304,7 +1345,7 @@ export const appendConversationFlowMessage = async (
       }
     );
   } catch {
-    assistantPayload = buildFallbackAssistantResponse(input.content, existingTimeline) as never;
+    assistantPayload = buildFallbackAssistantResponse(input.content, existingTimeline);
   }
 
   const assistantMessageContent = [
@@ -1328,12 +1369,13 @@ export const appendConversationFlowMessage = async (
 
   session.messageCount += 1;
 
-  const nextTimeline = (assistantPayload.timeline ?? existingTimeline) as Record<string, unknown>;
-  const normalizedTimeline = Object.fromEntries(
-    Object.entries(nextTimeline)
-      .map(([key, value]) => [key, String(value).trim()])
-      .filter(([, value]) => value)
-  );
+  const nextTimeline =
+    assistantPayload.timeline &&
+    typeof assistantPayload.timeline === 'object' &&
+    !Array.isArray(assistantPayload.timeline)
+      ? (assistantPayload.timeline as Record<string, unknown>)
+      : existingTimeline;
+  const normalizedTimeline = toStringRecord(nextTimeline);
   const facts = await upsertFacts(session._id.toString(), normalizedTimeline);
   const enoughConversationForTriage = shouldOfferTriage(session, normalizedTimeline);
   const triage = enoughConversationForTriage ? await buildTriageForSession(session) : null;
@@ -1448,7 +1490,7 @@ export const getConversationFlowSupport = async (
     reasoningSummary: triage.reasoningSummary,
     matchedResourceTypes: triage.matchedResourceTypes,
     missingInformation: triage.missingInformation,
-    matchedKnowledgeSources: triage.matchedKnowledgeSources as Array<Record<string, unknown>>
+    matchedKnowledgeSources: toRecordArray(triage.matchedKnowledgeSources)
   });
 
   await audit(context, CONVERSATION_FLOW_ACTIONS.supportGet, conversationSessionId, {

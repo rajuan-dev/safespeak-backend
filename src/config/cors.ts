@@ -34,8 +34,15 @@ const allowedOrigins = new Set(
     .filter((origin): origin is string => Boolean(origin))
 );
 
+const allowAnyDevelopmentOrigin = env.NODE_ENV !== 'production';
+
 export const corsOptions: CorsOptions = {
   origin(origin, callback) {
+    if (allowAnyDevelopmentOrigin) {
+      callback(null, true);
+      return;
+    }
+
     if (!origin) {
       callback(null, true);
       return;

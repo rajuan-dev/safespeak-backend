@@ -5,6 +5,7 @@ import { asyncHandler } from '@common/errors/asyncHandler';
 import { successResponse } from '@common/responses/api-response';
 
 import type {
+  AuditLogsQueryInput,
   CulturalProfileInput,
   CulturalProfileQueryInput,
   CreateAdminUserInput,
@@ -38,6 +39,7 @@ import {
   getIntelligenceCenterOverview,
   getLanguagePacksOverview,
   getTaxonomy,
+  listAuditLogs,
   listDestinations,
   listCulturalProfiles,
   listKnowledgeSourcesForAdmin,
@@ -66,6 +68,15 @@ export const adminDashboardController = asyncHandler(async (req: Request, res: R
   const dashboard = await getAdminDashboard(getContext(req));
 
   res.status(StatusCodes.OK).json(successResponse('Admin dashboard retrieved', { dashboard }));
+});
+
+export const adminAuditLogsController = asyncHandler(async (req: Request, res: Response) => {
+  const auditLogs = await listAuditLogs(
+    getContext(req),
+    req.query as unknown as AuditLogsQueryInput
+  );
+
+  res.status(StatusCodes.OK).json(successResponse('Admin audit logs retrieved', { auditLogs }));
 });
 
 export const adminUsersController = asyncHandler(async (req: Request, res: Response) => {

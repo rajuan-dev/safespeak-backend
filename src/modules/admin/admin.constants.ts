@@ -5,6 +5,7 @@ import {
 
 export const ADMIN_ACTIONS = {
   dashboard: 'admin.dashboard',
+  auditLogsList: 'admin.audit_logs.list',
   usersList: 'admin.users.list',
   userCreate: 'admin.users.create',
   userUpdate: 'admin.users.update',

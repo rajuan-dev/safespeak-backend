@@ -10,9 +10,12 @@ import {
 
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
 
+const toChipList = (items: unknown[]): string[] =>
+  items.filter((item): item is string => typeof item === 'string');
+
 const chipsSchema = z.preprocess((value) => {
   if (Array.isArray(value)) {
-    return value;
+    return toChipList(value);
   }
 
   if (typeof value !== 'string') {
@@ -26,16 +29,16 @@ const chipsSchema = z.preprocess((value) => {
   }
 
   try {
-    const parsedValue = JSON.parse(trimmedValue);
+    const parsedValue: unknown = JSON.parse(trimmedValue);
 
     if (Array.isArray(parsedValue)) {
-      return parsedValue;
+      return toChipList(parsedValue);
     }
   } catch {
-    return trimmedValue.split('|').map(item => item.trim()).filter(Boolean);
+    return trimmedValue.split('|').map((item) => item.trim()).filter(Boolean);
   }
 
-  return trimmedValue.split('|').map(item => item.trim()).filter(Boolean);
+  return trimmedValue.split('|').map((item) => item.trim()).filter(Boolean);
 }, z.array(z.enum(MICRO_EDUCATION_CHIPS)).min(1).max(4).default(['safety']));
 
 export const microEducationParamsSchema = z.object({
