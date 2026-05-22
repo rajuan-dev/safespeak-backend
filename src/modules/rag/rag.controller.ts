@@ -11,6 +11,7 @@ import {
   createKnowledgeSource,
   deleteKnowledgeSource,
   ingestKnowledgeSource,
+  getKnowledgeSourceReadiness,
   listKnowledgeSourceChunks,
   listKnowledgeSources,
   rejectKnowledgeSource,
@@ -77,6 +78,16 @@ export const listKnowledgeSourcesController = asyncHandler(async (_req: Request,
 
   res.status(StatusCodes.OK).json(successResponse('Knowledge sources retrieved', { sources }));
 });
+
+export const knowledgeSourceReadinessController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const readiness = await getKnowledgeSourceReadiness(getContext(req));
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Knowledge source readiness retrieved', { readiness }));
+  }
+);
 
 export const listKnowledgeSourceChunksController = asyncHandler(
   async (req: Request, res: Response) => {

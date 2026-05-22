@@ -14,6 +14,7 @@ import {
   createKnowledgeSourceController,
   deleteKnowledgeSourceController,
   ingestKnowledgeSourceController,
+  knowledgeSourceReadinessController,
   listKnowledgeSourceChunksController,
   listKnowledgeSourcesController,
   rejectKnowledgeSourceController,
@@ -66,6 +67,7 @@ ragRoutes.post(
 );
 ragRoutes.use('/knowledge-sources', authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 ragRoutes.get('/knowledge-sources', listKnowledgeSourcesController);
+ragRoutes.get('/knowledge-sources/readiness', knowledgeSourceReadinessController);
 ragRoutes.post(
   '/knowledge-sources',
   validate({ body: createKnowledgeSourceSchema }),

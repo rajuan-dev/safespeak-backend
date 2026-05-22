@@ -54,10 +54,13 @@ import type {
 } from './rag.schema';
 import type {
   RagJurisdiction,
+  RagKnowledgeReadinessBlocker,
+  RagKnowledgeReadinessCoverageCell,
   RagLegalAwareness,
   RagOwner,
   RagSearchResult,
   RagServiceContext,
+  RagKnowledgeSourceReadiness,
   RagSourceCategory,
   RagTopic
 } from './rag.types';
@@ -264,6 +267,29 @@ const addDays = (date: Date, days: number): Date => {
 
   return next;
 };
+
+type GovernedRagSourceCategory = Extract<
+  RagSourceCategory,
+  'official_legal_source' | 'official_support_source'
+>;
+
+type ReadinessBlockerCode = RagKnowledgeReadinessBlocker['code'];
+
+const READINESS_BLOCKER_LABELS: Record<ReadinessBlockerCode, string> = {
+  not_approved: 'Not approved',
+  legal_review_missing: 'Legal review missing',
+  refresh_due_or_missing: 'Refresh due or missing',
+  not_embedded: 'Not embedded',
+  no_chunks: 'No indexed chunks',
+  official_url_missing_or_unapproved: 'Official URL missing or not allow-listed',
+  ingestion_failed: 'Ingestion failed',
+  metadata_only_needs_text: 'Metadata-only source needs extracted text'
+};
+
+const isGovernedSourceCategory = (
+  value: RagSourceCategory
+): value is GovernedRagSourceCategory =>
+  value === 'official_legal_source' || value === 'official_support_source';
 
 const isNswSpecificJurisdiction = (jurisdiction: RagJurisdiction): boolean =>
   !['Cth', 'AU', 'Global', 'Internal'].includes(jurisdiction);
@@ -764,6 +790,214 @@ export const listKnowledgeSources = async (): Promise<unknown[]> =>
   RagKnowledgeSourceModel.find({ deletedAt: { $exists: false } })
     .sort({ createdAt: -1 })
     .lean();
+
+const addReadinessBlocker = (
+  blockers: Map<ReadinessBlockerCode, RagKnowledgeReadinessBlocker>,
+  code: ReadinessBlockerCode,
+  source: Pick<RagKnowledgeSourceDocument, '_id' | 'title'>
+): void => {
+  const existing = blockers.get(code) ?? {
+    code,
+    label: READINESS_BLOCKER_LABELS[code],
+    count: 0,
+    sourceIds: [],
+    sourceTitles: []
+  };
+
+  existing.count += 1;
+  existing.sourceIds.push(source._id.toString());
+  existing.sourceTitles.push(source.title);
+  blockers.set(code, existing);
+};
+
+const getCoverageKey = (
+  sourceCategory: GovernedRagSourceCategory,
+  jurisdiction: RagJurisdiction,
+  topic: RagTopic
+): string => `${sourceCategory}:${jurisdiction}:${topic}`;
+
+const createCoverageCell = (
+  sourceCategory: GovernedRagSourceCategory,
+  jurisdiction: RagJurisdiction,
+  topic: RagTopic
+): RagKnowledgeReadinessCoverageCell => ({
+  sourceCategory,
+  jurisdiction,
+  topic,
+  totalSources: 0,
+  eligibleSources: 0,
+  approvedSources: 0,
+  pendingReviewSources: 0,
+  needsLegalReviewSources: 0,
+  needsRefreshSources: 0,
+  metadataOnlySources: 0,
+  failedIngestionSources: 0,
+  noChunkSources: 0
+});
+
+export const getKnowledgeSourceReadiness = async (
+  context: RagServiceContext
+): Promise<RagKnowledgeSourceReadiness> => {
+  ownerFilter(context.owner);
+
+  const now = new Date();
+  const sources = await RagKnowledgeSourceModel.find({
+    deletedAt: { $exists: false },
+    sourceCategory: { $in: RAG_GOVERNED_SOURCE_CATEGORIES }
+  })
+    .select(
+      '_id title sourceCategory jurisdiction topic url status ingestionStatus nextRefreshAt legalReviewed'
+    )
+    .lean();
+  const sourceIds = sources.map((source) => source._id);
+  const chunkRows =
+    sourceIds.length > 0
+      ? await RagChunkModel.aggregate<{ _id: RagKnowledgeSourceDocument['_id']; count: number }>([
+          { $match: { sourceId: { $in: sourceIds } } },
+          { $group: { _id: '$sourceId', count: { $sum: 1 } } }
+        ])
+      : [];
+  const chunkCountBySourceId = new Map(
+    chunkRows.map((row) => [row._id.toString(), row.count])
+  );
+  const coverage = new Map<string, RagKnowledgeReadinessCoverageCell>();
+  const blockers = new Map<ReadinessBlockerCode, RagKnowledgeReadinessBlocker>();
+  const summary = {
+    readinessStatus: 'not_ready' as const,
+    readyForPublicLegalRag: false,
+    totalOfficialSources: sources.length,
+    eligibleCitationSources: 0,
+    eligibleLegalSources: 0,
+    approvedCurrentSources: 0,
+    legalReviewedSources: 0,
+    pendingReviewSources: 0,
+    expiredRefreshSources: 0,
+    metadataOnlySources: 0,
+    failedIngestionSources: 0,
+    blockedSources: 0
+  };
+
+  for (const source of sources) {
+    if (!isGovernedSourceCategory(source.sourceCategory)) {
+      continue;
+    }
+
+    const chunkCount = chunkCountBySourceId.get(source._id.toString()) ?? 0;
+    const hasApprovedOfficialUrl = Boolean(source.url && isOfficialSourceUrl(source.url));
+    const hasCurrentRefresh = Boolean(
+      source.nextRefreshAt && source.nextRefreshAt.getTime() > now.getTime()
+    );
+    const isApproved = source.status === 'approved';
+    const hasLegalReview =
+      source.sourceCategory !== 'official_legal_source' || source.legalReviewed;
+    const isEmbedded = source.ingestionStatus === 'embedded';
+    const hasChunks = chunkCount > 0;
+    const isEligible =
+      isApproved &&
+      hasApprovedOfficialUrl &&
+      hasCurrentRefresh &&
+      hasLegalReview &&
+      isEmbedded &&
+      hasChunks;
+    const sourceBlockers: ReadinessBlockerCode[] = [];
+
+    if (!isApproved) {
+      sourceBlockers.push('not_approved');
+      summary.pendingReviewSources += source.status === 'pending_review' ? 1 : 0;
+    }
+
+    if (!hasApprovedOfficialUrl) {
+      sourceBlockers.push('official_url_missing_or_unapproved');
+    }
+
+    if (!hasCurrentRefresh) {
+      sourceBlockers.push('refresh_due_or_missing');
+      summary.expiredRefreshSources += 1;
+    }
+
+    if (source.sourceCategory === 'official_legal_source') {
+      if (source.legalReviewed) {
+        summary.legalReviewedSources += 1;
+      } else {
+        sourceBlockers.push('legal_review_missing');
+      }
+    }
+
+    if (source.ingestionStatus === 'metadata_only') {
+      sourceBlockers.push('metadata_only_needs_text');
+      summary.metadataOnlySources += 1;
+    } else if (source.ingestionStatus === 'failed') {
+      sourceBlockers.push('ingestion_failed');
+      summary.failedIngestionSources += 1;
+    } else if (!isEmbedded) {
+      sourceBlockers.push('not_embedded');
+    }
+
+    if (!hasChunks) {
+      sourceBlockers.push('no_chunks');
+    }
+
+    if (isApproved && hasCurrentRefresh) {
+      summary.approvedCurrentSources += 1;
+    }
+
+    if (isEligible) {
+      summary.eligibleCitationSources += 1;
+      if (source.sourceCategory === 'official_legal_source') {
+        summary.eligibleLegalSources += 1;
+      }
+    }
+
+    if (sourceBlockers.length > 0) {
+      summary.blockedSources += 1;
+      sourceBlockers.forEach((code) => addReadinessBlocker(blockers, code, source));
+    }
+
+    const coverageKey = getCoverageKey(source.sourceCategory, source.jurisdiction, source.topic);
+    const cell =
+      coverage.get(coverageKey) ??
+      createCoverageCell(source.sourceCategory, source.jurisdiction, source.topic);
+
+    cell.totalSources += 1;
+    cell.eligibleSources += isEligible ? 1 : 0;
+    cell.approvedSources += isApproved ? 1 : 0;
+    cell.pendingReviewSources += isApproved ? 0 : 1;
+    cell.needsLegalReviewSources +=
+      source.sourceCategory === 'official_legal_source' && !source.legalReviewed ? 1 : 0;
+    cell.needsRefreshSources += hasCurrentRefresh ? 0 : 1;
+    cell.metadataOnlySources += source.ingestionStatus === 'metadata_only' ? 1 : 0;
+    cell.failedIngestionSources += source.ingestionStatus === 'failed' ? 1 : 0;
+    cell.noChunkSources += hasChunks ? 0 : 1;
+    coverage.set(coverageKey, cell);
+  }
+
+  summary.readyForPublicLegalRag = summary.eligibleLegalSources > 0;
+  const readinessStatus = summary.readyForPublicLegalRag
+    ? summary.blockedSources > 0
+      ? 'ready_with_gaps'
+      : 'ready'
+    : 'not_ready';
+
+  await auditRagAction(context, RAG_ACTIONS.sourceReadiness, undefined, {
+    readyForPublicLegalRag: summary.readyForPublicLegalRag,
+    eligibleLegalSources: summary.eligibleLegalSources,
+    blockedSources: summary.blockedSources
+  });
+
+  return {
+    generatedAt: now.toISOString(),
+    summary: {
+      ...summary,
+      readinessStatus
+    },
+    coverage: Array.from(coverage.values()).sort((a, b) =>
+      `${a.sourceCategory}:${a.jurisdiction}:${a.topic}`.localeCompare(
+        `${b.sourceCategory}:${b.jurisdiction}:${b.topic}`
+      )
+    ),
+    blockers: Array.from(blockers.values()).sort((a, b) => b.count - a.count)
+  };
+};
 
 export const listKnowledgeSourceChunks = async (
   context: RagServiceContext,

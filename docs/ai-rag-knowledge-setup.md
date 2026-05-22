@@ -26,8 +26,8 @@ RAG works only after sources are ingested, chunked, embedded, stored, indexed, a
 
 ## Official source ingestion
 
-1. Edit `knowledge/official-sources/sources.sample.json` with official URLs only.
-2. Run: `npm run rag:ingest:official`
+1. Edit `knowledge/official-sources/sources.sample.json` with official URLs only, or use `knowledge/official-sources/sources.mvp.json` as the MVP starter corpus.
+2. Run: `npm run rag:ingest:official` or `npm run rag:ingest:official:mvp`.
 3. Official ingestion now does one of two safe paths:
 
 - HTML/text pages on allowed official domains are fetched, text-extracted, chunked, embedded, and stored.
@@ -50,11 +50,23 @@ RAG works only after sources are ingested, chunked, embedded, stored, indexed, a
 Follow `docs/mongodb-vector-search-setup.md` and create Atlas Vector Search index before testing retrieval.
 Run `npm run rag:check:index` to verify whether Atlas Search is enabled and whether the named index exists.
 
+## Readiness report
+
+Run `npm run rag:readiness` after ingestion and legal review updates. The report matches the admin readiness panel and returns:
+
+- whether any public legal RAG source is currently eligible for citations
+- official-source blocker counts
+- jurisdiction/topic coverage cells
+- metadata-only, failed-ingestion, no-chunk, refresh, approval, and legal-review gaps
+
+Use `npm run rag:readiness -- --fail-on-not-ready` in release checks when the deployment must fail unless at least one approved, current, legally reviewed official legal source is citation-ready.
+
 ## Test endpoints
 
 - `POST /api/v1/rag/search`
 - `POST /api/v1/rag/answer`
 - `GET /api/v1/rag/knowledge-sources`
+- `GET /api/v1/rag/knowledge-sources/readiness`
 - `POST /api/v1/rag/knowledge-sources/:id/approve`
 - `POST /api/v1/rag/knowledge-sources/:id/reject`
 
@@ -71,6 +83,8 @@ Run `npm run rag:check:index` to verify whether Atlas Search is enabled and whet
 - `npm run rag:check:index`
 - `npm run rag:ingest:internal`
 - `npm run rag:ingest:official`
+- `npm run rag:ingest:official:mvp`
+- `npm run rag:readiness`
 - `npm run typecheck`
 - `npm run lint`
 - `npm run build`

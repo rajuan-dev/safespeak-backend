@@ -178,7 +178,11 @@ const fetchOfficialText = async (
 };
 
 const run = async (): Promise<void> => {
-  const configPath = path.resolve(process.cwd(), 'knowledge/official-sources/sources.sample.json');
+  const configuredPath =
+    process.env.RAG_OFFICIAL_SOURCES_FILE ??
+    process.argv[2] ??
+    'knowledge/official-sources/sources.sample.json';
+  const configPath = path.resolve(process.cwd(), configuredPath);
   const config = JSON.parse(await readFile(configPath, 'utf8')) as SourceConfig[];
 
   await connectDatabase();

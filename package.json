@@ -17,6 +17,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "rag:ingest:internal": "tsx -r tsconfig-paths/register src/scripts/rag-ingest-internal.ts",
     "rag:ingest:official": "tsx -r tsconfig-paths/register src/scripts/rag-ingest-official.ts",
+    "rag:ingest:official:mvp": "tsx -r tsconfig-paths/register src/scripts/rag-ingest-official.ts knowledge/official-sources/sources.mvp.json",
+    "rag:readiness": "tsx -r tsconfig-paths/register src/scripts/rag-readiness-report.ts",
     "rag:check:index": "tsx -r tsconfig-paths/register src/scripts/rag-check-index.ts",
     "test": "echo \"No tests configured yet. Add tests with future modules.\""
   },

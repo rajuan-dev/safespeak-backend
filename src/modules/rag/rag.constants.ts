@@ -132,7 +132,8 @@ export const RAG_ACTIONS = {
   sourceRefresh: 'rag.knowledge_source.refresh',
   sourceApprove: 'rag.knowledge_source.approve',
   sourceReject: 'rag.knowledge_source.reject',
-  sourceReindex: 'rag.knowledge_source.reindex'
+  sourceReindex: 'rag.knowledge_source.reindex',
+  sourceReadiness: 'rag.knowledge_source.readiness'
 } as const;
 
 export const DEFAULT_RAG_TOP_K = 5;
