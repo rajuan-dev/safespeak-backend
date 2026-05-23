@@ -5,11 +5,14 @@ import { asyncHandler } from '@common/errors/asyncHandler';
 import { successResponse } from '@common/responses/api-response';
 
 import type {
+  AdminNotificationsQueryInput,
   AuditLogsQueryInput,
   CulturalProfileInput,
   CulturalProfileQueryInput,
   CreateAdminUserInput,
   DestinationInput,
+  MarkAdminNotificationReadInput,
+  MarkAdminNotificationsReadInput,
   PrivacyRequestQueryInput,
   ReportDeliveryQueryInput,
   SubmissionTemplateInput,
@@ -43,6 +46,7 @@ import {
   listDestinations,
   listCulturalProfiles,
   listKnowledgeSourcesForAdmin,
+  listAdminNotifications,
   listPrivacyRequests,
   listReportDeliveries,
   listSubmissionTemplates,
@@ -51,6 +55,8 @@ import {
   updateAdminUser,
   updateCulturalProfile,
   updateDestination,
+  markAdminNotificationRead,
+  markAdminNotificationsRead,
   updatePrivacyRequest,
   updateSubmissionTemplate,
   updateTaxonomy
@@ -78,6 +84,43 @@ export const adminAuditLogsController = asyncHandler(async (req: Request, res: R
 
   res.status(StatusCodes.OK).json(successResponse('Admin audit logs retrieved', { auditLogs }));
 });
+
+export const adminNotificationsController = asyncHandler(async (req: Request, res: Response) => {
+  const notifications = await listAdminNotifications(
+    getContext(req),
+    req.query as unknown as AdminNotificationsQueryInput
+  );
+
+  res
+    .status(StatusCodes.OK)
+    .json(successResponse('Admin notifications retrieved', { notifications }));
+});
+
+export const markAdminNotificationReadController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const readReceipt = await markAdminNotificationRead(
+      getContext(req),
+      req.body as MarkAdminNotificationReadInput
+    );
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin notification marked read', { readReceipt }));
+  }
+);
+
+export const markAdminNotificationsReadController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const readReceipt = await markAdminNotificationsRead(
+      getContext(req),
+      req.body as MarkAdminNotificationsReadInput
+    );
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin notifications marked read', { readReceipt }));
+  }
+);
 
 export const adminUsersController = asyncHandler(async (req: Request, res: Response) => {
   const users = await listUsers(getContext(req), req.query as unknown as UsersQueryInput);

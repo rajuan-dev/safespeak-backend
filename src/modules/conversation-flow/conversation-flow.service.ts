@@ -30,6 +30,8 @@ import type {
 
 type HydratedConversationFlowSessionDocument = HydratedDocument<ConversationFlowSessionDocument>;
 
+const ACTIONABLE_TRIAGE_CONFIDENCE_THRESHOLD = 0.45;
+
 const ownerFilter = (owner: ConversationFlowContext['owner']) => {
   if (!owner.userId && !owner.sessionId) {
     throw new ApiError(StatusCodes.UNAUTHORIZED, 'User or anonymous session is required');
@@ -68,7 +70,8 @@ const categoryDetectionRules: Array<{
     keywords: [
       /\b(partner|husband|wife|boyfriend|girlfriend|ex partner|ex-partner)\b/i,
       /\b(domestic violence|family violence|family harm|controlling|coercive control)\b/i,
-      /\b(he hit me|she hit me|hurt me at home|threatened me at home)\b/i
+      /\b(he hit me|she hit me|hurt me at home|threatened me at home)\b/i,
+      /\b(threatened|threats?|shoot|shot|gun|weapon|find me|come back|things will get worse)\b/i
     ],
     selectedTopics: ['domestic_violence'],
     resourceTypes: [
@@ -251,11 +254,8 @@ const toSafeString = (value: unknown, fallback = ''): string => {
   return fallback;
 };
 
-const getRecordString = (
-  record: Record<string, unknown>,
-  key: string,
-  fallback = ''
-): string => toSafeString(record[key], fallback);
+const getRecordString = (record: Record<string, unknown>, key: string, fallback = ''): string =>
+  toSafeString(record[key], fallback);
 
 const toStringRecord = (record: Record<string, unknown>): Record<string, string> =>
   Object.fromEntries(
@@ -315,7 +315,7 @@ const buildFactsFromTimeline = (
 const buildFallbackAssistantResponse = (message: string, timeline: Record<string, string>) => {
   const lowerMessage = message.toLowerCase();
   const hasImmediateSafetySignal =
-    /\b(immediate danger|unsafe now|kill me|suicide|self[- ]?harm|weapon|strangled|can.t breathe)\b/i.test(
+    /\b(immediate danger|unsafe now|kill me|suicide|self[- ]?harm|weapon|gun|shoot|shot|strangled|can.t breathe)\b/i.test(
       lowerMessage
     );
   const empatheticPrefix = hasImmediateSafetySignal
@@ -364,25 +364,29 @@ const detectCategory = (input: {
 }): {
   category: ConversationFlowCategory;
   confidenceScore: number;
+  evidenceScore: number;
   matchedResourceTypes: string[];
 } => {
   const matches = categoryDetectionRules
     .map((rule) => {
-      let score = 0;
+      let keywordScore = 0;
 
       for (const keyword of rule.keywords) {
         if (keyword.test(input.text)) {
-          score += 1;
+          keywordScore += 1;
         }
       }
 
-      if (rule.selectedTopics?.includes(input.selectedTopic ?? '')) {
-        score += 0.75;
-      }
+      const selectedTopicScore = rule.selectedTopics?.includes(input.selectedTopic ?? '')
+        ? 0.75
+        : 0;
+      const score = keywordScore + selectedTopicScore;
 
       return {
         category: rule.category,
+        keywordScore,
         score,
+        selectedTopicScore,
         matchedResourceTypes: rule.resourceTypes
       };
     })
@@ -392,17 +396,22 @@ const detectCategory = (input: {
   if (matches.length === 0) {
     return {
       category: selectedTopicFallbackCategory(input.selectedTopic),
-      confidenceScore: input.selectedTopic ? 0.45 : 0.25,
+      confidenceScore: input.selectedTopic ? 0.4 : 0.25,
+      evidenceScore: 0,
       matchedResourceTypes: ['government', 'mental_health', 'evidence_guidance']
     };
   }
 
   const best = matches[0];
-  const confidenceScore = Math.min(0.95, 0.4 + best.score * 0.18);
+  const confidenceScore = Math.min(
+    0.95,
+    0.32 + best.keywordScore * 0.2 + best.selectedTopicScore * 0.1
+  );
 
   return {
     category: best.category,
     confidenceScore,
+    evidenceScore: best.keywordScore,
     matchedResourceTypes: best.matchedResourceTypes
   };
 };
@@ -415,7 +424,7 @@ const detectSafetyRiskLevel = (
     `${text}\n${facts.safetyConcerns ?? ''}\n${facts.emotionalState ?? ''}`.toLowerCase();
 
   if (
-    /\b(immediate danger|kill me|kill him|kill her|call 000|unsafe now|weapon|strangled|strangle|can.t breathe)\b/i.test(
+    /\b(immediate danger|kill me|kill him|kill her|call 000|unsafe now|weapon|gun|shoot|shot|strangled|strangle|can.t breathe)\b/i.test(
       combined
     )
   ) {
@@ -423,7 +432,7 @@ const detectSafetyRiskLevel = (
   }
 
   if (
-    /\b(threat|hit|assault|injured|stalking|followed|scared to go home|afraid to go home)\b/i.test(
+    /\b(threat|hit|assault|injured|stalking|followed|find me|come back|things will get worse|scared to go home|afraid to go home)\b/i.test(
       combined
     )
   ) {
@@ -437,7 +446,7 @@ const detectSafetyRiskLevel = (
   return 'low';
 };
 
-const shouldOfferTriage = (
+const hasEnoughContextForTriageAssessment = (
   session: ConversationFlowSessionDocument,
   timeline: Record<string, string>
 ) => {
@@ -454,7 +463,7 @@ const shouldBlockTriage = (triage: {
   canProceedToRecommendations: boolean;
 }) =>
   triage.likelyCategory === 'general_support' ||
-  triage.confidenceScore < 0.45 ||
+  triage.confidenceScore < ACTIONABLE_TRIAGE_CONFIDENCE_THRESHOLD ||
   !triage.canProceedToRecommendations;
 
 const buildReasoningSummary = (input: {
@@ -671,12 +680,7 @@ const buildMicroEducationSuggestionProfile = (triage: {
 
   let preferredChips: MicroEducationChip[] = ['harassment', 'safety', 'rights', 'mentalHealth'];
   let keywords = ['abuse', 'bullying', 'harassment', 'threat', 'safety', 'violence'];
-  let anchorPatterns: RegExp[] = [
-    /\babuse\b/i,
-    /\bviolence\b/i,
-    /\bthreat/i,
-    /\bharass/i
-  ];
+  let anchorPatterns: RegExp[] = [/\babuse\b/i, /\bviolence\b/i, /\bthreat/i, /\bharass/i];
   let bridgePatterns: RegExp[] = [
     /\bevidence\b/i,
     /\bsupport\b/i,
@@ -1148,7 +1152,10 @@ const upsertFacts = async (conversationSessionId: string, timeline: Record<strin
   );
 };
 
-const buildTriageForSession = async (session: HydratedConversationFlowSessionDocument) => {
+const buildTriageForSession = async (
+  session: HydratedConversationFlowSessionDocument,
+  options: { finalizeSession?: boolean } = {}
+) => {
   const messages = await ConversationFlowMessageModel.find({
     conversationSessionId: session._id
   })
@@ -1173,10 +1180,16 @@ const buildTriageForSession = async (session: HydratedConversationFlowSessionDoc
     jurisdiction: session.jurisdiction,
     text: combinedText
   });
+  const hasActionableCategory =
+    categoryDetection.category !== 'general_support' &&
+    categoryDetection.confidenceScore >= ACTIONABLE_TRIAGE_CONFIDENCE_THRESHOLD &&
+    categoryDetection.evidenceScore > 0;
   const canProceedToRecommendations =
-    categoryDetection.confidenceScore >= 0.45 &&
+    hasActionableCategory &&
     Boolean(facts?.whatHappened) &&
-    Boolean(facts?.peopleInvolved || facts?.whereHappened || facts?.whenHappened);
+    Boolean(
+      facts?.peopleInvolved || facts?.whereHappened || facts?.whenHappened || facts?.safetyConcerns
+    );
   const humanReviewRecommended =
     !canProceedToRecommendations ||
     knowledgeMatch.matchedLegislationIds.length === 0 ||
@@ -1209,11 +1222,9 @@ const buildTriageForSession = async (session: HydratedConversationFlowSessionDoc
 
   session.detectedCategory = triage.likelyCategory;
   session.safetyRiskLevel = triage.safetyRiskLevel;
-  session.status = canProceedToRecommendations
-    ? 'triaged'
-    : session.status === 'active'
-      ? 'ready_for_triage'
-      : session.status;
+  if (options.finalizeSession && canProceedToRecommendations) {
+    session.status = 'triaged';
+  }
   await session.save();
 
   return triage;
@@ -1377,14 +1388,17 @@ export const appendConversationFlowMessage = async (
       : existingTimeline;
   const normalizedTimeline = toStringRecord(nextTimeline);
   const facts = await upsertFacts(session._id.toString(), normalizedTimeline);
-  const enoughConversationForTriage = shouldOfferTriage(session, normalizedTimeline);
-  const triage = enoughConversationForTriage ? await buildTriageForSession(session) : null;
+  const enoughContextForTriageAssessment = hasEnoughContextForTriageAssessment(
+    session,
+    normalizedTimeline
+  );
+  const triage = enoughContextForTriageAssessment ? await buildTriageForSession(session) : null;
   const offerTriage = Boolean(triage && !shouldBlockTriage(triage));
 
   if (offerTriage && !session.triageOfferedAt) {
     session.triageOfferedAt = new Date();
     session.status = 'ready_for_triage';
-  } else if (enoughConversationForTriage && triage) {
+  } else if (offerTriage) {
     session.status = 'ready_for_triage';
   } else if (session.status === 'active') {
     session.status = 'active';
@@ -1407,7 +1421,7 @@ export const appendConversationFlowMessage = async (
       offerTriage,
       prompt: offerTriage
         ? 'I am sorry this happened to you. You are safe to explore your options here. Would you like help understanding reporting options, support services, evidence, or your rights?'
-        : enoughConversationForTriage
+        : enoughContextForTriageAssessment
           ? 'Based on what you shared so far, this does not appear to fit the harm, safety, scam, violence, harassment, or discrimination categories that move to triage here. You can keep chatting if there is more context.'
           : null,
       primaryCta: offerTriage ? 'Continue to Triage' : null,
@@ -1432,7 +1446,7 @@ export const getConversationFlowTriage = async (
   conversationSessionId: string
 ) => {
   const session = await getOwnedConversationSession(context, conversationSessionId);
-  const triage = await buildTriageForSession(session);
+  const triage = await buildTriageForSession(session, { finalizeSession: true });
 
   await audit(context, CONVERSATION_FLOW_ACTIONS.triageGet, conversationSessionId, {
     likelyCategory: triage.likelyCategory
@@ -1455,7 +1469,7 @@ export const getConversationFlowSupport = async (
   conversationSessionId: string
 ) => {
   const session = await getOwnedConversationSession(context, conversationSessionId);
-  const triage = await buildTriageForSession(session);
+  const triage = await buildTriageForSession(session, { finalizeSession: true });
   const recommendationDocs = await SupportServiceModel.find(
     buildRecommendationsFilter({
       category: triage.likelyCategory,

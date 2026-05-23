@@ -115,6 +115,15 @@ export interface PrivacyRequestDocument {
   updatedAt: Date;
 }
 
+export interface AdminNotificationReadDocument {
+  _id: Types.ObjectId;
+  adminUserId: Types.ObjectId;
+  notificationId: string;
+  readAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 const adminCulturalProfileSchema = new Schema<AdminCulturalProfileDocument>(
   {
     key: {
@@ -459,12 +468,35 @@ const privacyRequestSchema = new Schema<PrivacyRequestDocument>(
   { timestamps: true }
 );
 
+const adminNotificationReadSchema = new Schema<AdminNotificationReadDocument>(
+  {
+    adminUserId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true
+    },
+    notificationId: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    readAt: {
+      type: Date,
+      required: true,
+      default: Date.now
+    }
+  },
+  { timestamps: true }
+);
+
 adminCulturalProfileSchema.index(
   { communityType: 1, validationStatus: 1, isActive: 1, deletedAt: 1 }
 );
 adminTaxonomySchema.index({ type: 1, key: 1 }, { unique: true });
 adminDestinationSchema.index({ type: 1, key: 1 }, { unique: true });
 adminSubmissionTemplateSchema.index({ destinationType: 1, channel: 1, jurisdiction: 1, isActive: 1 });
+adminNotificationReadSchema.index({ adminUserId: 1, notificationId: 1 }, { unique: true });
 
 export const AdminTaxonomyModel = model<AdminTaxonomyDocument>(
   'AdminTaxonomy',
@@ -485,4 +517,8 @@ export const AdminSubmissionTemplateModel = model<AdminSubmissionTemplateDocumen
 export const PrivacyRequestModel = model<PrivacyRequestDocument>(
   'PrivacyRequest',
   privacyRequestSchema
+);
+export const AdminNotificationReadModel = model<AdminNotificationReadDocument>(
+  'AdminNotificationRead',
+  adminNotificationReadSchema
 );

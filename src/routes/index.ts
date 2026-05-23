@@ -7,7 +7,9 @@ import { authRoutes } from '@modules/auth/auth.routes';
 import { consentRoutes } from '@modules/consent/consent.routes';
 import { conversationFlowRoutes } from '@modules/conversation-flow/conversation-flow.routes';
 import { evidenceRoutes } from '@modules/evidence/evidence.routes';
+import { adminFeedbackRoutes, feedbackRoutes } from '@modules/feedback/feedback.routes';
 import { healthRoutes } from '@modules/health/health.routes';
+import { adminContentPageRoutes, contentPageRoutes } from '@modules/content-pages/content-pages.routes';
 import {
   adminContentResourceRoutes,
   contentResourceRoutes
@@ -43,6 +45,8 @@ apiRouter.use('/platform-settings', platformSettingsRoutes);
 apiRouter.use('/admin/platform-settings', adminPlatformSettingsRoutes);
 apiRouter.use('/microeducation', microEducationRoutes);
 apiRouter.use('/admin/microeducation', adminMicroEducationRoutes);
+apiRouter.use('/content-pages', contentPageRoutes);
+apiRouter.use('/admin/content-pages', adminContentPageRoutes);
 apiRouter.use('/content-resources', contentResourceRoutes);
 apiRouter.use('/admin/content-resources', adminContentResourceRoutes);
 apiRouter.use('/media-assets', mediaAssetRoutes);
@@ -57,8 +61,10 @@ apiRouter.use('/ai', aiRoutes);
 apiRouter.use('/rag', ragRoutes);
 apiRouter.use('/scamshield', scamShieldRoutes);
 apiRouter.use('/support', supportRoutes);
+apiRouter.use('/feedback', feedbackRoutes);
 apiRouter.use('/analytics', publicAnalyticsRoutes);
 apiRouter.use('/admin/support-services', adminSupportServiceRoutes);
+apiRouter.use('/admin/feedback', adminFeedbackRoutes);
 apiRouter.use('/scope', scopeRoutes);
 apiRouter.use('/admin', adminRoutes);
 apiRouter.use('/admin/analytics', analyticsRoutes);

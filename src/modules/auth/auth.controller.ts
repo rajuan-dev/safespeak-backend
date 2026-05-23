@@ -9,16 +9,30 @@ import { ApiResponse } from '@common/responses/api-response';
 import { env } from '@config/env';
 
 import {
+  changeUserPassword,
   deactivateUserAccount,
   getSafeUserById,
   loginUser,
   logoutUser,
   refreshUserToken,
-  registerUser
+  registerUser,
+  requestPasswordReset,
+  resetUserPasswordWithToken,
+  updateCurrentUserProfile,
+  verifyPasswordResetOtp
 } from './auth.service';
 import type { AuthData } from './auth.types';
 import { isGoogleOAuthConfigured, type GooglePassportUser } from './auth.passport';
-import type { LoginInput, RefreshTokenInput, RegisterInput } from './auth.schema';
+import type {
+  ChangePasswordInput,
+  ForgotPasswordInput,
+  LoginInput,
+  RefreshTokenInput,
+  RegisterInput,
+  ResetPasswordInput,
+  UpdateCurrentUserProfileInput,
+  VerifyPasswordResetOtpInput
+} from './auth.schema';
 
 const googleOAuthScopes = ['profile', 'email'];
 
@@ -72,10 +86,54 @@ export const refreshController = asyncHandler(async (req: Request, res: Response
   ApiResponse.success(res, 'Token refreshed successfully', result);
 });
 
+export const forgotPasswordController = asyncHandler(async (req: Request, res: Response) => {
+  const input = req.body as unknown as ForgotPasswordInput;
+  const result = await requestPasswordReset(input, req.ip, req.get('user-agent'));
+
+  ApiResponse.success(
+    res,
+    'If an eligible account exists, a verification code has been sent',
+    result
+  );
+});
+
+export const verifyPasswordResetOtpController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const input = req.body as unknown as VerifyPasswordResetOtpInput;
+    const result = await verifyPasswordResetOtp(input, req.ip, req.get('user-agent'));
+
+    ApiResponse.success(res, 'Verification code accepted', result);
+  }
+);
+
+export const resetPasswordController = asyncHandler(async (req: Request, res: Response) => {
+  const input = req.body as unknown as ResetPasswordInput;
+
+  await resetUserPasswordWithToken(input, req.ip, req.get('user-agent'));
+
+  ApiResponse.success(res, 'Password reset successfully', null);
+});
+
 export const logoutController = asyncHandler(async (req: Request, res: Response) => {
   await logoutUser(req.user?.id);
 
   ApiResponse.success(res, 'Logout successful', null);
+});
+
+export const changePasswordController = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Authentication is required');
+  }
+
+  const input = req.body as unknown as ChangePasswordInput;
+  const user = await changeUserPassword(
+    req.user.id,
+    input,
+    req.ip,
+    req.get('user-agent')
+  );
+
+  ApiResponse.success(res, 'Password updated successfully', { user });
 });
 
 export const meController = asyncHandler(async (req: Request, res: Response) => {
@@ -86,6 +144,31 @@ export const meController = asyncHandler(async (req: Request, res: Response) => 
   const user = await getSafeUserById(req.user.id);
 
   ApiResponse.success(res, 'Current user retrieved successfully', { user });
+});
+
+export const updateMeController = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Authentication is required');
+  }
+
+  const body = req.body as Partial<Record<keyof UpdateCurrentUserProfileInput, string>>;
+  const input: UpdateCurrentUserProfileInput = {};
+
+  if (body.fullName !== undefined) {
+    input.fullName = body.fullName;
+  }
+
+  if (body.email !== undefined) {
+    input.email = body.email;
+  }
+
+  if (body.contactNo !== undefined) {
+    input.contactNo = body.contactNo;
+  }
+
+  const user = await updateCurrentUserProfile(req.user.id, input, req.ip, req.get('user-agent'));
+
+  ApiResponse.success(res, 'Current user updated successfully', { user });
 });
 
 export const deactivateController = asyncHandler(async (req: Request, res: Response) => {

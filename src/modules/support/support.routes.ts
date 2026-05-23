@@ -13,6 +13,7 @@ import {
   createSafetyPlanController,
   deleteAdminServiceController,
   getServiceController,
+  helpSupportRequestController,
   listAdminServicesController,
   listAdminWarmReferralsController,
   listAdvocatesController,
@@ -29,6 +30,7 @@ import {
   adminWarmReferralQuerySchema,
   adminSupportServiceParamsSchema,
   advocateRequestSchema,
+  helpSupportRequestSchema,
   recommendationsSchema,
   safetyPlanParamsSchema,
   safetyPlanSchema,
@@ -95,6 +97,11 @@ supportRoutes.post(
   '/advocate-request',
   validate({ body: advocateRequestSchema }),
   advocateRequestController
+);
+supportRoutes.post(
+  '/help-request',
+  validate({ body: helpSupportRequestSchema }),
+  helpSupportRequestController
 );
 supportRoutes.get('/safety-plans', listSafetyPlansController);
 supportRoutes.post(

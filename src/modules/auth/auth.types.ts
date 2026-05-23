@@ -6,6 +6,7 @@ export interface SafeUser {
   id: string;
   email: string;
   fullName: string;
+  contactNo?: string;
   avatarUrl?: string;
   role: UserRole;
   status: UserStatus;
@@ -34,6 +35,7 @@ export interface UserIdentity {
   _id: Types.ObjectId;
   email: string;
   fullName: string;
+  contactNo?: string;
   role: UserRole;
   status: UserStatus;
   isEmailVerified: boolean;

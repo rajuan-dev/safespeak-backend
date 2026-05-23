@@ -7,6 +7,7 @@ export interface UserDocument {
   email: string;
   passwordHash: string;
   fullName: string;
+  contactNo?: string;
   googleId?: string;
   authProvider: 'local' | 'google';
   avatarUrl?: string;
@@ -38,6 +39,11 @@ const userSchema = new Schema<UserDocument>(
       type: String,
       required: true,
       trim: true
+    },
+    contactNo: {
+      type: String,
+      trim: true,
+      required: false
     },
     googleId: {
       type: String,

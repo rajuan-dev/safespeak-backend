@@ -19,6 +19,7 @@ import { AnonymousSessionModel } from '@modules/sessions/sessions.model';
 import { ScamShieldAnalysisModel } from '@modules/scamshield/scamshield.model';
 import {
   AdvocateRequestModel,
+  HelpSupportRequestModel,
   SafetyPlanModel,
   WarmReferralModel
 } from '@modules/support/support.model';
@@ -160,13 +161,14 @@ export const getPrivacyExport = async (
     scamShieldAnalyses,
     warmReferrals,
     advocateRequests,
+    helpSupportRequests,
     safetyPlans,
     privacyRequests
   ] = await Promise.all([
     filter.userId
       ? UserModel.findById(filter.userId)
           .select(
-            'email fullName avatarUrl role status isEmailVerified lastLoginAt createdAt updatedAt'
+            'email fullName contactNo avatarUrl role status isEmailVerified lastLoginAt createdAt updatedAt'
           )
           .lean()
       : null,
@@ -200,6 +202,7 @@ export const getPrivacyExport = async (
     ScamShieldAnalysisModel.find(filter).sort({ createdAt: -1 }).lean(),
     WarmReferralModel.find(filter).sort({ createdAt: -1 }).lean(),
     AdvocateRequestModel.find(filter).sort({ createdAt: -1 }).lean(),
+    HelpSupportRequestModel.find(filter).sort({ createdAt: -1 }).lean(),
     SafetyPlanModel.find(filter).sort({ createdAt: -1 }).lean(),
     PrivacyRequestModel.find(filter).sort({ createdAt: -1 }).lean()
   ]);
@@ -233,6 +236,7 @@ export const getPrivacyExport = async (
     support: {
       warmReferrals,
       advocateRequests,
+      helpSupportRequests,
       safetyPlans
     },
     privacyRequests,

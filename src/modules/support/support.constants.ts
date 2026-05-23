@@ -11,6 +11,7 @@ export const SUPPORT_ACTIONS = {
   warmReferral: 'support.warm_referral',
   advocatesList: 'support.advocates.list',
   advocateRequest: 'support.advocate_request',
+  helpRequest: 'support.help_request',
   safetyPlanList: 'support.safety_plan.list',
   safetyPlanCreate: 'support.safety_plan.create',
   safetyPlanUpdate: 'support.safety_plan.update'

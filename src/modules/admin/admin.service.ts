@@ -31,6 +31,10 @@ import { RagChunkModel, RagKnowledgeSourceModel } from '@modules/rag/rag.model';
 import { ResourceModel } from '@modules/resources/resources.model';
 import { ReportModel, ReportSubmissionModel } from '@modules/reports/reports.model';
 import {
+  HelpSupportRequestModel,
+  WarmReferralModel
+} from '@modules/support/support.model';
+import {
   buildTaxonomyMetadata,
   getTaxonomyCatalog
 } from '@modules/taxonomies/taxonomies.service';
@@ -39,11 +43,13 @@ import { ADMIN_ACTIONS } from './admin.constants';
 import {
   AdminCulturalProfileModel,
   AdminDestinationModel,
+  AdminNotificationReadModel,
   AdminSubmissionTemplateModel,
   AdminTaxonomyModel,
   PrivacyRequestModel
 } from './admin.model';
 import type {
+  AdminNotificationsQueryInput,
   CulturalProfileInput,
   CulturalProfileQueryInput,
   DestinationInput,
@@ -51,6 +57,8 @@ import type {
   CreateAdminUserInput,
   PrivacyRequestQueryInput,
   AuditLogsQueryInput,
+  MarkAdminNotificationReadInput,
+  MarkAdminNotificationsReadInput,
   ReportDeliveryQueryInput,
   SubmissionTemplateInput,
   SubmissionTemplateQueryInput,
@@ -203,6 +211,257 @@ const toMaskedAuditLogRecord = (
   createdAt: log.createdAt
 });
 
+type AdminNotificationCategory = 'security' | 'account' | 'usage' | 'system';
+type AdminNotificationTone = 'critical' | 'warning' | 'info';
+type AdminNotificationChannel = 'In-app' | 'Email' | 'Push';
+
+interface AdminNotificationItem {
+  id: string;
+  title: string;
+  body: string;
+  timestamp: string;
+  dateLabel: string;
+  category: AdminNotificationCategory;
+  unread: boolean;
+  tone: AdminNotificationTone;
+  channel: AdminNotificationChannel;
+  createdAt: Date;
+  sourceType: 'audit' | 'privacy_request' | 'warm_referral' | 'help_support_request';
+  sourceId?: string;
+}
+
+type NotificationDraft = Omit<AdminNotificationItem, 'timestamp' | 'dateLabel' | 'unread'>;
+
+const formatShortDate = (date: Date): string =>
+  new Intl.DateTimeFormat('en-AU', {
+    month: 'short',
+    day: '2-digit'
+  }).format(date);
+
+const formatNotificationTimestamp = (date: Date): string =>
+  `${new Intl.DateTimeFormat('en-AU', { weekday: 'short' }).format(date)}, ${formatShortDate(date)} - ${new Intl.DateTimeFormat('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).format(date)}`;
+
+const formatNotificationDateLabel = (date: Date): string => {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayDelta = Math.round((today - dateOnly) / 86_400_000);
+
+  if (dayDelta === 0) {
+    return `Today - ${formatShortDate(date)}`;
+  }
+
+  if (dayDelta === 1) {
+    return `Yesterday - ${formatShortDate(date)}`;
+  }
+
+  if (dayDelta <= 7) {
+    return `Earlier this week - ${formatShortDate(date)}`;
+  }
+
+  return formatShortDate(date);
+};
+
+const humanizeIdentifier = (value: string): string =>
+  value
+    .replace(/[._-]+/g, ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+
+const buildPrivacyNotification = (request: {
+  _id?: unknown;
+  requestType?: unknown;
+  status?: unknown;
+  createdAt?: Date;
+}): NotificationDraft | undefined => {
+  const id = toSafeString(request._id);
+  const createdAt = request.createdAt ?? new Date();
+  const requestType =
+    typeof request.requestType === 'string' ? request.requestType : 'privacy request';
+  const status = typeof request.status === 'string' ? request.status : 'pending';
+
+  if (!id) {
+    return undefined;
+  }
+
+  return {
+    id: `privacy:${id}`,
+    title: `${humanizeIdentifier(requestType)} pending`,
+    body: `A ${humanizeIdentifier(requestType).toLowerCase()} is ${humanizeIdentifier(status).toLowerCase()} and needs admin review.`,
+    category: 'security',
+    tone: 'warning',
+    channel: 'In-app',
+    createdAt,
+    sourceType: 'privacy_request',
+    sourceId: id
+  };
+};
+
+const buildWarmReferralNotification = (referral: {
+  _id?: unknown;
+  serviceName?: unknown;
+  serviceId?: unknown;
+  createdAt?: Date;
+}): NotificationDraft | undefined => {
+  const id = toSafeString(referral._id);
+  const serviceName =
+    typeof referral.serviceName === 'string'
+      ? referral.serviceName
+      : toSafeString(referral.serviceId) ?? 'support service';
+
+  if (!id) {
+    return undefined;
+  }
+
+  return {
+    id: `warm-referral:${id}`,
+    title: 'Warm referral requested',
+    body: `A user requested support handoff to ${serviceName}. Review the request before external follow-up.`,
+    category: 'account',
+    tone: 'warning',
+    channel: 'In-app',
+    createdAt: referral.createdAt ?? new Date(),
+    sourceType: 'warm_referral',
+    sourceId: id
+  };
+};
+
+const buildHelpSupportNotification = (request: {
+  _id?: unknown;
+  title?: unknown;
+  createdAt?: Date;
+}): NotificationDraft | undefined => {
+  const id = toSafeString(request._id);
+  const title = typeof request.title === 'string' ? request.title : 'Help and support request';
+
+  if (!id) {
+    return undefined;
+  }
+
+  return {
+    id: `help-support:${id}`,
+    title: 'Help request received',
+    body: `A user submitted a Help & Support request: ${title}.`,
+    category: 'account',
+    tone: 'info',
+    channel: 'In-app',
+    createdAt: request.createdAt ?? new Date(),
+    sourceType: 'help_support_request',
+    sourceId: id
+  };
+};
+
+const buildAuditNotification = (
+  log: AuditLogDocument & { _id?: unknown }
+): NotificationDraft | undefined => {
+  const id = toSafeString(log._id);
+  const actorLabel = log.actorType === 'admin' ? 'An admin' : 'A user';
+
+  if (!id) {
+    return undefined;
+  }
+
+  const common = {
+    id: `audit:${id}`,
+    channel: 'In-app' as const,
+    createdAt: log.createdAt,
+    sourceType: 'audit' as const,
+    sourceId: id
+  };
+
+  switch (log.action) {
+    case 'auth.admin_login':
+      return {
+        ...common,
+        title: 'Admin sign-in detected',
+        body: 'An admin account signed in successfully.',
+        category: 'security',
+        tone: 'info'
+      };
+    case 'auth.change_password':
+      return {
+        ...common,
+        title: 'Password changed',
+        body: `${actorLabel} changed their password.`,
+        category: 'security',
+        tone: 'warning'
+      };
+    case 'auth.password_reset.request':
+      return {
+        ...common,
+        title: 'Password reset requested',
+        body: `${actorLabel} requested a password reset code.`,
+        category: 'security',
+        tone: 'warning'
+      };
+    case 'auth.password_reset.complete':
+      return {
+        ...common,
+        title: 'Password reset completed',
+        body: `${actorLabel} completed a password reset.`,
+        category: 'security',
+        tone: 'critical'
+      };
+    case 'auth.profile.update':
+      return {
+        ...common,
+        title: 'Profile updated',
+        body: `${actorLabel} updated profile details.`,
+        category: 'account',
+        tone: 'info'
+      };
+    case ADMIN_ACTIONS.userCreate:
+      return {
+        ...common,
+        title: 'Admin user created',
+        body: 'A new admin account was created.',
+        category: 'account',
+        tone: 'warning'
+      };
+    case ADMIN_ACTIONS.userUpdate:
+      return {
+        ...common,
+        title: 'Admin user updated',
+        body: 'An admin user account was updated.',
+        category: 'account',
+        tone: 'info'
+      };
+    case 'privacy.request.create':
+      return {
+        ...common,
+        title: 'Privacy request created',
+        body: 'A user created a privacy request.',
+        category: 'security',
+        tone: 'warning'
+      };
+    default:
+      return undefined;
+  }
+};
+
+const withReadState = async (
+  context: AdminServiceContext,
+  drafts: NotificationDraft[]
+): Promise<AdminNotificationItem[]> => {
+  const notificationIds = drafts.map((item) => item.id);
+  const readRecords = await AdminNotificationReadModel.find({
+    adminUserId: context.actor.userId,
+    notificationId: { $in: notificationIds }
+  })
+    .select('notificationId')
+    .lean();
+  const readIds = new Set(readRecords.map((record) => record.notificationId));
+
+  return drafts.map((item) => ({
+    ...item,
+    timestamp: formatNotificationTimestamp(item.createdAt),
+    dateLabel: formatNotificationDateLabel(item.createdAt),
+    unread: !readIds.has(item.id)
+  }));
+};
+
+const notificationSort = (left: NotificationDraft, right: NotificationDraft): number =>
+  right.createdAt.getTime() - left.createdAt.getTime();
+
 export const listAuditLogs = async (
   context: AdminServiceContext,
   query: AuditLogsQueryInput
@@ -219,6 +478,114 @@ export const listAuditLogs = async (
   await audit(context, ADMIN_ACTIONS.auditLogsList, undefined, { count: logs.length });
 
   return logs.map((log) => toMaskedAuditLogRecord(log));
+};
+
+export const listAdminNotifications = async (
+  context: AdminServiceContext,
+  query: AdminNotificationsQueryInput
+): Promise<AdminNotificationItem[]> => {
+  const auditActions = [
+    'auth.admin_login',
+    'auth.change_password',
+    'auth.password_reset.request',
+    'auth.password_reset.complete',
+    'auth.profile.update',
+    ADMIN_ACTIONS.userCreate,
+    ADMIN_ACTIONS.userUpdate,
+    'privacy.request.create'
+  ];
+  const [auditLogs, privacyRequests, warmReferrals, helpRequests] = await Promise.all([
+    AuditLogModel.find({ action: { $in: auditActions } })
+      .sort({ createdAt: -1 })
+      .limit(query.limit)
+      .lean(),
+    PrivacyRequestModel.find({ status: { $in: ['pending', 'in_review'] } })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean(),
+    WarmReferralModel.find({ status: 'pending' })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean(),
+    HelpSupportRequestModel.find({ status: 'pending' })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean()
+  ]);
+  const drafts = [
+    ...privacyRequests.map(buildPrivacyNotification),
+    ...warmReferrals.map(buildWarmReferralNotification),
+    ...helpRequests.map(buildHelpSupportNotification),
+    ...auditLogs.map((log) => buildAuditNotification(log))
+  ]
+    .filter((item): item is NotificationDraft => Boolean(item))
+    .sort(notificationSort)
+    .slice(0, query.limit);
+  const notifications = await withReadState(context, drafts);
+
+  await audit(context, ADMIN_ACTIONS.notificationsList, undefined, {
+    count: notifications.length
+  });
+
+  return notifications;
+};
+
+export const markAdminNotificationRead = async (
+  context: AdminServiceContext,
+  input: MarkAdminNotificationReadInput
+): Promise<{ notificationId: string; readAt: Date }> => {
+  const readAt = new Date();
+
+  await AdminNotificationReadModel.updateOne(
+    {
+      adminUserId: context.actor.userId,
+      notificationId: input.notificationId
+    },
+    {
+      $set: { readAt }
+    },
+    { upsert: true }
+  );
+
+  await audit(context, ADMIN_ACTIONS.notificationRead, undefined, {
+    notificationId: input.notificationId
+  });
+
+  return {
+    notificationId: input.notificationId,
+    readAt
+  };
+};
+
+export const markAdminNotificationsRead = async (
+  context: AdminServiceContext,
+  input: MarkAdminNotificationsReadInput
+): Promise<{ notificationIds: string[]; readAt: Date }> => {
+  const readAt = new Date();
+
+  await AdminNotificationReadModel.bulkWrite(
+    input.notificationIds.map((notificationId) => ({
+      updateOne: {
+        filter: {
+          adminUserId: context.actor.userId,
+          notificationId
+        },
+        update: {
+          $set: { readAt }
+        },
+        upsert: true
+      }
+    }))
+  );
+
+  await audit(context, ADMIN_ACTIONS.notificationsReadAll, undefined, {
+    count: input.notificationIds.length
+  });
+
+  return {
+    notificationIds: input.notificationIds,
+    readAt
+  };
 };
 
 export const getAdminDashboard = async (

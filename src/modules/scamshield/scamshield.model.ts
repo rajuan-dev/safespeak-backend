@@ -20,7 +20,12 @@ export interface ScamShieldAnalysisDocument {
   inputHash: string;
   riskLevel: ScamShieldRiskLevel;
   riskScore: number;
+  confidence?: string;
+  summary?: string;
   indicators: string[];
+  redFlags: string[];
+  recommendations: string[];
+  extractedEntities?: Record<string, unknown>;
   redactedContent?: string;
   draftReport?: Record<string, unknown>;
   status: ScamShieldStatus;
@@ -72,9 +77,29 @@ const scamShieldAnalysisSchema = new Schema<ScamShieldAnalysisDocument>(
       min: 0,
       max: 100
     },
+    confidence: {
+      type: String,
+      required: false
+    },
+    summary: {
+      type: String,
+      required: false
+    },
     indicators: {
       type: [String],
       default: []
+    },
+    redFlags: {
+      type: [String],
+      default: []
+    },
+    recommendations: {
+      type: [String],
+      default: []
+    },
+    extractedEntities: {
+      type: Schema.Types.Mixed,
+      required: false
     },
     redactedContent: {
       type: String,

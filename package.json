@@ -20,7 +20,7 @@
     "rag:ingest:official:mvp": "tsx -r tsconfig-paths/register src/scripts/rag-ingest-official.ts knowledge/official-sources/sources.mvp.json",
     "rag:readiness": "tsx -r tsconfig-paths/register src/scripts/rag-readiness-report.ts",
     "rag:check:index": "tsx -r tsconfig-paths/register src/scripts/rag-check-index.ts",
-    "test": "echo \"No tests configured yet. Add tests with future modules.\""
+    "test": "node --test --require tsx/cjs --require tsconfig-paths/register \"tests/**/*.test.cjs\""
   },
   "keywords": [
     "safespeak",

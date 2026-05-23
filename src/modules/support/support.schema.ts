@@ -153,6 +153,11 @@ export const advocateRequestSchema = z.object({
   confirmationCopy: z.string().trim().max(1000).optional()
 });
 
+export const helpSupportRequestSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  message: z.string().trim().min(1).max(4000)
+});
+
 export const safetyPlanSchema = z.object({
   title: z.string().trim().min(1).max(160),
   trustedContacts: z.array(z.record(z.unknown())).default([]),
@@ -174,5 +179,6 @@ export type UpdateSupportServiceInput = z.infer<typeof updateSupportServiceSchem
 export type RecommendationsInput = z.infer<typeof recommendationsSchema>;
 export type WarmReferralInput = z.infer<typeof warmReferralSchema>;
 export type AdvocateRequestInput = z.infer<typeof advocateRequestSchema>;
+export type HelpSupportRequestInput = z.infer<typeof helpSupportRequestSchema>;
 export type SafetyPlanInput = z.infer<typeof safetyPlanSchema>;
 export type UpdateSafetyPlanInput = z.infer<typeof updateSafetyPlanSchema>;

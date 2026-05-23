@@ -63,6 +63,12 @@ export interface AdvocateRequestDocument extends SupportOwnedDocument {
   status: SupportRequestStatus;
 }
 
+export interface HelpSupportRequestDocument extends SupportOwnedDocument {
+  title: string;
+  message: string;
+  status: SupportRequestStatus;
+}
+
 export interface SafetyPlanDocument extends SupportOwnedDocument {
   title: string;
   trustedContacts: Array<Record<string, unknown>>;
@@ -284,6 +290,30 @@ const advocateRequestSchema = new Schema<AdvocateRequestDocument>(
   { timestamps: true }
 );
 
+const helpSupportRequestSchema = new Schema<HelpSupportRequestDocument>(
+  {
+    ...ownerFields,
+    title: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    message: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    status: {
+      type: String,
+      enum: SUPPORT_REQUEST_STATUSES,
+      default: 'pending',
+      required: true,
+      index: true
+    }
+  },
+  { timestamps: true }
+);
+
 const safetyPlanSchema = new Schema<SafetyPlanDocument>(
   {
     ...ownerFields,
@@ -320,6 +350,7 @@ const safetyPlanSchema = new Schema<SafetyPlanDocument>(
 
 warmReferralSchema.index({ status: 1, createdAt: -1 });
 warmReferralSchema.index({ serviceId: 1, createdAt: -1 });
+helpSupportRequestSchema.index({ status: 1, createdAt: -1 });
 
 const supportServiceSchema = new Schema<SupportServiceDocument>(
   {
@@ -528,6 +559,10 @@ export const WarmReferralModel = model<WarmReferralDocument>('WarmReferral', war
 export const AdvocateRequestModel = model<AdvocateRequestDocument>(
   'AdvocateRequest',
   advocateRequestSchema
+);
+export const HelpSupportRequestModel = model<HelpSupportRequestDocument>(
+  'HelpSupportRequest',
+  helpSupportRequestSchema
 );
 export const SafetyPlanModel = model<SafetyPlanDocument>('SafetyPlan', safetyPlanSchema);
 export const SupportServiceModel = model<SupportServiceDocument>(

@@ -7,6 +7,7 @@ import { successResponse } from '@common/responses/api-response';
 import type {
   AdminWarmReferralQueryInput,
   AdvocateRequestInput,
+  HelpSupportRequestInput,
   RecommendationsInput,
   SafetyPlanInput,
   SupportServiceInput,
@@ -17,6 +18,7 @@ import type {
 } from './support.schema';
 import {
   createAdvocateRequest,
+  createHelpSupportRequest,
   createSafetyPlan,
   createSupportService,
   createWarmReferral,
@@ -138,6 +140,15 @@ export const advocateRequestController = asyncHandler(async (req: Request, res: 
   const request = await createAdvocateRequest(getContext(req), req.body as AdvocateRequestInput);
 
   res.status(StatusCodes.CREATED).json(successResponse('Advocate request created', { request }));
+});
+
+export const helpSupportRequestController = asyncHandler(async (req: Request, res: Response) => {
+  const request = await createHelpSupportRequest(
+    getContext(req),
+    req.body as HelpSupportRequestInput
+  );
+
+  res.status(StatusCodes.CREATED).json(successResponse('Help support request created', { request }));
 });
 
 export const listSafetyPlansController = asyncHandler(async (req: Request, res: Response) => {

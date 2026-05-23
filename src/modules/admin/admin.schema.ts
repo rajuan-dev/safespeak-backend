@@ -172,6 +172,18 @@ export const privacyRequestQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25)
 });
 
+export const adminNotificationsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+export const markAdminNotificationReadSchema = z.object({
+  notificationId: z.string().trim().min(1).max(180)
+});
+
+export const markAdminNotificationsReadSchema = z.object({
+  notificationIds: z.array(z.string().trim().min(1).max(180)).min(1).max(100)
+});
+
 export const updatePrivacyRequestSchema = z.object({
   status: z.enum(PRIVACY_REQUEST_STATUSES),
   notes: z.string().trim().max(2000).optional()
@@ -195,4 +207,7 @@ export type ReportDeliveryQueryInput = z.infer<typeof reportDeliveryQuerySchema>
 export type SubmissionTemplateInput = z.infer<typeof submissionTemplateSchema>;
 export type UpdateSubmissionTemplateInput = z.infer<typeof updateSubmissionTemplateSchema>;
 export type PrivacyRequestQueryInput = z.infer<typeof privacyRequestQuerySchema>;
+export type AdminNotificationsQueryInput = z.infer<typeof adminNotificationsQuerySchema>;
+export type MarkAdminNotificationReadInput = z.infer<typeof markAdminNotificationReadSchema>;
+export type MarkAdminNotificationsReadInput = z.infer<typeof markAdminNotificationsReadSchema>;
 export type UpdatePrivacyRequestInput = z.infer<typeof updatePrivacyRequestSchema>;

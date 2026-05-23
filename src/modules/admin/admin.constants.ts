@@ -34,6 +34,9 @@ export const ADMIN_ACTIONS = {
   culturalProfileDelete: 'admin.cultural_profiles.delete',
   privacyRequestsList: 'admin.privacy_requests.list',
   privacyRequestUpdate: 'admin.privacy_requests.update',
+  notificationsList: 'admin.notifications.list',
+  notificationRead: 'admin.notifications.read',
+  notificationsReadAll: 'admin.notifications.read_all',
   analyticsOverview: 'admin.analytics.overview'
 } as const;
 

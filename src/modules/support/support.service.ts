@@ -12,6 +12,7 @@ import {
 } from './support.constants';
 import {
   AdvocateRequestModel,
+  HelpSupportRequestModel,
   SafetyPlanModel,
   SupportServiceModel,
   type SupportServiceDocument,
@@ -22,6 +23,7 @@ import type {
   AdminServicesQueryInput,
   AdminWarmReferralQueryInput,
   AdvocateRequestInput,
+  HelpSupportRequestInput,
   RecommendationsInput,
   SafetyPlanInput,
   ServicesQueryInput,
@@ -632,6 +634,25 @@ export const createAdvocateRequest = async (
     issueType: input.issueType,
     region: input.region,
     safeContactPreference: input.safeContactPreference
+  });
+
+  return request;
+};
+
+export const createHelpSupportRequest = async (
+  context: SupportServiceContext,
+  input: HelpSupportRequestInput
+): Promise<unknown> => {
+  ownerFilter(context.owner);
+  const request = await HelpSupportRequestModel.create({
+    ...ownerFilter(context.owner),
+    title: input.title,
+    message: input.message,
+    status: 'pending'
+  });
+
+  await audit(context, SUPPORT_ACTIONS.helpRequest, request._id.toString(), {
+    title: input.title
   });
 
   return request;

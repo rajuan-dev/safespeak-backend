@@ -15,6 +15,7 @@ import {
   adminIntelligenceCenterOverviewController,
   adminKnowledgeSourcesController,
   adminLanguagePacksOverviewController,
+  adminNotificationsController,
   adminPrivacyRequestsController,
   adminReportDeliveriesController,
   adminSubmissionTemplatesController,
@@ -28,6 +29,8 @@ import {
   createAdminTaxonomyController,
   deleteAdminCulturalProfileController,
   deleteAdminTaxonomyController,
+  markAdminNotificationReadController,
+  markAdminNotificationsReadController,
   updateAdminUserController,
   updateAdminCulturalProfileController,
   updateAdminDestinationController,
@@ -37,12 +40,15 @@ import {
 } from './admin.controller';
 import {
   adminParamsSchema,
+  adminNotificationsQuerySchema,
   auditLogsQuerySchema,
   culturalProfileQuerySchema,
   culturalProfileSchema,
   createAdminUserSchema,
   destinationQuerySchema,
   destinationSchema,
+  markAdminNotificationReadSchema,
+  markAdminNotificationsReadSchema,
   privacyRequestQuerySchema,
   reportDeliveryQuerySchema,
   submissionTemplateQuerySchema,
@@ -68,6 +74,24 @@ adminRoutes.get(
   requireAdminRole('super_admin'),
   validate({ query: auditLogsQuerySchema }),
   adminAuditLogsController
+);
+adminRoutes.get(
+  '/notifications',
+  requireAdminRole('super_admin'),
+  validate({ query: adminNotificationsQuerySchema }),
+  adminNotificationsController
+);
+adminRoutes.post(
+  '/notifications/read',
+  requireAdminRole('super_admin'),
+  validate({ body: markAdminNotificationReadSchema }),
+  markAdminNotificationReadController
+);
+adminRoutes.post(
+  '/notifications/read-all',
+  requireAdminRole('super_admin'),
+  validate({ body: markAdminNotificationsReadSchema }),
+  markAdminNotificationsReadController
 );
 adminRoutes.get(
   '/users',
