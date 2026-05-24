@@ -4,13 +4,17 @@ import { createAuditLog } from '@modules/audit/audit.service';
 
 import {
   CONTENT_PAGE_ACTIONS,
-  DEFAULT_CONTENT_PAGES
+  DEFAULT_CONTENT_PAGES,
+  LEGACY_LEGAL_DOCUMENT_MARKER
 } from './content-pages.constants';
 import {
   ContentPageModel,
   type ContentPageHydratedDocument
 } from './content-pages.model';
-import type { ContentPageUpdateInput } from './content-pages.schema';
+import type {
+  ContentPagePublishInput,
+  ContentPageUpdateInput
+} from './content-pages.schema';
 import {
   aboutPageContentSchema,
   landingPageContentSchema,
@@ -29,6 +33,11 @@ const CONTENT_PAGE_SCHEMAS = {
   'about-us': aboutPageContentSchema
 } as const;
 
+const LEGAL_DOCUMENT_KEYS = new Set<ContentPageKey>([
+  'privacy-policy',
+  'terms-conditions'
+]);
+
 const toObjectId = (value?: string) =>
   value && Types.ObjectId.isValid(value) ? new Types.ObjectId(value) : undefined;
 
@@ -37,6 +46,11 @@ const cloneContent = <TContent>(content: TContent): TContent =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const isLegalDocumentKey = (key: ContentPageKey): boolean => LEGAL_DOCUMENT_KEYS.has(key);
+
+const isLegacyLegalDocumentHtml = (value: unknown): boolean =>
+  typeof value === 'string' && value.includes(LEGACY_LEGAL_DOCUMENT_MARKER);
 
 const defaultContentForKey = <TKey extends ContentPageKey>(
   key: TKey
@@ -54,12 +68,22 @@ const withDefaultContent = <TKey extends ContentPageKey>(
   content: unknown
 ): ContentPagePayloadByKey[TKey] => {
   const currentContent = isRecord(content) ? content : {};
-
-  return parseContentForKey(key, {
-    ...defaultContentForKey(key),
+  const defaultContent = defaultContentForKey(key) as Record<string, unknown>;
+  const mergedContent: Record<string, unknown> = {
+    ...defaultContent,
     ...currentContent
-  });
+  };
+
+  if (isLegalDocumentKey(key) && isLegacyLegalDocumentHtml(mergedContent.contentHtml)) {
+    mergedContent.contentHtml = defaultContent.contentHtml;
+  }
+
+  return parseContentForKey(key, mergedContent);
 };
+
+const hasUnpublishedChanges = (page: ContentPageHydratedDocument): boolean =>
+  JSON.stringify(withDefaultContent(page.key, page.draft)) !==
+  JSON.stringify(withDefaultContent(page.key, page.published));
 
 const serializePublicContentPage = (page: ContentPageHydratedDocument) => ({
   key: page.key,
@@ -76,7 +100,8 @@ const serializeAdminContentPage = (page: ContentPageHydratedDocument) => ({
   version: page.version,
   publishedAt: page.publishedAt,
   createdAt: page.createdAt,
-  updatedAt: page.updatedAt
+  updatedAt: page.updatedAt,
+  hasUnpublishedChanges: hasUnpublishedChanges(page)
 });
 
 const auditContentPageAction = async (
@@ -174,6 +199,35 @@ export const saveAdminContentPage = async (
 
   page.set({
     draft: nextContent,
+    version: page.version + 1,
+    updatedBy: toObjectId(context.actor?.userId)
+  });
+  await page.save();
+
+  await auditContentPageAction(context, CONTENT_PAGE_ACTIONS.save, key, {
+    version: page.version,
+    changedFields: Object.keys(input.content)
+  });
+
+  return serializeAdminContentPage(page);
+};
+
+export const publishAdminContentPage = async (
+  context: ContentPageServiceContext,
+  key: ContentPageKey,
+  input: ContentPagePublishInput = {}
+) => {
+  const page = await getOrCreateContentPage(key, context);
+  const draftContent = withDefaultContent(key, page.draft);
+  const nextContent = input.content
+    ? withDefaultContent(key, {
+        ...draftContent,
+        ...input.content
+      })
+    : draftContent;
+
+  page.set({
+    draft: nextContent,
     published: nextContent,
     version: page.version + 1,
     updatedBy: toObjectId(context.actor?.userId),
@@ -182,9 +236,9 @@ export const saveAdminContentPage = async (
   });
   await page.save();
 
-  await auditContentPageAction(context, CONTENT_PAGE_ACTIONS.save, key, {
+  await auditContentPageAction(context, CONTENT_PAGE_ACTIONS.publish, key, {
     version: page.version,
-    changedFields: Object.keys(input.content)
+    changedFields: input.content ? Object.keys(input.content) : []
   });
 
   return serializeAdminContentPage(page);

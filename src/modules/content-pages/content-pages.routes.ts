@@ -5,10 +5,12 @@ import { validate } from '@common/middleware/validate.middleware';
 
 import {
   adminContentPageController,
+  adminContentPagePublishController,
   adminContentPageSaveController,
   publicContentPageController
 } from './content-pages.controller';
 import {
+  contentPagePublishSchema,
   contentPageParamsSchema,
   contentPageUpdateSchema
 } from './content-pages.schema';
@@ -32,4 +34,9 @@ adminContentPageRoutes.patch(
   '/:key',
   validate({ params: contentPageParamsSchema, body: contentPageUpdateSchema }),
   adminContentPageSaveController
+);
+adminContentPageRoutes.post(
+  '/:key/publish',
+  validate({ params: contentPageParamsSchema, body: contentPagePublishSchema }),
+  adminContentPagePublishController
 );

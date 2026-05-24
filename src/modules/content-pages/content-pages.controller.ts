@@ -6,11 +6,13 @@ import { successResponse } from '@common/responses/api-response';
 
 import type {
   ContentPageParamsInput,
+  ContentPagePublishInput,
   ContentPageUpdateInput
 } from './content-pages.schema';
 import {
   getAdminContentPage,
   getPublicContentPage,
+  publishAdminContentPage,
   saveAdminContentPage
 } from './content-pages.service';
 
@@ -46,3 +48,16 @@ export const adminContentPageSaveController = asyncHandler(async (req: Request, 
 
   res.status(StatusCodes.OK).json(successResponse('Content page saved', { contentPage }));
 });
+
+export const adminContentPagePublishController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { key } = req.params as unknown as ContentPageParamsInput;
+    const contentPage = await publishAdminContentPage(
+      getContext(req),
+      key,
+      req.body as ContentPagePublishInput
+    );
+
+    res.status(StatusCodes.OK).json(successResponse('Content page published', { contentPage }));
+  }
+);

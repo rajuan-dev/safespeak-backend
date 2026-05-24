@@ -53,5 +53,12 @@ export const contentPageUpdateSchema = z.object({
   content: z.record(z.unknown())
 });
 
+export const contentPagePublishSchema = z
+  .object({
+    content: z.record(z.unknown()).optional()
+  })
+  .default({});
+
 export type ContentPageParamsInput = z.infer<typeof contentPageParamsSchema>;
+export type ContentPagePublishInput = z.infer<typeof contentPagePublishSchema>;
 export type ContentPageUpdateInput = z.infer<typeof contentPageUpdateSchema>;
