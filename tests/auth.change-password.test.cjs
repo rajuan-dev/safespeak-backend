@@ -24,6 +24,10 @@ const {
   contentPageUpdateSchema,
   legalDocumentContentSchema
 } = require('../src/modules/content-pages/content-pages.schema.ts');
+const {
+  protectAnalyticsExportCount,
+  sampleLaplaceNoise
+} = require('../src/modules/analytics/analytics.service.ts');
 
 test('changePasswordSchema accepts the existing admin form password length', () => {
   const result = changePasswordSchema.safeParse({
@@ -157,4 +161,28 @@ test('content page legal document schema rejects unsafe embedded HTML', () => {
   });
 
   assert.equal(result.success, false);
+});
+
+test('analytics export suppresses low-count cells before noise', () => {
+  const result = protectAnalyticsExportCount(4, {
+    minimumCellSize: 5,
+    rng: () => 0.99
+  });
+
+  assert.equal(result.suppressed, true);
+  assert.equal(result.noiseApplied, false);
+  assert.equal(result.count, undefined);
+  assert.match(result.label, /fewer than 5/);
+});
+
+test('analytics export applies Laplace noise to eligible counts', () => {
+  const noise = sampleLaplaceNoise(1, 1, () => 0.75);
+  const result = protectAnalyticsExportCount(10, {
+    rng: () => 0.75
+  });
+
+  assert.equal(Number(noise.toFixed(6)), Number((-Math.log(0.5)).toFixed(6)));
+  assert.equal(result.suppressed, false);
+  assert.equal(result.noiseApplied, true);
+  assert.equal(result.count, 11);
 });

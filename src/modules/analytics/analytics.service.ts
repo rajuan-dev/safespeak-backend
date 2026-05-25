@@ -1,3 +1,5 @@
+import { randomInt, randomUUID } from 'node:crypto';
+
 import { createAuditLog } from '@modules/audit/audit.service';
 import { ReportModel } from '@modules/reports/reports.model';
 
@@ -10,6 +12,9 @@ import type {
 import type { AnalyticsServiceContext, PublicAnalyticsServiceContext } from './analytics.types';
 
 const MINIMUM_PUBLIC_CELL_SIZE = 5;
+const ANALYTICS_EXPORT_EPSILON = 1;
+const ANALYTICS_EXPORT_SENSITIVITY = 1;
+const ANALYTICS_EXPORT_MAX_ABSOLUTE_NOISE = 20;
 const PUBLIC_LOCAL_INTELLIGENCE_STATUSES = [
   'local_only',
   'ready_for_review',
@@ -38,6 +43,31 @@ type LocalIntelligenceAreaRow = {
 type LocalIntelligenceNamedRow = {
   _id?: string | null;
   count: number;
+};
+
+type AnalyticsBucketRow = {
+  _id?: Record<string, string | null> | string | null;
+  count: number;
+};
+
+type ProtectedAnalyticsCount = {
+  count?: number;
+  suppressed: boolean;
+  label: string;
+  noiseApplied: boolean;
+};
+
+type ProtectedAnalyticsBucket = {
+  _id?: Record<string, string | null> | string | null;
+  count?: number;
+  suppressed: boolean;
+  label: string;
+  noiseApplied: boolean;
+};
+
+type AnalyticsExportPrivacyCounters = {
+  noisyCounts: number;
+  suppressedCells: number;
 };
 
 const baseMatch = (query: AnalyticsQueryInput): Record<string, unknown> => ({
@@ -131,6 +161,58 @@ const publicCell = (count: number): LocalIntelligenceCountCell => suppressCount(
 
 const normalizeDimension = (value: string | null | undefined, fallback: string): string =>
   value?.trim() || fallback;
+
+const secureUnitRandom = (): number => randomInt(1, 1_000_000) / 1_000_001;
+
+export const sampleLaplaceNoise = (
+  epsilon = ANALYTICS_EXPORT_EPSILON,
+  sensitivity = ANALYTICS_EXPORT_SENSITIVITY,
+  rng: () => number = secureUnitRandom
+): number => {
+  const boundedRandom = Math.min(Math.max(rng(), Number.EPSILON), 1 - Number.EPSILON);
+  const centered = boundedRandom - 0.5;
+  const scale = sensitivity / epsilon;
+
+  return -scale * Math.sign(centered) * Math.log(1 - 2 * Math.abs(centered));
+};
+
+const clampNoise = (noise: number): number =>
+  Math.max(
+    -ANALYTICS_EXPORT_MAX_ABSOLUTE_NOISE,
+    Math.min(ANALYTICS_EXPORT_MAX_ABSOLUTE_NOISE, noise)
+  );
+
+export const protectAnalyticsExportCount = (
+  count: number,
+  options: {
+    minimumCellSize?: number;
+    epsilon?: number;
+    sensitivity?: number;
+    rng?: () => number;
+  } = {}
+): ProtectedAnalyticsCount => {
+  const minimumCellSize = options.minimumCellSize ?? MINIMUM_PUBLIC_CELL_SIZE;
+
+  if (count < minimumCellSize) {
+    return {
+      suppressed: true,
+      label: `Privacy protected: fewer than ${minimumCellSize}`,
+      noiseApplied: false
+    };
+  }
+
+  const noise = clampNoise(
+    sampleLaplaceNoise(options.epsilon, options.sensitivity, options.rng)
+  );
+  const noisyCount = Math.max(0, Math.round(count + noise));
+
+  return {
+    count: noisyCount,
+    suppressed: false,
+    label: noisyCount.toLocaleString('en-AU'),
+    noiseApplied: true
+  };
+};
 
 const toThresholdedOptions = (rows: LocalIntelligenceNamedRow[]): string[] =>
   rows
@@ -398,17 +480,178 @@ export const getPublicLocalIntelligence = async (
   };
 };
 
+const protectAnalyticsBucketRows = (
+  rows: AnalyticsBucketRow[],
+  counters: AnalyticsExportPrivacyCounters
+): ProtectedAnalyticsBucket[] =>
+  rows.map((row) => {
+    const protectedCount = protectAnalyticsExportCount(row.count);
+
+    if (protectedCount.suppressed) {
+      counters.suppressedCells += 1;
+    } else if (protectedCount.noiseApplied) {
+      counters.noisyCounts += 1;
+    }
+
+    return {
+      _id: row._id,
+      ...protectedCount
+    };
+  });
+
+const createAnalyticsExportPrivacyPolicy = () => ({
+  anonymisedOnly: true,
+  consentedReportsOnly: true,
+  rawReportsExposed: false,
+  piiExposed: false,
+  minimumCellSuppression: MINIMUM_PUBLIC_CELL_SIZE,
+  differentialPrivacy: {
+    enabled: true,
+    mechanism: 'laplace',
+    epsilon: ANALYTICS_EXPORT_EPSILON,
+    sensitivity: ANALYTICS_EXPORT_SENSITIVITY,
+    maxAbsoluteNoise: ANALYTICS_EXPORT_MAX_ABSOLUTE_NOISE,
+    appliedTo: ['summary.reports', 'dimensions.*.count'],
+    lowCountCellsSuppressedBeforeNoise: true,
+    negativeCountsClampedToZero: true
+  }
+});
+
+const formatExportBucket = (
+  bucket: ProtectedAnalyticsBucket['_id']
+): string | Record<string, string | null> => {
+  if (bucket === undefined || bucket === null) {
+    return 'Unspecified';
+  }
+
+  return bucket;
+};
+
+const flattenProtectedExportRows = (
+  dimensions: Record<string, ProtectedAnalyticsBucket[]>
+): Array<Record<string, unknown>> =>
+  Object.entries(dimensions).flatMap(([dimension, rows]) =>
+    rows.map((row) => ({
+      dimension,
+      bucket:
+        typeof row._id === 'object' && row._id !== null
+          ? JSON.stringify(row._id)
+          : formatExportBucket(row._id),
+      count: row.count,
+      suppressed: row.suppressed,
+      label: row.label,
+      noiseApplied: row.noiseApplied
+    }))
+  );
+
+const csvEscape = (value: unknown): string => {
+  const normalized =
+    value === undefined || value === null
+      ? ''
+      : typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+        ? String(value)
+        : JSON.stringify(value);
+
+  return `"${normalized.replace(/"/g, '""')}"`;
+};
+
+const createAnalyticsExportCsv = (rows: Array<Record<string, unknown>>): string => {
+  const headers = ['dimension', 'bucket', 'count', 'suppressed', 'label', 'noiseApplied'];
+  const lines = [
+    headers.join(','),
+    ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(','))
+  ];
+
+  return lines.join('\n');
+};
+
 export const exportAnalytics = async (
   context: AnalyticsServiceContext,
   query: AnalyticsExportQueryInput
 ): Promise<Record<string, unknown>> => {
-  const overview = await getAnalyticsOverview(context, query);
+  const exportId = randomUUID();
+  const match = baseMatch(query);
+  const privacyCounters: AnalyticsExportPrivacyCounters = {
+    noisyCounts: 0,
+    suppressedCells: 0
+  };
+  const [totalReports, byStatus, bySeverity, byIncidentType, byJurisdiction, byLanguage] =
+    await Promise.all([
+      ReportModel.countDocuments(match),
+      ReportModel.aggregate<AnalyticsBucketRow>([
+        { $match: match },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+        { $sort: { count: -1, _id: 1 } }
+      ]),
+      ReportModel.aggregate<AnalyticsBucketRow>([
+        { $match: match },
+        { $group: { _id: '$severity', count: { $sum: 1 } } },
+        { $sort: { count: -1, _id: 1 } }
+      ]),
+      ReportModel.aggregate<AnalyticsBucketRow>([
+        { $match: match },
+        { $group: { _id: '$incidentType', count: { $sum: 1 } } },
+        { $sort: { count: -1, _id: 1 } }
+      ]),
+      ReportModel.aggregate<AnalyticsBucketRow>([
+        { $match: match },
+        { $group: { _id: '$jurisdiction', count: { $sum: 1 } } },
+        { $sort: { count: -1, _id: 1 } }
+      ]),
+      ReportModel.aggregate<AnalyticsBucketRow>([
+        { $match: match },
+        { $group: { _id: '$language', count: { $sum: 1 } } },
+        { $sort: { count: -1, _id: 1 } }
+      ])
+    ]);
+  const protectedSummary = protectAnalyticsExportCount(totalReports);
 
-  await audit(context, ANALYTICS_ACTIONS.export, { format: query.format });
+  if (protectedSummary.suppressed) {
+    privacyCounters.suppressedCells += 1;
+  } else if (protectedSummary.noiseApplied) {
+    privacyCounters.noisyCounts += 1;
+  }
+
+  const dimensions = {
+    byStatus: protectAnalyticsBucketRows(byStatus, privacyCounters),
+    bySeverity: protectAnalyticsBucketRows(bySeverity, privacyCounters),
+    byIncidentType: protectAnalyticsBucketRows(byIncidentType, privacyCounters),
+    byJurisdiction: protectAnalyticsBucketRows(byJurisdiction, privacyCounters),
+    byLanguage: protectAnalyticsBucketRows(byLanguage, privacyCounters)
+  };
+  const rows = flattenProtectedExportRows(dimensions);
+  const privacy = createAnalyticsExportPrivacyPolicy();
+
+  await audit(context, ANALYTICS_ACTIONS.export, {
+    exportId,
+    format: query.format,
+    noisyCounts: privacyCounters.noisyCounts,
+    suppressedCells: privacyCounters.suppressedCells,
+    dimensions: Object.keys(dimensions),
+    differentialPrivacy: privacy.differentialPrivacy
+  });
 
   return {
+    exportId,
     format: query.format,
     generatedAt: new Date().toISOString(),
-    overview
+    filters: {
+      from: query.from,
+      to: query.to,
+      jurisdiction: query.jurisdiction,
+      language: query.language
+    },
+    privacy,
+    summary: {
+      reports: protectedSummary
+    },
+    dimensions,
+    rows,
+    ...(query.format === 'csv'
+      ? {
+          contentType: 'text/csv',
+          content: createAnalyticsExportCsv(rows)
+        }
+      : {})
   };
 };

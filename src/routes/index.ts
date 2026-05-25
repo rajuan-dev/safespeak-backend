@@ -18,6 +18,7 @@ import {
   adminMicroEducationRoutes,
   microEducationRoutes
 } from '@modules/microeducation/microeducation.routes';
+import { notificationsRoutes } from '@modules/notifications/notifications.routes';
 import {
   adminPlatformSettingsRoutes,
   platformSettingsRoutes
@@ -62,6 +63,7 @@ apiRouter.use('/rag', ragRoutes);
 apiRouter.use('/scamshield', scamShieldRoutes);
 apiRouter.use('/support', supportRoutes);
 apiRouter.use('/feedback', feedbackRoutes);
+apiRouter.use('/notifications', notificationsRoutes);
 apiRouter.use('/analytics', publicAnalyticsRoutes);
 apiRouter.use('/admin/support-services', adminSupportServiceRoutes);
 apiRouter.use('/admin/feedback', adminFeedbackRoutes);

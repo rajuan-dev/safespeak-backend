@@ -11,12 +11,31 @@ type DeliveryArtifact = {
   url?: string;
 };
 
+export type DeliveryConfigurationStatus = 'ready' | 'manual_action' | 'config_missing';
+export type DeliveryMode = 'automated' | 'manual' | 'config_missing';
+
+export type DeliveryReadiness = {
+  status: DeliveryConfigurationStatus;
+  mode: DeliveryMode;
+  canAutoSend: boolean;
+  actuallySends: boolean;
+  credentialConfigured: boolean;
+  credentialReference?: string;
+  configurationIssues: string[];
+  endpointUrl?: string;
+};
+
 export type DeliveryExecutionResult = {
-  status: 'submitted' | 'acknowledged' | 'requires_manual_action' | 'failed';
+  status: 'submitted' | 'acknowledged' | 'requires_manual_action' | 'config_missing' | 'failed';
   externalReference?: string;
   message?: string;
   acknowledgementPayload?: Record<string, unknown>;
   deliveryArtifacts?: DeliveryArtifact[];
+  deliveryMode: DeliveryMode;
+  deliveryConfigurationStatus: DeliveryConfigurationStatus;
+  deliveryConfigurationIssues: string[];
+  credentialReference?: string;
+  actuallySent: boolean;
 };
 
 export type DeliveryExecutionInput = {
@@ -44,21 +63,230 @@ const writeExportArtifact = async (
   return filePath;
 };
 
+const getMetadataString = (
+  metadata: Record<string, unknown>,
+  key: string
+): string | undefined => {
+  const value = metadata[key];
+
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+};
+
+const getMergedDeliveryMetadata = (
+  destination: AdminDestinationDocument,
+  template?: AdminSubmissionTemplateDocument | null
+): Record<string, unknown> => ({
+    ...destination.metadata,
+    ...(template?.metadata ?? {})
+  });
+
+const getEnvValue = (key?: string): string | undefined => {
+  if (!key) {
+    return undefined;
+  }
+
+  const value = process.env[key];
+
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+};
+
 const getStaticBearerToken = (
   destination: AdminDestinationDocument,
   template?: AdminSubmissionTemplateDocument | null
-): string | undefined => {
-  const metadata = {
-    ...destination.metadata,
-    ...(template?.metadata ?? {})
-  };
-  const envTokenKey = typeof metadata.authTokenEnvKey === 'string' ? metadata.authTokenEnvKey : null;
+): { token?: string; reference?: string } => {
+  const metadata = getMergedDeliveryMetadata(destination, template);
+  const envTokenKey = getMetadataString(metadata, 'authTokenEnvKey');
+  const metadataToken = getEnvValue(envTokenKey);
 
-  if (envTokenKey && typeof process.env[envTokenKey] === 'string' && process.env[envTokenKey]?.trim()) {
-    return process.env[envTokenKey];
+  if (metadataToken) {
+    return {
+      token: metadataToken,
+      reference: envTokenKey
+    };
   }
 
-  return env.DELIVERY_API_BEARER_TOKEN;
+  if (env.DELIVERY_API_BEARER_TOKEN) {
+    return {
+      token: env.DELIVERY_API_BEARER_TOKEN,
+      reference: 'DELIVERY_API_BEARER_TOKEN'
+    };
+  }
+
+  return {};
+};
+
+const getEmailWebhookConfig = (
+  destination: AdminDestinationDocument,
+  template?: AdminSubmissionTemplateDocument | null
+): {
+  url?: string;
+  token?: string;
+  urlReference?: string;
+  tokenReference?: string;
+} => {
+  const metadata = getMergedDeliveryMetadata(destination, template);
+  const urlEnvKey = getMetadataString(metadata, 'emailWebhookUrlEnvKey');
+  const tokenEnvKey = getMetadataString(metadata, 'emailWebhookTokenEnvKey');
+  const urlFromMetadata = getMetadataString(metadata, 'emailWebhookUrl');
+  const urlFromEnv = getEnvValue(urlEnvKey);
+  const tokenFromEnv = getEnvValue(tokenEnvKey);
+
+  return {
+    url: urlFromEnv ?? urlFromMetadata ?? env.DELIVERY_EMAIL_WEBHOOK_URL,
+    token: tokenFromEnv ?? env.DELIVERY_EMAIL_WEBHOOK_TOKEN,
+    urlReference: urlFromEnv ? urlEnvKey : urlFromMetadata ? 'destination.metadata.emailWebhookUrl' : 'DELIVERY_EMAIL_WEBHOOK_URL',
+    tokenReference: tokenFromEnv ? tokenEnvKey : env.DELIVERY_EMAIL_WEBHOOK_TOKEN ? 'DELIVERY_EMAIL_WEBHOOK_TOKEN' : undefined
+  };
+};
+
+const getMtlsProxyUrl = (
+  destination: AdminDestinationDocument,
+  template?: AdminSubmissionTemplateDocument | null
+): { url?: string; reference?: string } => {
+  const metadata = getMergedDeliveryMetadata(destination, template);
+  const proxyEnvKey = getMetadataString(metadata, 'mtlsProxyUrlEnvKey');
+  const proxyFromEnv = getEnvValue(proxyEnvKey);
+
+  if (proxyFromEnv) {
+    return {
+      url: proxyFromEnv,
+      reference: proxyEnvKey
+    };
+  }
+
+  if (env.DELIVERY_MTLS_PROXY_URL) {
+    return {
+      url: env.DELIVERY_MTLS_PROXY_URL,
+      reference: 'DELIVERY_MTLS_PROXY_URL'
+    };
+  }
+
+  return {};
+};
+
+const createReadiness = (
+  status: DeliveryConfigurationStatus,
+  options: Omit<DeliveryReadiness, 'status'>
+): DeliveryReadiness => ({
+  status,
+  ...options
+});
+
+const getMissingConfigReadiness = (
+  configurationIssues: string[],
+  credentialReference?: string
+): DeliveryReadiness =>
+  createReadiness('config_missing', {
+    mode: 'config_missing',
+    canAutoSend: false,
+    actuallySends: false,
+    credentialConfigured: false,
+    credentialReference,
+    configurationIssues
+  });
+
+export const getDestinationDeliveryReadiness = (
+  destination: AdminDestinationDocument,
+  template?: AdminSubmissionTemplateDocument | null
+): DeliveryReadiness => {
+  switch (destination.channel) {
+    case 'api_oauth': {
+      const credential = getStaticBearerToken(destination, template);
+      const configurationIssues = [
+        destination.endpoint ? undefined : 'API endpoint is not configured.',
+        credential.token ? undefined : 'API bearer token is not configured.'
+      ].filter((issue): issue is string => Boolean(issue));
+
+      if (configurationIssues.length > 0) {
+        return getMissingConfigReadiness(configurationIssues, credential.reference);
+      }
+
+      return createReadiness('ready', {
+        mode: 'automated',
+        canAutoSend: true,
+        actuallySends: true,
+        credentialConfigured: true,
+        credentialReference: credential.reference,
+        configurationIssues: [],
+        endpointUrl: destination.endpoint
+      });
+    }
+    case 'api_mtls': {
+      const credential = getStaticBearerToken(destination, template);
+      const mtlsProxy = getMtlsProxyUrl(destination, template);
+      const configurationIssues = [
+        destination.endpoint ? undefined : 'API endpoint is not configured.',
+        mtlsProxy.url ? undefined : 'mTLS delivery proxy is not configured.',
+        credential.token ? undefined : 'API bearer token is not configured.'
+      ].filter((issue): issue is string => Boolean(issue));
+
+      if (configurationIssues.length > 0) {
+        return getMissingConfigReadiness(
+          configurationIssues,
+          [credential.reference, mtlsProxy.reference].filter(Boolean).join(', ') || undefined
+        );
+      }
+
+      return createReadiness('ready', {
+        mode: 'automated',
+        canAutoSend: true,
+        actuallySends: true,
+        credentialConfigured: true,
+        credentialReference: [credential.reference, mtlsProxy.reference].filter(Boolean).join(', '),
+        configurationIssues: [],
+        endpointUrl: mtlsProxy.url
+      });
+    }
+    case 'secure_email':
+    case 'secure_email_pgp': {
+      const webhook = getEmailWebhookConfig(destination, template);
+      const configurationIssues = [
+        destination.contactEmail ? undefined : 'Destination contact email is not configured.',
+        webhook.url ? undefined : 'Secure email webhook URL is not configured.',
+        webhook.token ? undefined : 'Secure email webhook token is not configured.'
+      ].filter((issue): issue is string => Boolean(issue));
+
+      if (configurationIssues.length > 0) {
+        return getMissingConfigReadiness(configurationIssues, webhook.tokenReference);
+      }
+
+      return createReadiness('ready', {
+        mode: 'automated',
+        canAutoSend: true,
+        actuallySends: true,
+        credentialConfigured: true,
+        credentialReference: webhook.tokenReference,
+        configurationIssues: [],
+        endpointUrl: webhook.url
+      });
+    }
+    case 'booking_link':
+      if (!destination.endpoint) {
+        return getMissingConfigReadiness(['Booking or official handoff URL is not configured.']);
+      }
+
+      return createReadiness('manual_action', {
+        mode: 'manual',
+        canAutoSend: false,
+        actuallySends: false,
+        credentialConfigured: false,
+        configurationIssues: [],
+        endpointUrl: destination.endpoint
+      });
+    case 'manual_export_pdf':
+    case 'manual_export_json':
+      return createReadiness('manual_action', {
+        mode: 'manual',
+        canAutoSend: false,
+        actuallySends: false,
+        credentialConfigured: false,
+        configurationIssues: []
+      });
+    default:
+      return getMissingConfigReadiness([
+        `Unsupported delivery channel: ${String(destination.channel)}`
+      ]);
+  }
 };
 
 const toDisplayString = (value: unknown): string => {
@@ -80,20 +308,14 @@ const toDisplayString = (value: unknown): string => {
 const sendJsonToEndpoint = async (
   url: string,
   input: DeliveryExecutionInput,
+  readiness: DeliveryReadiness,
   extraHeaders: Record<string, string> = {}
 ): Promise<DeliveryExecutionResult> => {
-  if (!url) {
-    return {
-      status: 'failed',
-      message: 'Destination endpoint is not configured'
-    };
-  }
-
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     ...extraHeaders
   };
-  const bearerToken = getStaticBearerToken(input.destination, input.template);
+  const { token: bearerToken } = getStaticBearerToken(input.destination, input.template);
 
   if (bearerToken) {
     headers.authorization = `Bearer ${bearerToken}`;
@@ -113,6 +335,11 @@ const sendJsonToEndpoint = async (
       return {
         status: 'failed',
         message: `Delivery endpoint returned ${response.status}`,
+        deliveryMode: readiness.mode,
+        deliveryConfigurationStatus: readiness.status,
+        deliveryConfigurationIssues: readiness.configurationIssues,
+        credentialReference: readiness.credentialReference,
+        actuallySent: false,
         acknowledgementPayload: {
           statusCode: response.status,
           body: responseText.slice(0, 5000)
@@ -124,6 +351,11 @@ const sendJsonToEndpoint = async (
       status: externalReference ? 'acknowledged' : 'submitted',
       externalReference,
       message: `Delivered to ${url}`,
+      deliveryMode: readiness.mode,
+      deliveryConfigurationStatus: readiness.status,
+      deliveryConfigurationIssues: readiness.configurationIssues,
+      credentialReference: readiness.credentialReference,
+      actuallySent: true,
       acknowledgementPayload: {
         statusCode: response.status,
         body: responseText.slice(0, 5000)
@@ -139,12 +371,21 @@ const sendJsonToEndpoint = async (
   } catch (error) {
     return {
       status: 'failed',
-      message: error instanceof Error ? error.message : 'Delivery request failed'
+      message: error instanceof Error ? error.message : 'Delivery request failed',
+      deliveryMode: readiness.mode,
+      deliveryConfigurationStatus: readiness.status,
+      deliveryConfigurationIssues: readiness.configurationIssues,
+      credentialReference: readiness.credentialReference,
+      actuallySent: false
     };
   }
 };
 
-const queueEmailOutbox = async (input: DeliveryExecutionInput, pgpRequired: boolean) => {
+const queueEmailOutbox = async (
+  input: DeliveryExecutionInput,
+  pgpRequired: boolean,
+  readiness: DeliveryReadiness
+) => {
   const outboxPayload = {
     to: input.destination.contactEmail,
     subject: toDisplayString(input.payload.title ?? `SafeSpeak report ${input.refNo}`),
@@ -156,24 +397,56 @@ const queueEmailOutbox = async (input: DeliveryExecutionInput, pgpRequired: bool
     `${input.submissionId}-${pgpRequired ? 'secure-email-pgp' : 'secure-email'}.json`,
     JSON.stringify(outboxPayload, null, 2)
   );
+  const webhook = getEmailWebhookConfig(input.destination, input.template);
 
-  if (env.DELIVERY_EMAIL_WEBHOOK_URL) {
-    const response = await fetch(env.DELIVERY_EMAIL_WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(env.DELIVERY_EMAIL_WEBHOOK_TOKEN
-          ? { authorization: `Bearer ${env.DELIVERY_EMAIL_WEBHOOK_TOKEN}` }
-          : {})
-      },
-      body: JSON.stringify(outboxPayload),
-      signal: AbortSignal.timeout(env.DELIVERY_API_TIMEOUT_MS)
-    });
+  if (webhook.url) {
+    try {
+      const response = await fetch(webhook.url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(webhook.token ? { authorization: `Bearer ${webhook.token}` } : {})
+        },
+        body: JSON.stringify(outboxPayload),
+        signal: AbortSignal.timeout(env.DELIVERY_API_TIMEOUT_MS)
+      });
 
-    if (response.ok) {
+      if (response.ok) {
+        return {
+          status: 'submitted',
+          message: 'Secure email queued via webhook',
+          deliveryMode: readiness.mode,
+          deliveryConfigurationStatus: readiness.status,
+          deliveryConfigurationIssues: readiness.configurationIssues,
+          credentialReference: readiness.credentialReference,
+          actuallySent: true,
+          deliveryArtifacts: [
+            { kind: 'email_outbox', label: 'Email outbox payload', path: outboxPath }
+          ]
+        } satisfies DeliveryExecutionResult;
+      }
+
       return {
-        status: 'submitted',
-        message: 'Secure email queued via webhook',
+        status: 'failed',
+        message: `Secure email webhook returned ${response.status}`,
+        deliveryMode: readiness.mode,
+        deliveryConfigurationStatus: readiness.status,
+        deliveryConfigurationIssues: readiness.configurationIssues,
+        credentialReference: readiness.credentialReference,
+        actuallySent: false,
+        deliveryArtifacts: [
+          { kind: 'email_outbox', label: 'Email outbox payload', path: outboxPath }
+        ]
+      } satisfies DeliveryExecutionResult;
+    } catch (error) {
+      return {
+        status: 'failed',
+        message: error instanceof Error ? error.message : 'Secure email webhook request failed',
+        deliveryMode: readiness.mode,
+        deliveryConfigurationStatus: readiness.status,
+        deliveryConfigurationIssues: readiness.configurationIssues,
+        credentialReference: readiness.credentialReference,
+        actuallySent: false,
         deliveryArtifacts: [
           { kind: 'email_outbox', label: 'Email outbox payload', path: outboxPath }
         ]
@@ -182,17 +455,20 @@ const queueEmailOutbox = async (input: DeliveryExecutionInput, pgpRequired: bool
   }
 
   return {
-    status: 'requires_manual_action',
-    message: 'Secure email payload exported for manual dispatch',
-    deliveryArtifacts: [
-      { kind: 'email_outbox', label: 'Email outbox payload', path: outboxPath }
-    ]
+    status: 'config_missing',
+    message: 'Secure email webhook is not configured; no email was sent',
+    deliveryMode: 'config_missing',
+    deliveryConfigurationStatus: 'config_missing',
+    deliveryConfigurationIssues: ['Secure email webhook URL is not configured.'],
+    actuallySent: false,
+    deliveryArtifacts: [{ kind: 'email_outbox', label: 'Email outbox payload', path: outboxPath }]
   } satisfies DeliveryExecutionResult;
 };
 
 const exportManualPayload = async (
   input: DeliveryExecutionInput,
-  kind: 'json_export' | 'booking_link'
+  kind: 'json_export' | 'booking_link',
+  readiness: DeliveryReadiness
 ): Promise<DeliveryExecutionResult> => {
   const filePath = await writeExportArtifact(
     input.refNo,
@@ -206,6 +482,11 @@ const exportManualPayload = async (
       kind === 'booking_link'
         ? 'Booking/link destination prepared for manual follow-through'
         : 'Manual export prepared',
+    deliveryMode: readiness.mode,
+    deliveryConfigurationStatus: readiness.status,
+    deliveryConfigurationIssues: readiness.configurationIssues,
+    credentialReference: readiness.credentialReference,
+    actuallySent: false,
     deliveryArtifacts: [
       {
         kind,
@@ -220,26 +501,45 @@ const exportManualPayload = async (
 export const executeReportDelivery = async (
   input: DeliveryExecutionInput
 ): Promise<DeliveryExecutionResult> => {
+  const readiness = getDestinationDeliveryReadiness(input.destination, input.template);
+
+  if (readiness.status === 'config_missing') {
+    return {
+      status: 'config_missing',
+      message: `Delivery configuration missing: ${readiness.configurationIssues.join(' ')}`,
+      deliveryMode: readiness.mode,
+      deliveryConfigurationStatus: readiness.status,
+      deliveryConfigurationIssues: readiness.configurationIssues,
+      credentialReference: readiness.credentialReference,
+      actuallySent: false
+    };
+  }
+
   switch (input.destination.channel) {
     case 'api_oauth':
-      return sendJsonToEndpoint(input.destination.endpoint ?? '', input);
+      return sendJsonToEndpoint(readiness.endpointUrl ?? input.destination.endpoint ?? '', input, readiness);
     case 'api_mtls':
-      return sendJsonToEndpoint(input.destination.endpoint ?? '', input, {
+      return sendJsonToEndpoint(readiness.endpointUrl ?? input.destination.endpoint ?? '', input, readiness, {
+        'x-safespeak-delivery-target': input.destination.endpoint ?? '',
         'x-safespeak-delivery-mode': 'mtls-proxy-required'
       });
     case 'secure_email':
-      return queueEmailOutbox(input, false);
+      return queueEmailOutbox(input, false, readiness);
     case 'secure_email_pgp':
-      return queueEmailOutbox(input, true);
+      return queueEmailOutbox(input, true, readiness);
     case 'manual_export_pdf':
     case 'manual_export_json':
-      return exportManualPayload(input, 'json_export');
+      return exportManualPayload(input, 'json_export', readiness);
     case 'booking_link':
-      return exportManualPayload(input, 'booking_link');
+      return exportManualPayload(input, 'booking_link', readiness);
     default:
       return {
         status: 'failed',
-        message: `Unsupported delivery channel: ${String(input.destination.channel)}`
+        message: `Unsupported delivery channel: ${String(input.destination.channel)}`,
+        deliveryMode: 'config_missing',
+        deliveryConfigurationStatus: 'config_missing',
+        deliveryConfigurationIssues: [`Unsupported delivery channel: ${String(input.destination.channel)}`],
+        actuallySent: false
       };
   }
 };

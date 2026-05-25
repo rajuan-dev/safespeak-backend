@@ -75,6 +75,10 @@ export interface ReportSubmissionDocument {
   consentSnapshot: Record<string, unknown>;
   deliveryArtifacts: Array<Record<string, unknown>>;
   deliveryMessage?: string;
+  deliveryMode?: 'automated' | 'manual' | 'config_missing';
+  deliveryConfigurationStatus?: 'ready' | 'manual_action' | 'config_missing';
+  deliveryConfigurationIssues: string[];
+  actuallySent: boolean;
   externalReference?: string;
   acknowledgementMessage?: string;
   acknowledgementPayload?: Record<string, unknown>;
@@ -342,6 +346,27 @@ const reportSubmissionSchema = new Schema<ReportSubmissionDocument>(
     deliveryMessage: {
       type: String,
       required: false
+    },
+    deliveryMode: {
+      type: String,
+      enum: ['automated', 'manual', 'config_missing'],
+      required: false
+    },
+    deliveryConfigurationStatus: {
+      type: String,
+      enum: ['ready', 'manual_action', 'config_missing'],
+      required: false,
+      index: true
+    },
+    deliveryConfigurationIssues: {
+      type: [String],
+      default: []
+    },
+    actuallySent: {
+      type: Boolean,
+      default: false,
+      required: true,
+      index: true
     },
     externalReference: {
       type: String,

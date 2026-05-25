@@ -146,7 +146,7 @@ export const submitReportController = asyncHandler(async (req: Request, res: Res
     req.get('user-agent')
   );
 
-  ApiResponse.created(res, 'Report submitted to destination', { submission });
+  ApiResponse.created(res, 'Report delivery attempt recorded', { submission });
 });
 
 export const acknowledgeReportSubmissionController = asyncHandler(

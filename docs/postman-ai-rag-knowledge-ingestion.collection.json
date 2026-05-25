@@ -58,6 +58,16 @@
               }
             },
             {
+              "name": "GET Knowledge Readiness",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources/readiness"
+              }
+            },
+            {
               "name": "POST Create Knowledge Source",
               "request": {
                 "method": "POST",
@@ -67,7 +77,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"title\": \"Sample Official Source\",\n  \"sourceCategory\": \"official_legal_source\",\n  \"jurisdiction\": \"Cth\",\n  \"topic\": \"discrimination\",\n  \"sourceType\": \"Act\",\n  \"publisher\": \"Australian Government\",\n  \"licenseStatus\": \"Government copyright\",\n  \"url\": \"https://www.legislation.gov.au/\",\n  \"legalReviewed\": false,\n  \"status\": \"pending_review\"\n}"
+                  "raw": "{\n  \"title\": \"Sample Official Source\",\n  \"sourceCategory\": \"official_legal_source\",\n  \"jurisdiction\": \"Cth\",\n  \"topic\": \"discrimination\",\n  \"sourceType\": \"Act\",\n  \"publisher\": \"Australian Government\",\n  \"licenseStatus\": \"Government copyright\",\n  \"url\": \"https://www.legislation.gov.au/\",\n  \"lastUpdated\": \"2026-05-01T00:00:00.000Z\",\n  \"nextRefreshAt\": \"2026-08-01T00:00:00.000Z\",\n  \"legalReviewed\": false,\n  \"status\": \"pending_review\"\n}"
                 },
                 "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources"
               }
@@ -85,6 +95,36 @@
                   "raw": "{\n  \"content\": \"This is approved information-only support content.\",\n  \"metadata\": {\n    \"version\": \"2026-05\"\n  }\n}"
                 },
                 "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/ingest"
+              }
+            },
+            {
+              "name": "POST Refresh Knowledge Source",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" },
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"content\": \"Paste refreshed official source text here when URL fetch is metadata-only.\",\n  \"nextRefreshAt\": \"2026-08-01T00:00:00.000Z\",\n  \"metadata\": {\n    \"refreshMode\": \"postman_e2e\"\n  }\n}"
+                },
+                "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}/refresh"
+              }
+            },
+            {
+              "name": "PATCH Mark Legal Review Complete",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" },
+                  { "key": "Authorization", "value": "Bearer {{access_token}}" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"legalReviewed\": true,\n  \"reviewNotes\": \"Legal/content review completed for citation use.\"\n}"
+                },
+                "url": "{{base_url}}{{api_prefix}}/rag/knowledge-sources/{{knowledge_source_id}}"
               }
             },
             {

@@ -18,6 +18,7 @@ import { AnonymousSessionModel } from '@modules/sessions/sessions.model';
 import {
   buildSubmissionPayloadFromTemplate,
   executeReportDelivery,
+  getDestinationDeliveryReadiness,
   getMissingRequiredTemplateFields
 } from './reports-delivery.service';
 import { WITHDRAW_BLOCKED_STATUSES } from './reports.constants';
@@ -324,6 +325,7 @@ const buildDestinationPreview = async (
 
   const { requiredConsentFlags, incidentTypes, recommendationReason } =
     getDestinationMetadata(destination);
+  const deliveryReadiness = getDestinationDeliveryReadiness(destination);
   const missingRequiredInfo = destination.minimumRequiredInfo.filter(
     (field) => !hasMeaningfulFieldValue(getReportFieldValue(report, field, evidence.length))
   );
@@ -349,6 +351,15 @@ const buildDestinationPreview = async (
     supportsAcknowledgement: destination.supportsAcknowledgement,
     requiredConsentFlags,
     matchedIncidentTypes: incidentTypes,
+    deliveryReadiness: {
+      status: deliveryReadiness.status,
+      mode: deliveryReadiness.mode,
+      canAutoSend: deliveryReadiness.canAutoSend,
+      actuallySends: deliveryReadiness.actuallySends,
+      credentialConfigured: deliveryReadiness.credentialConfigured,
+      credentialReference: deliveryReadiness.credentialReference,
+      configurationIssues: deliveryReadiness.configurationIssues
+    },
     payloadPreview: {
       refNo: report.refNo,
       title: report.context ?? `SafeSpeak report ${report.refNo}`,
@@ -799,10 +810,14 @@ export const submitReportToDestination = async (
     consentSnapshot,
     deliveryArtifacts: deliveryResult.deliveryArtifacts ?? [],
     deliveryMessage: deliveryResult.message,
+    deliveryMode: deliveryResult.deliveryMode,
+    deliveryConfigurationStatus: deliveryResult.deliveryConfigurationStatus,
+    deliveryConfigurationIssues: deliveryResult.deliveryConfigurationIssues,
+    actuallySent: deliveryResult.actuallySent,
     externalReference: deliveryResult.externalReference,
     acknowledgementPayload: deliveryResult.acknowledgementPayload,
     previewGeneratedAt: now,
-    submittedAt: now,
+    submittedAt: deliveryResult.actuallySent ? now : undefined,
     lastAttemptAt: now
   });
 
@@ -811,9 +826,11 @@ export const submitReportToDestination = async (
       ? 'received'
       : deliveryResult.status === 'requires_manual_action'
         ? 'pending_submission'
-        : deliveryResult.status === 'failed'
-          ? 'ready_for_review'
-          : 'submitted';
+        : deliveryResult.status === 'config_missing'
+          ? 'pending_submission'
+          : deliveryResult.status === 'failed'
+            ? 'ready_for_review'
+            : 'submitted';
   report.statusHistory.push(
     ...createStatusHistory(
       report.status,
@@ -834,7 +851,10 @@ export const submitReportToDestination = async (
       destinationKey: destination.key,
       destinationType: destination.type,
       channel: destination.channel,
-      anonymityMode: input.anonymityMode
+      anonymityMode: input.anonymityMode,
+      deliveryStatus: deliveryResult.status,
+      actuallySent: deliveryResult.actuallySent,
+      deliveryConfigurationStatus: deliveryResult.deliveryConfigurationStatus
     }
   );
 

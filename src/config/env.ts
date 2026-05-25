@@ -73,6 +73,7 @@ const envSchema = z
     REPORT_DELIVERY_EXPORT_PATH: z.string().min(1).default('./storage/report-delivery'),
     DELIVERY_API_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
     DELIVERY_API_BEARER_TOKEN: optionalString(z.string().min(1)),
+    DELIVERY_MTLS_PROXY_URL: optionalString(z.string().url()),
     DELIVERY_EMAIL_WEBHOOK_URL: optionalString(z.string().url()),
     DELIVERY_EMAIL_WEBHOOK_TOKEN: optionalString(z.string().min(1)),
     AUTH_RESET_EMAIL_WEBHOOK_URL: optionalString(z.string().url()),

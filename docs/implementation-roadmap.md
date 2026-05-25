@@ -174,10 +174,10 @@ For each feature, implement in this order:
 
 ### Task 5.3 Consent-based delivery
 
-- Backend: delivery API/email fallback only runs after per-destination consent.
-- Admin: monitor delivery status and templates, not raw PII unless allowed.
-- Frontend: submit flow records SafeSpeak ref and external ref where available.
-- Validation: no automatic forwarding; revoked consent blocks delivery.
+- Backend: delivery API/email channels run only after per-destination consent and complete partner credentials; missing endpoints/tokens are recorded as `config_missing` with `actuallySent=false`.
+- Admin: monitor delivery status, delivery mode, readiness, configuration issues, and templates without raw PII unless allowed.
+- Frontend: submit flow records SafeSpeak ref, external ref where available, and clear sent/manual/config-missing outcomes.
+- Validation: no automatic forwarding; revoked consent blocks delivery; only `submitted`/`acknowledged` or `actuallySent=true` are presented as external sends.
 
 ## Phase 6: Support Ecosystem
 
@@ -259,8 +259,8 @@ For each feature, implement in this order:
 
 ### Task 9.2 Differential privacy exports
 
-- Backend: configurable threshold/noise settings and export metadata.
-- Admin: export controls by role and MOU status.
+- Backend: protected export applies low-count suppression, Laplace noise, and export metadata.
+- Admin: analytics panel can generate a protected export preview; MOU-specific partner dashboards remain future scope.
 - Frontend: none unless partner dashboard exists.
 - Validation: exported CSV/JSON includes dp parameters and no raw PII.
 

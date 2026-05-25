@@ -55,11 +55,12 @@ Run `npm run rag:check:index` to verify whether Atlas Search is enabled and whet
 Run `npm run rag:readiness` after ingestion and legal review updates. The report matches the admin readiness panel and returns:
 
 - whether any public legal RAG source is currently eligible for citations
+- whether `OPENAI_API_KEY` and the configured Atlas Vector Search index are available for retrieval
 - official-source blocker counts
 - jurisdiction/topic coverage cells
 - metadata-only, failed-ingestion, no-chunk, refresh, approval, and legal-review gaps
 
-Use `npm run rag:readiness -- --fail-on-not-ready` in release checks when the deployment must fail unless at least one approved, current, legally reviewed official legal source is citation-ready.
+Use `npm run rag:readiness -- --fail-on-not-ready` in release checks when the deployment must fail unless at least one approved, current, legally reviewed official legal source is citation-ready and retrieval configuration is complete.
 
 ## Test endpoints
 

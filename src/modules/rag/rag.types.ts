@@ -60,10 +60,30 @@ export interface RagServiceContext {
 }
 
 export type RagKnowledgeReadinessStatus = 'ready' | 'ready_with_gaps' | 'not_ready';
+export type RagVectorIndexReadinessStatus = 'ready' | 'missing' | 'unavailable' | 'error';
+
+export interface RagVectorIndexReadiness {
+  status: RagVectorIndexReadinessStatus;
+  indexName: string;
+  collectionName: string;
+  embeddingField: 'embedding';
+  embeddingModel: string;
+  expectedDimensions?: number;
+  message: string;
+  definition?: unknown;
+}
+
+export interface RagKnowledgeReadinessConfiguration {
+  openAiApiKeyConfigured: boolean;
+  embeddingModel: string;
+  vectorIndex: RagVectorIndexReadiness;
+  retrievalReady: boolean;
+}
 
 export interface RagKnowledgeReadinessSummary {
   readinessStatus: RagKnowledgeReadinessStatus;
   readyForPublicLegalRag: boolean;
+  retrievalConfigurationReady: boolean;
   totalOfficialSources: number;
   eligibleCitationSources: number;
   eligibleLegalSources: number;
@@ -100,7 +120,11 @@ export interface RagKnowledgeReadinessBlocker {
     | 'no_chunks'
     | 'official_url_missing_or_unapproved'
     | 'ingestion_failed'
-    | 'metadata_only_needs_text';
+    | 'metadata_only_needs_text'
+    | 'openai_api_key_missing'
+    | 'vector_index_missing'
+    | 'vector_search_unavailable'
+    | 'vector_index_check_failed';
   label: string;
   count: number;
   sourceIds: string[];
@@ -110,6 +134,7 @@ export interface RagKnowledgeReadinessBlocker {
 export interface RagKnowledgeSourceReadiness {
   generatedAt: string;
   summary: RagKnowledgeReadinessSummary;
+  configuration: RagKnowledgeReadinessConfiguration;
   coverage: RagKnowledgeReadinessCoverageCell[];
   blockers: RagKnowledgeReadinessBlocker[];
 }

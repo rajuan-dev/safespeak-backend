@@ -650,7 +650,7 @@ Route note:
 
 ## Analytics
 
-Admin-only under `/admin/analytics`. RBAC and audit logging are enforced. Aggregations include only reports with `use_anonymised_analytics` consent; heatmap, category, and language outputs suppress cells below 5.
+Admin-only under `/admin/analytics`. RBAC and audit logging are enforced. Aggregations include only reports with `use_anonymised_analytics` consent; heatmap, category, and language outputs suppress cells below 5. Export returns protected aggregate rows only: low-count cells are suppressed, eligible counts receive Laplace noise, privacy policy metadata is included, and every export is audit logged.
 
 - `GET {{base_url}}{{api_prefix}}/admin/analytics/overview`
 - `GET {{base_url}}{{api_prefix}}/admin/analytics/heatmap`

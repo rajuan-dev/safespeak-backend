@@ -22,6 +22,7 @@ export const REPORT_SUBMISSION_STATUSES = [
   'submitted',
   'acknowledged',
   'requires_manual_action',
+  'config_missing',
   'withdrawn',
   'failed'
 ] as const;

@@ -62,7 +62,8 @@ import type {
   RagServiceContext,
   RagKnowledgeSourceReadiness,
   RagSourceCategory,
-  RagTopic
+  RagTopic,
+  RagVectorIndexReadiness
 } from './rag.types';
 
 const ownerFilter = (owner: RagOwner): RagOwner => {
@@ -81,6 +82,10 @@ const OFFICIAL_REFRESH_TIMEOUT_MS = 15000;
 const OFFICIAL_REFRESH_MAX_BYTES = 750000;
 const OFFICIAL_REFRESH_DEFAULT_DAYS = 90;
 const OFFICIAL_REFRESH_MIN_TEXT_LENGTH = 200;
+const EMBEDDING_DIMENSIONS: Record<string, number> = {
+  'text-embedding-3-small': 1536,
+  'text-embedding-3-large': 3072
+};
 const KNOWLEDGE_DOCUMENT_STORAGE_ROOT = path.resolve('./storage/rag-knowledge-sources');
 const KNOWLEDGE_DOCUMENT_MAX_BYTES = 52428800;
 const KNOWLEDGE_DOCUMENT_ALLOWED_EXTENSIONS = new Set([
@@ -261,6 +266,66 @@ const clearLegalReviewState = (source: HydratedRagKnowledgeSourceDocument): void
 
 const isDateExpired = (value?: Date): boolean => Boolean(value && value.getTime() <= Date.now());
 
+export type RagKnowledgeSourceApprovalBlockerCode =
+  | 'source_not_approvable'
+  | 'legal_review_missing'
+  | 'review_expired'
+  | 'refresh_expired';
+
+export interface RagKnowledgeSourceApprovalBlocker {
+  code: RagKnowledgeSourceApprovalBlockerCode;
+  message: string;
+  statusCode: number;
+}
+
+type ApprovalSourceSnapshot = Pick<
+  RagKnowledgeSourceDocument,
+  'sourceCategory' | 'legalReviewed' | 'nextReviewAt' | 'nextRefreshAt' | 'status'
+>;
+
+export const getKnowledgeSourceApprovalBlocker = (
+  source: ApprovalSourceSnapshot,
+  now = new Date()
+): RagKnowledgeSourceApprovalBlocker | undefined => {
+  if (source.status === 'archived' || source.status === 'expired') {
+    return {
+      code: 'source_not_approvable',
+      statusCode: StatusCodes.CONFLICT,
+      message: 'Archived or expired knowledge sources cannot be approved'
+    };
+  }
+
+  if (source.sourceCategory === 'official_legal_source' && !source.legalReviewed) {
+    return {
+      code: 'legal_review_missing',
+      statusCode: StatusCodes.FORBIDDEN,
+      message: 'Legal knowledge sources require legalReviewed=true before approval'
+    };
+  }
+
+  if (source.nextReviewAt && source.nextReviewAt.getTime() <= now.getTime()) {
+    return {
+      code: 'review_expired',
+      statusCode: StatusCodes.CONFLICT,
+      message: 'Knowledge source review date has expired; refresh before approval'
+    };
+  }
+
+  if (
+    isGovernedKnowledgeSource(source.sourceCategory) &&
+    source.nextRefreshAt &&
+    source.nextRefreshAt.getTime() <= now.getTime()
+  ) {
+    return {
+      code: 'refresh_expired',
+      statusCode: StatusCodes.CONFLICT,
+      message: 'Knowledge source refresh date has expired; refresh before approval'
+    };
+  }
+
+  return undefined;
+};
+
 const addDays = (date: Date, days: number): Date => {
   const next = new Date(date);
   next.setUTCDate(next.getUTCDate() + days);
@@ -283,7 +348,11 @@ const READINESS_BLOCKER_LABELS: Record<ReadinessBlockerCode, string> = {
   no_chunks: 'No indexed chunks',
   official_url_missing_or_unapproved: 'Official URL missing or not allow-listed',
   ingestion_failed: 'Ingestion failed',
-  metadata_only_needs_text: 'Metadata-only source needs extracted text'
+  metadata_only_needs_text: 'Metadata-only source needs extracted text',
+  openai_api_key_missing: 'OpenAI API key missing',
+  vector_index_missing: 'Vector index missing',
+  vector_search_unavailable: 'Vector search unavailable',
+  vector_index_check_failed: 'Vector index check failed'
 };
 
 const isGovernedSourceCategory = (
@@ -810,6 +879,108 @@ const addReadinessBlocker = (
   blockers.set(code, existing);
 };
 
+const addGlobalReadinessBlocker = (
+  blockers: Map<ReadinessBlockerCode, RagKnowledgeReadinessBlocker>,
+  code: ReadinessBlockerCode
+): void => {
+  const existing = blockers.get(code) ?? {
+    code,
+    label: READINESS_BLOCKER_LABELS[code],
+    count: 0,
+    sourceIds: [],
+    sourceTitles: []
+  };
+
+  existing.count += 1;
+  blockers.set(code, existing);
+};
+
+const getVectorIndexErrorMessage = (error: unknown): string => {
+  const errorLike = error as {
+    codeName?: string;
+    message?: string;
+    errorResponse?: { codeName?: string; errmsg?: string };
+  };
+
+  return (
+    errorLike?.message ??
+    errorLike?.errorResponse?.errmsg ??
+    errorLike?.codeName ??
+    errorLike?.errorResponse?.codeName ??
+    String(error)
+  );
+};
+
+const getVectorIndexErrorCodeName = (error: unknown): string => {
+  const errorLike = error as {
+    codeName?: string;
+    errorResponse?: { codeName?: string };
+  };
+
+  return errorLike?.codeName ?? errorLike?.errorResponse?.codeName ?? '';
+};
+
+export const checkRagVectorIndexReadiness = async (): Promise<RagVectorIndexReadiness> => {
+  const expectedDimensions = EMBEDDING_DIMENSIONS[env.OPENAI_EMBEDDING_MODEL];
+  const base = {
+    indexName: env.RAG_VECTOR_INDEX,
+    collectionName: RagChunkModel.collection.name,
+    embeddingField: 'embedding' as const,
+    embeddingModel: env.OPENAI_EMBEDDING_MODEL,
+    expectedDimensions
+  };
+
+  try {
+    const pipeline = [{ $listSearchIndexes: {} }] as unknown as PipelineStage[];
+    type SearchIndexResult = { name?: string; latestDefinition?: unknown };
+    const indexes = await RagChunkModel.aggregate<SearchIndexResult>(pipeline);
+    const target = indexes.find((index) => index.name === env.RAG_VECTOR_INDEX);
+
+    if (!target) {
+      return {
+        ...base,
+        status: 'missing',
+        message:
+          'RAG vector index is missing. Create the Atlas Search index before retrieval tests.'
+      };
+    }
+
+    return {
+      ...base,
+      status: 'ready',
+      definition: target.latestDefinition ?? null,
+      message: 'RAG vector index is available.'
+    };
+  } catch (error) {
+    const message = getVectorIndexErrorMessage(error);
+    const codeName = getVectorIndexErrorCodeName(error);
+
+    if (/SearchNotEnabled/i.test(`${codeName} ${message}`)) {
+      return {
+        ...base,
+        status: 'unavailable',
+        message:
+          'Atlas Search / Vector Search is not enabled on this Mongo deployment. Enable Atlas Search and create the configured vector index.'
+      };
+    }
+
+    if (/index .*not found|index not found|does not exist/i.test(message)) {
+      return {
+        ...base,
+        status: 'missing',
+        message:
+          'RAG vector index is missing. Create the Atlas Search index before retrieval tests.'
+      };
+    }
+
+    return {
+      ...base,
+      status: 'error',
+      message: `Vector index readiness check failed: ${message}`
+    };
+  }
+};
+
 const getCoverageKey = (
   sourceCategory: GovernedRagSourceCategory,
   jurisdiction: RagJurisdiction,
@@ -841,14 +1012,19 @@ export const getKnowledgeSourceReadiness = async (
   ownerFilter(context.owner);
 
   const now = new Date();
-  const sources = await RagKnowledgeSourceModel.find({
-    deletedAt: { $exists: false },
-    sourceCategory: { $in: RAG_GOVERNED_SOURCE_CATEGORIES }
-  })
-    .select(
-      '_id title sourceCategory jurisdiction topic url status ingestionStatus nextRefreshAt legalReviewed'
-    )
-    .lean();
+  const [sources, vectorIndex] = await Promise.all([
+    RagKnowledgeSourceModel.find({
+      deletedAt: { $exists: false },
+      sourceCategory: { $in: RAG_GOVERNED_SOURCE_CATEGORIES }
+    })
+      .select(
+        '_id title sourceCategory jurisdiction topic url status ingestionStatus nextRefreshAt legalReviewed'
+      )
+      .lean(),
+    checkRagVectorIndexReadiness()
+  ]);
+  const openAiApiKeyConfigured = Boolean(env.OPENAI_API_KEY);
+  const retrievalConfigurationReady = openAiApiKeyConfigured && vectorIndex.status === 'ready';
   const sourceIds = sources.map((source) => source._id);
   const chunkRows =
     sourceIds.length > 0
@@ -865,6 +1041,7 @@ export const getKnowledgeSourceReadiness = async (
   const summary = {
     readinessStatus: 'not_ready' as const,
     readyForPublicLegalRag: false,
+    retrievalConfigurationReady,
     totalOfficialSources: sources.length,
     eligibleCitationSources: 0,
     eligibleLegalSources: 0,
@@ -876,6 +1053,18 @@ export const getKnowledgeSourceReadiness = async (
     failedIngestionSources: 0,
     blockedSources: 0
   };
+
+  if (!openAiApiKeyConfigured) {
+    addGlobalReadinessBlocker(blockers, 'openai_api_key_missing');
+  }
+
+  if (vectorIndex.status === 'missing') {
+    addGlobalReadinessBlocker(blockers, 'vector_index_missing');
+  } else if (vectorIndex.status === 'unavailable') {
+    addGlobalReadinessBlocker(blockers, 'vector_search_unavailable');
+  } else if (vectorIndex.status === 'error') {
+    addGlobalReadinessBlocker(blockers, 'vector_index_check_failed');
+  }
 
   for (const source of sources) {
     if (!isGovernedSourceCategory(source.sourceCategory)) {
@@ -971,7 +1160,8 @@ export const getKnowledgeSourceReadiness = async (
     coverage.set(coverageKey, cell);
   }
 
-  summary.readyForPublicLegalRag = summary.eligibleLegalSources > 0;
+  summary.readyForPublicLegalRag =
+    summary.eligibleLegalSources > 0 && retrievalConfigurationReady;
   const readinessStatus = summary.readyForPublicLegalRag
     ? summary.blockedSources > 0
       ? 'ready_with_gaps'
@@ -981,7 +1171,10 @@ export const getKnowledgeSourceReadiness = async (
   await auditRagAction(context, RAG_ACTIONS.sourceReadiness, undefined, {
     readyForPublicLegalRag: summary.readyForPublicLegalRag,
     eligibleLegalSources: summary.eligibleLegalSources,
-    blockedSources: summary.blockedSources
+    blockedSources: summary.blockedSources,
+    retrievalConfigurationReady,
+    vectorIndexStatus: vectorIndex.status,
+    openAiApiKeyConfigured
   });
 
   return {
@@ -989,6 +1182,12 @@ export const getKnowledgeSourceReadiness = async (
     summary: {
       ...summary,
       readinessStatus
+    },
+    configuration: {
+      openAiApiKeyConfigured,
+      embeddingModel: env.OPENAI_EMBEDDING_MODEL,
+      vectorIndex,
+      retrievalReady: retrievalConfigurationReady
     },
     coverage: Array.from(coverage.values()).sort((a, b) =>
       `${a.sourceCategory}:${a.jurisdiction}:${a.topic}`.localeCompare(
@@ -1465,25 +1664,10 @@ export const approveKnowledgeSource = async (
   const source = await getSource(sourceId);
   assertMergedKnowledgeSourceGovernance(source, {});
 
-  if (source.sourceCategory === 'official_legal_source' && !source.legalReviewed) {
-    throw new ApiError(
-      StatusCodes.FORBIDDEN,
-      'Legal knowledge sources require legalReviewed=true before approval'
-    );
-  }
+  const approvalBlocker = getKnowledgeSourceApprovalBlocker(source);
 
-  if (isDateExpired(source.nextReviewAt)) {
-    throw new ApiError(
-      StatusCodes.CONFLICT,
-      'Knowledge source review date has expired; refresh before approval'
-    );
-  }
-
-  if (isGovernedKnowledgeSource(source.sourceCategory) && isDateExpired(source.nextRefreshAt)) {
-    throw new ApiError(
-      StatusCodes.CONFLICT,
-      'Knowledge source refresh date has expired; refresh before approval'
-    );
+  if (approvalBlocker) {
+    throw new ApiError(approvalBlocker.statusCode, approvalBlocker.message);
   }
 
   source.status = 'approved';

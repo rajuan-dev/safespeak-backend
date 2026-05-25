@@ -29,6 +29,7 @@ import { MediaAssetModel } from '@modules/media-assets/media-assets.model';
 import { MicroEducationModel } from '@modules/microeducation/microeducation.model';
 import { RagChunkModel, RagKnowledgeSourceModel } from '@modules/rag/rag.model';
 import { ResourceModel } from '@modules/resources/resources.model';
+import { getDestinationDeliveryReadiness } from '@modules/reports/reports-delivery.service';
 import { ReportModel, ReportSubmissionModel } from '@modules/reports/reports.model';
 import {
   HelpSupportRequestModel,
@@ -2544,6 +2545,7 @@ export const getPlatformHealthOverview = async (
     submittedSubmissions,
     failedSubmissions,
     manualActionSubmissions,
+    configMissingSubmissions,
     activeDestinations,
     activeSubmissionTemplates,
     openPrivacyRequests,
@@ -2587,6 +2589,10 @@ export const getPlatformHealthOverview = async (
       status: 'requires_manual_action',
       deletedAt: { $exists: false }
     }),
+    ReportSubmissionModel.countDocuments({
+      status: 'config_missing',
+      deletedAt: { $exists: false }
+    }),
     AdminDestinationModel.countDocuments({ isActive: true }),
     AdminSubmissionTemplateModel.countDocuments({ isActive: true }),
     PrivacyRequestModel.countDocuments({ status: { $in: ['pending', 'in_review'] } }),
@@ -2612,13 +2618,26 @@ export const getPlatformHealthOverview = async (
     AuditLogModel.countDocuments({ createdAt: { $gte: recentDay } })
   ]);
 
+  const activeDestinationRecords = await AdminDestinationModel.find({ isActive: true });
+  const destinationReadiness = activeDestinationRecords.map((destination) =>
+    getDestinationDeliveryReadiness(destination)
+  );
+  const autoReadyDestinations = destinationReadiness.filter(
+    (readiness) => readiness.status === 'ready' && readiness.actuallySends
+  ).length;
+  const manualOnlyDestinations = destinationReadiness.filter(
+    (readiness) => readiness.status === 'manual_action'
+  ).length;
+  const configMissingDestinations = destinationReadiness.filter(
+    (readiness) => readiness.status === 'config_missing'
+  ).length;
   const ragReady =
     approvedKnowledgeSources > 0 &&
     legalReviewedSources > 0 &&
     embeddedKnowledgeSources > 0 &&
     ragChunks > 0;
   const deliveryReady = activeDestinations > 0 && activeSubmissionTemplates > 0;
-  const apiDeliveryReady = deliveryApiTokenConfigured || deliveryEmailWebhookConfigured;
+  const apiDeliveryReady = autoReadyDestinations > 0;
   const evidenceKeyReadinessStatus: PlatformHealthStatus =
     dedicatedEvidenceKeyConfigured && dedicatedAuditSigningKeyConfigured
       ? 'ready'
@@ -2733,7 +2752,12 @@ export const getPlatformHealthOverview = async (
       id: 'delivery-routing',
       label: 'Report Delivery Routing',
       category: 'delivery',
-      status: deliveryReady ? (failedSubmissions > 0 ? 'needs_config' : 'ready') : 'needs_config',
+      status:
+        deliveryReady && configMissingDestinations === 0 && configMissingSubmissions === 0
+          ? failedSubmissions > 0
+            ? 'needs_config'
+            : 'ready'
+          : 'needs_config',
       owner: 'Integrations',
       metric: `${formatCount(activeDestinations)} destinations`,
       summary: deliveryReady
@@ -2741,10 +2765,14 @@ export const getPlatformHealthOverview = async (
         : 'Delivery requires active destinations and active submission templates.',
       details: [
         `${formatCount(activeDestinations)} active destinations and ${formatCount(activeSubmissionTemplates)} active submission templates.`,
-        `${formatCount(submittedSubmissions)} submitted or acknowledged deliveries; ${formatCount(manualActionSubmissions)} require manual action; ${formatCount(failedSubmissions)} failed.`,
+        `${formatCount(autoReadyDestinations)} automated destination${autoReadyDestinations === 1 ? '' : 's'} ready; ${formatCount(manualOnlyDestinations)} manual-only; ${formatCount(configMissingDestinations)} missing configuration.`,
+        `${formatCount(submittedSubmissions)} submitted or acknowledged deliveries; ${formatCount(manualActionSubmissions)} require manual action; ${formatCount(configMissingSubmissions)} blocked by missing config; ${formatCount(failedSubmissions)} failed.`,
         apiDeliveryReady
-          ? 'At least one API/email webhook delivery credential is configured.'
-          : 'API/email webhook credentials are not configured; manual export channels can still operate where configured.'
+          ? 'At least one API/email webhook destination has complete outbound credentials.'
+          : 'No automated API/email destination has complete outbound credentials; manual export channels can still operate where configured.',
+        deliveryApiTokenConfigured || deliveryEmailWebhookConfigured
+          ? 'Global delivery credential environment variables are present; destination-specific env keys may also be used.'
+          : 'Global delivery credential environment variables are not configured.'
       ]
     },
     {
@@ -2817,6 +2845,10 @@ export const getPlatformHealthOverview = async (
     submittedSubmissions,
     failedSubmissions,
     manualActionSubmissions,
+    configMissingSubmissions,
+    autoReadyDestinations,
+    manualOnlyDestinations,
+    configMissingDestinations,
     activeDestinations,
     activeSubmissionTemplates,
     openPrivacyRequests,
@@ -2871,8 +2903,8 @@ export const getPlatformHealthOverview = async (
       },
       {
         label: 'DELIVERY',
-        value: deliveryReady ? 'Configured' : 'Needs setup',
-        helper: `${formatCount(activeDestinations)} active destinations, ${formatCount(activeSubmissionTemplates)} templates, ${formatCount(failedSubmissions)} failed submissions.`
+        value: deliveryReady && configMissingDestinations === 0 ? 'Configured' : 'Needs setup',
+        helper: `${formatCount(activeDestinations)} active destinations, ${formatCount(autoReadyDestinations)} automated ready, ${formatCount(manualOnlyDestinations)} manual-only, ${formatCount(configMissingDestinations)} missing config, ${formatCount(configMissingSubmissions)} blocked submissions.`
       }
     ],
     checks,

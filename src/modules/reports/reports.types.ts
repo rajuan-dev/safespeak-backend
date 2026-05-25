@@ -49,6 +49,15 @@ export interface ReportDestinationPreview {
   supportsAcknowledgement: boolean;
   requiredConsentFlags: string[];
   matchedIncidentTypes: string[];
+  deliveryReadiness: {
+    status: 'ready' | 'manual_action' | 'config_missing';
+    mode: 'automated' | 'manual' | 'config_missing';
+    canAutoSend: boolean;
+    actuallySends: boolean;
+    credentialConfigured: boolean;
+    credentialReference?: string;
+    configurationIssues: string[];
+  };
   payloadPreview: {
     refNo: string;
     title: string;
