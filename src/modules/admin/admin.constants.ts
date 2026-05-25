@@ -25,6 +25,7 @@ export const ADMIN_ACTIONS = {
   educationalContentOverview: 'admin.educational_content.overview',
   dataProtectionOverview: 'admin.data_protection.overview',
   aiEngineOverview: 'admin.ai_engine.overview',
+  platformHealthOverview: 'admin.platform_health.overview',
   languagePacksOverview: 'admin.language_packs.overview',
   intelligenceCenterOverview: 'admin.intelligence_center.overview',
   culturalProfilesOverview: 'admin.cultural_profiles.overview',

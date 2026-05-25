@@ -41,6 +41,7 @@ import {
   getAdminDashboard,
   getIntelligenceCenterOverview,
   getLanguagePacksOverview,
+  getPlatformHealthOverview,
   getTaxonomy,
   listAuditLogs,
   listDestinations,
@@ -371,6 +372,16 @@ export const adminIntelligenceCenterOverviewController = asyncHandler(
       .json(
         successResponse('Admin intelligence center overview retrieved', { intelligenceCenter })
       );
+  }
+);
+
+export const adminPlatformHealthOverviewController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const platformHealth = await getPlatformHealthOverview(getContext(req));
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin platform health overview retrieved', { platformHealth }));
   }
 );
 

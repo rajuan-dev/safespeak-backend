@@ -672,6 +672,7 @@ Admin-only under `/admin`. RBAC and audit logging are enforced on every route.
 - `POST  {{base_url}}{{api_prefix}}/admin/destinations`
 - `PATCH {{base_url}}{{api_prefix}}/admin/destinations/{{destination_id}}`
 - `GET   {{base_url}}{{api_prefix}}/admin/knowledge-sources`
+- `GET   {{base_url}}{{api_prefix}}/admin/platform-health`
 - `GET   {{base_url}}{{api_prefix}}/admin/privacy-requests`
 - `PATCH {{base_url}}{{api_prefix}}/admin/privacy-requests/{{privacy_request_id}}`
 - `GET   {{base_url}}{{api_prefix}}/admin/analytics/overview`
@@ -690,7 +691,7 @@ Admin-only under `/admin`. RBAC and audit logging are enforced on every route.
 - ScamShield: 8 endpoints
 - Support: 9 endpoints
 - Analytics: 6 endpoints
-- Admin: 12 endpoints
+- Admin: 13 endpoints
 
 ## Audio Transcription Additions
 

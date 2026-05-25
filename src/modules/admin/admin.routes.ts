@@ -16,6 +16,7 @@ import {
   adminKnowledgeSourcesController,
   adminLanguagePacksOverviewController,
   adminNotificationsController,
+  adminPlatformHealthOverviewController,
   adminPrivacyRequestsController,
   adminReportDeliveriesController,
   adminSubmissionTemplatesController,
@@ -237,6 +238,11 @@ adminRoutes.get(
   '/insights/incident-insights/overview',
   requireAdminRole('super_admin', 'analytics_viewer'),
   adminIntelligenceCenterOverviewController
+);
+adminRoutes.get(
+  '/platform-health',
+  requireAdminRole('super_admin', 'analytics_viewer'),
+  adminPlatformHealthOverviewController
 );
 adminRoutes.get(
   '/privacy-requests',

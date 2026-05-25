@@ -1,5 +1,5 @@
 import { StatusCodes } from 'http-status-codes';
-import type { FilterQuery } from 'mongoose';
+import mongoose, { type FilterQuery } from 'mongoose';
 
 import { ApiError } from '@common/errors/ApiError';
 import { UserModel } from '@modules/auth/auth.model';
@@ -97,6 +97,34 @@ type AnalyticsCountRow = {
   count?: unknown;
 };
 
+type PlatformHealthStatus = 'ready' | 'needs_config' | 'blocked';
+
+type PlatformHealthCategory =
+  | 'core'
+  | 'security'
+  | 'ai'
+  | 'knowledge'
+  | 'storage'
+  | 'delivery'
+  | 'analytics';
+
+type PlatformHealthCheck = {
+  id: string;
+  label: string;
+  category: PlatformHealthCategory;
+  status: PlatformHealthStatus;
+  owner: string;
+  metric: string;
+  summary: string;
+  details: string[];
+};
+
+type PlatformHealthStat = {
+  label: string;
+  value: string;
+  helper: string;
+};
+
 const formatCount = (value: number): string => value.toLocaleString('en-AU');
 
 const getCountValue = (value: unknown): number => (typeof value === 'number' ? value : 0);
@@ -137,6 +165,64 @@ const getTopAnalyticsLabel = (rows: unknown[], fallback: string): string => {
   }
 
   return toSafeString(firstRow._id) ?? fallback;
+};
+
+const platformHealthStatusWeight: Record<PlatformHealthStatus, number> = {
+  ready: 0,
+  needs_config: 1,
+  blocked: 2
+};
+
+const getOverallPlatformHealthStatus = (checks: PlatformHealthCheck[]): PlatformHealthStatus => {
+  if (checks.some((check) => check.status === 'blocked')) {
+    return 'blocked';
+  }
+
+  if (checks.some((check) => check.status === 'needs_config')) {
+    return 'needs_config';
+  }
+
+  return 'ready';
+};
+
+const sortPlatformHealthChecks = (checks: PlatformHealthCheck[]): PlatformHealthCheck[] =>
+  [...checks].sort(
+    (first, second) =>
+      platformHealthStatusWeight[second.status] - platformHealthStatusWeight[first.status] ||
+      first.label.localeCompare(second.label)
+  );
+
+const formatUptime = (uptimeSeconds: number): string => {
+  const days = Math.floor(uptimeSeconds / 86400);
+  const hours = Math.floor((uptimeSeconds % 86400) / 3600);
+  const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+
+  return `${minutes}m`;
+};
+
+const getMongoConnectionLabel = (): string => {
+  const readyState = Number(mongoose.connection.readyState);
+
+  switch (readyState) {
+    case 0:
+      return 'disconnected';
+    case 1:
+      return 'connected';
+    case 2:
+      return 'connecting';
+    case 3:
+      return 'disconnecting';
+    default:
+      return 'unknown';
+  }
 };
 
 const SENSITIVE_METADATA_KEYS = new Set([
@@ -2406,6 +2492,407 @@ export const getAiEngineOverview = async (
     ],
     footerNote:
       'Live values are aggregated from AI interaction records, conversation-flow triage, approved RAG knowledge sources, RAG chunks, and model configuration. Raw prompts, outputs, and secrets are not returned.'
+  };
+};
+
+export const getPlatformHealthOverview = async (
+  context: AdminServiceContext
+): Promise<{
+  generatedAt: string;
+  overallStatus: PlatformHealthStatus;
+  service: {
+    name: string;
+    version: string;
+    environment: string;
+    apiPrefix: string;
+    uptimeSeconds: number;
+    uptimeLabel: string;
+  };
+  stats: PlatformHealthStat[];
+  checks: PlatformHealthCheck[];
+  blockers: PlatformHealthCheck[];
+  warnings: PlatformHealthCheck[];
+  counts: Record<string, number>;
+  configuration: Record<string, boolean | string>;
+  footerNote: string;
+}> => {
+  const generatedAt = new Date();
+  const recentWindow = new Date(generatedAt.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const recentDay = new Date(generatedAt.getTime() - 24 * 60 * 60 * 1000);
+  const uptimeSeconds = Math.floor(process.uptime());
+  const mongoConnectionState = getMongoConnectionLabel();
+  const mongoConnected = Number(mongoose.connection.readyState) === 1;
+  const openAiConfigured = Boolean(env.OPENAI_API_KEY);
+  const dedicatedEvidenceKeyConfigured = Boolean(env.EVIDENCE_ENCRYPTION_KEY);
+  const dedicatedAuditSigningKeyConfigured = Boolean(env.EVIDENCE_AUDIT_SIGNING_KEY);
+  const s3StorageConfigured = hasS3Storage();
+  const deliveryEmailWebhookConfigured = Boolean(env.DELIVERY_EMAIL_WEBHOOK_URL);
+  const deliveryApiTokenConfigured = Boolean(env.DELIVERY_API_BEARER_TOKEN);
+  const resetEmailWebhookConfigured = Boolean(env.AUTH_RESET_EMAIL_WEBHOOK_URL);
+
+  const [
+    totalUsers,
+    activeUsers,
+    activeAdminUsers,
+    totalReports,
+    recentReports,
+    totalEvidence,
+    readyEvidence,
+    s3Evidence,
+    syncFailedEvidence,
+    totalSubmissions,
+    submittedSubmissions,
+    failedSubmissions,
+    manualActionSubmissions,
+    activeDestinations,
+    activeSubmissionTemplates,
+    openPrivacyRequests,
+    approvedKnowledgeSources,
+    legalReviewedSources,
+    embeddedKnowledgeSources,
+    ragChunks,
+    recentAiInteractions,
+    pendingAiReviews,
+    recentConversationSessions,
+    totalAuditLogs,
+    recentAuditLogs
+  ] = await Promise.all([
+    UserModel.countDocuments({ deletedAt: { $exists: false } }),
+    UserModel.countDocuments({ status: 'active', deletedAt: { $exists: false } }),
+    UserModel.countDocuments({
+      role: { $in: ['super_admin', 'content_admin', 'integration_admin', 'analytics_viewer'] },
+      status: 'active',
+      deletedAt: { $exists: false }
+    }),
+    ReportModel.countDocuments({ deletedAt: { $exists: false } }),
+    ReportModel.countDocuments({ createdAt: { $gte: recentWindow }, deletedAt: { $exists: false } }),
+    EvidenceModel.countDocuments({ deletedAt: { $exists: false } }),
+    EvidenceModel.countDocuments({
+      status: { $in: ['local_only', 'synced'] },
+      deletedAt: { $exists: false }
+    }),
+    EvidenceModel.countDocuments({
+      storageProvider: 's3',
+      status: 'synced',
+      deletedAt: { $exists: false }
+    }),
+    EvidenceModel.countDocuments({ status: 'sync_failed', deletedAt: { $exists: false } }),
+    ReportSubmissionModel.countDocuments({ deletedAt: { $exists: false } }),
+    ReportSubmissionModel.countDocuments({
+      status: { $in: ['submitted', 'acknowledged'] },
+      deletedAt: { $exists: false }
+    }),
+    ReportSubmissionModel.countDocuments({ status: 'failed', deletedAt: { $exists: false } }),
+    ReportSubmissionModel.countDocuments({
+      status: 'requires_manual_action',
+      deletedAt: { $exists: false }
+    }),
+    AdminDestinationModel.countDocuments({ isActive: true }),
+    AdminSubmissionTemplateModel.countDocuments({ isActive: true }),
+    PrivacyRequestModel.countDocuments({ status: { $in: ['pending', 'in_review'] } }),
+    RagKnowledgeSourceModel.countDocuments({
+      status: 'approved',
+      deletedAt: { $exists: false }
+    }),
+    RagKnowledgeSourceModel.countDocuments({
+      status: 'approved',
+      legalReviewed: true,
+      deletedAt: { $exists: false }
+    }),
+    RagKnowledgeSourceModel.countDocuments({
+      status: 'approved',
+      ingestionStatus: 'embedded',
+      deletedAt: { $exists: false }
+    }),
+    RagChunkModel.countDocuments({}),
+    AiInteractionModel.countDocuments({ createdAt: { $gte: recentWindow } }),
+    AiInteractionModel.countDocuments({ reviewStatus: 'pending_human_review' }),
+    ConversationFlowSessionModel.countDocuments({ createdAt: { $gte: recentWindow } }),
+    AuditLogModel.countDocuments({}),
+    AuditLogModel.countDocuments({ createdAt: { $gte: recentDay } })
+  ]);
+
+  const ragReady =
+    approvedKnowledgeSources > 0 &&
+    legalReviewedSources > 0 &&
+    embeddedKnowledgeSources > 0 &&
+    ragChunks > 0;
+  const deliveryReady = activeDestinations > 0 && activeSubmissionTemplates > 0;
+  const apiDeliveryReady = deliveryApiTokenConfigured || deliveryEmailWebhookConfigured;
+  const evidenceKeyReadinessStatus: PlatformHealthStatus =
+    dedicatedEvidenceKeyConfigured && dedicatedAuditSigningKeyConfigured
+      ? 'ready'
+      : env.NODE_ENV === 'production'
+        ? 'needs_config'
+        : 'ready';
+  const openAiStatus: PlatformHealthStatus = openAiConfigured
+    ? 'ready'
+    : env.NODE_ENV === 'production'
+      ? 'blocked'
+      : 'needs_config';
+
+  const checks = sortPlatformHealthChecks([
+    {
+      id: 'runtime-api',
+      label: 'API Runtime',
+      category: 'core',
+      status: 'ready',
+      owner: 'Platform Engineering',
+      metric: `${formatUptime(uptimeSeconds)} uptime`,
+      summary: `${env.APP_NAME} ${env.APP_VERSION} is responding in ${env.NODE_ENV}.`,
+      details: [
+        `Versioned API prefix: ${env.API_PREFIX}.`,
+        `Admin app origin: ${env.ADMIN_URL}.`,
+        `Client app origin: ${env.CLIENT_URL}.`
+      ]
+    },
+    {
+      id: 'database',
+      label: 'Database Connection',
+      category: 'core',
+      status: mongoConnected ? 'ready' : 'blocked',
+      owner: 'Backend Platform',
+      metric: mongoConnectionState,
+      summary: mongoConnected
+        ? 'Mongoose reports an active MongoDB connection.'
+        : 'MongoDB is not connected; protected workflows cannot be trusted.',
+      details: [
+        `Mongoose ready state is ${mongoConnectionState}.`,
+        `${formatCount(totalReports)} report records and ${formatCount(totalUsers)} user records are visible to the readiness query.`
+      ]
+    },
+    {
+      id: 'admin-auth-rbac',
+      label: 'Admin Auth and RBAC',
+      category: 'security',
+      status: activeAdminUsers > 0 ? 'ready' : 'needs_config',
+      owner: 'Security Operations',
+      metric: `${formatCount(activeAdminUsers)} scoped admins`,
+      summary:
+        activeAdminUsers > 0
+          ? 'Scoped admin roles are present for protected operations.'
+          : 'No active scoped admin users were found.',
+      details: [
+        'JWT access and refresh secrets passed environment validation.',
+        `${formatCount(activeUsers)} active public/admin users are present.`,
+        'Route-level admin role checks remain enforced by middleware.'
+      ]
+    },
+    {
+      id: 'ai-provider',
+      label: 'AI Provider Configuration',
+      category: 'ai',
+      status: openAiStatus,
+      owner: 'AI Operations',
+      metric: openAiConfigured ? env.OPENAI_MODEL : 'OPENAI_API_KEY missing',
+      summary: openAiConfigured
+        ? 'OpenAI access is configured for live AI-assisted workflows.'
+        : 'Live AI generation is not fully configured.',
+      details: [
+        `Response model: ${env.OPENAI_MODEL}.`,
+        `Embedding model: ${env.OPENAI_EMBEDDING_MODEL}.`,
+        `${formatCount(recentAiInteractions)} AI interaction records were created in the last 7 days; ${formatCount(pendingAiReviews)} are pending human review.`
+      ]
+    },
+    {
+      id: 'rag-readiness',
+      label: 'RAG Knowledge Readiness',
+      category: 'knowledge',
+      status: ragReady ? 'ready' : 'needs_config',
+      owner: 'Content and Legal Review',
+      metric: `${formatCount(ragChunks)} embedded chunks`,
+      summary: ragReady
+        ? 'Approved, legally reviewed, embedded knowledge is available for retrieval.'
+        : 'RAG needs approved, legally reviewed, embedded sources before production reliance.',
+      details: [
+        `${formatCount(approvedKnowledgeSources)} approved source records.`,
+        `${formatCount(legalReviewedSources)} approved sources are legally reviewed.`,
+        `${formatCount(embeddedKnowledgeSources)} approved sources are marked embedded.`
+      ]
+    },
+    {
+      id: 'evidence-storage',
+      label: 'Evidence Storage and Integrity',
+      category: 'storage',
+      status: syncFailedEvidence > 0 ? 'needs_config' : evidenceKeyReadinessStatus,
+      owner: 'Security and Reliability',
+      metric: `${formatCount(readyEvidence)} ready evidence records`,
+      summary:
+        syncFailedEvidence > 0
+          ? 'Evidence sync failures need operational review.'
+          : 'Evidence storage is available with encrypted local storage and optional S3 sync.',
+      details: [
+        `${formatCount(totalEvidence)} evidence records exist; ${formatCount(readyEvidence)} are local-only or synced.`,
+        `${formatCount(s3Evidence)} evidence records are synced to S3; S3 storage is ${s3StorageConfigured ? 'configured' : 'not configured'}.`,
+        dedicatedEvidenceKeyConfigured && dedicatedAuditSigningKeyConfigured
+          ? 'Dedicated evidence encryption and audit signing keys are configured.'
+          : 'Evidence crypto falls back to JWT key material; configure dedicated keys before production sign-off.'
+      ]
+    },
+    {
+      id: 'delivery-routing',
+      label: 'Report Delivery Routing',
+      category: 'delivery',
+      status: deliveryReady ? (failedSubmissions > 0 ? 'needs_config' : 'ready') : 'needs_config',
+      owner: 'Integrations',
+      metric: `${formatCount(activeDestinations)} destinations`,
+      summary: deliveryReady
+        ? 'Active destinations and submission templates are available for report routing.'
+        : 'Delivery requires active destinations and active submission templates.',
+      details: [
+        `${formatCount(activeDestinations)} active destinations and ${formatCount(activeSubmissionTemplates)} active submission templates.`,
+        `${formatCount(submittedSubmissions)} submitted or acknowledged deliveries; ${formatCount(manualActionSubmissions)} require manual action; ${formatCount(failedSubmissions)} failed.`,
+        apiDeliveryReady
+          ? 'At least one API/email webhook delivery credential is configured.'
+          : 'API/email webhook credentials are not configured; manual export channels can still operate where configured.'
+      ]
+    },
+    {
+      id: 'analytics-privacy',
+      label: 'Analytics and Privacy Queues',
+      category: 'analytics',
+      status: openPrivacyRequests > 0 ? 'needs_config' : 'ready',
+      owner: 'Privacy and Analytics',
+      metric: `${formatCount(openPrivacyRequests)} open privacy requests`,
+      summary:
+        openPrivacyRequests > 0
+          ? 'Privacy queue items are open and should be reviewed before data sharing.'
+          : 'No open privacy request backlog is currently visible.',
+      details: [
+        `${formatCount(recentReports)} reports were created in the last 7 days.`,
+        `${formatCount(recentConversationSessions)} conversation-flow sessions were created in the last 7 days.`,
+        'Analytics endpoints aggregate consented data and suppress low-volume cells.'
+      ]
+    },
+    {
+      id: 'audit-coverage',
+      label: 'Audit Coverage',
+      category: 'security',
+      status: totalAuditLogs > 0 ? 'ready' : 'needs_config',
+      owner: 'Compliance',
+      metric: `${formatCount(totalAuditLogs)} audit events`,
+      summary:
+        totalAuditLogs > 0
+          ? 'Admin and sensitive actions are producing audit records.'
+          : 'No audit records are visible yet; exercise admin workflows before release.',
+      details: [
+        `${formatCount(recentAuditLogs)} audit events were recorded in the last 24 hours.`,
+        'Audit metadata returned to admin screens is masked before display.',
+        'Sensitive payloads, IP hashes, and user-agent hashes are not exposed in this readiness response.'
+      ]
+    },
+    {
+      id: 'password-recovery',
+      label: 'Password Recovery Delivery',
+      category: 'security',
+      status: resetEmailWebhookConfigured || env.NODE_ENV !== 'production' ? 'ready' : 'needs_config',
+      owner: 'Identity Operations',
+      metric: resetEmailWebhookConfigured ? 'Email webhook' : 'Local outbox',
+      summary: resetEmailWebhookConfigured
+        ? 'Password recovery codes can be delivered through the configured email webhook.'
+        : 'Password recovery uses the local outbox fallback until an email webhook is configured.',
+      details: [
+        'Forgot/reset password uses email verification codes instead of reset links.',
+        `Recovery outbox path: ${env.AUTH_RESET_OUTBOX_PATH}.`,
+        env.NODE_ENV === 'production'
+          ? 'Production should configure AUTH_RESET_EMAIL_WEBHOOK_URL and AUTH_RESET_EMAIL_WEBHOOK_TOKEN.'
+          : 'Non-production can use the local outbox for verification-code testing.'
+      ]
+    }
+  ]);
+  const overallStatus = getOverallPlatformHealthStatus(checks);
+  const blockers = checks.filter((check) => check.status === 'blocked');
+  const warnings = checks.filter((check) => check.status === 'needs_config');
+  const counts = {
+    totalUsers,
+    activeUsers,
+    activeAdminUsers,
+    totalReports,
+    recentReports,
+    totalEvidence,
+    readyEvidence,
+    s3Evidence,
+    syncFailedEvidence,
+    totalSubmissions,
+    submittedSubmissions,
+    failedSubmissions,
+    manualActionSubmissions,
+    activeDestinations,
+    activeSubmissionTemplates,
+    openPrivacyRequests,
+    approvedKnowledgeSources,
+    legalReviewedSources,
+    embeddedKnowledgeSources,
+    ragChunks,
+    recentAiInteractions,
+    pendingAiReviews,
+    recentConversationSessions,
+    totalAuditLogs,
+    recentAuditLogs
+  };
+
+  await audit(context, ADMIN_ACTIONS.platformHealthOverview, undefined, {
+    overallStatus,
+    blockers: blockers.length,
+    warnings: warnings.length
+  });
+
+  return {
+    generatedAt: generatedAt.toISOString(),
+    overallStatus,
+    service: {
+      name: env.APP_NAME,
+      version: env.APP_VERSION,
+      environment: env.NODE_ENV,
+      apiPrefix: env.API_PREFIX,
+      uptimeSeconds,
+      uptimeLabel: formatUptime(uptimeSeconds)
+    },
+    stats: [
+      {
+        label: 'OVERALL READINESS',
+        value:
+          overallStatus === 'ready'
+            ? 'Ready'
+            : overallStatus === 'blocked'
+              ? 'Blocked'
+              : 'Needs config',
+        helper: `${blockers.length} blocker${blockers.length === 1 ? '' : 's'} and ${warnings.length} warning${warnings.length === 1 ? '' : 's'} detected.`
+      },
+      {
+        label: 'DATABASE',
+        value: mongoConnectionState,
+        helper: `${formatCount(totalReports)} reports, ${formatCount(totalUsers)} users, and ${formatCount(totalAuditLogs)} audit records visible.`
+      },
+      {
+        label: 'AI/RAG',
+        value: openAiConfigured && ragReady ? 'Ready' : 'Review',
+        helper: `${formatCount(recentAiInteractions)} recent AI interactions and ${formatCount(ragChunks)} RAG chunks.`
+      },
+      {
+        label: 'DELIVERY',
+        value: deliveryReady ? 'Configured' : 'Needs setup',
+        helper: `${formatCount(activeDestinations)} active destinations, ${formatCount(activeSubmissionTemplates)} templates, ${formatCount(failedSubmissions)} failed submissions.`
+      }
+    ],
+    checks,
+    blockers,
+    warnings,
+    counts,
+    configuration: {
+      mongoConnectionState,
+      openAiConfigured,
+      s3StorageConfigured,
+      dedicatedEvidenceKeyConfigured,
+      dedicatedAuditSigningKeyConfigured,
+      deliveryEmailWebhookConfigured,
+      deliveryApiTokenConfigured,
+      resetEmailWebhookConfigured,
+      passwordRecoveryMode: resetEmailWebhookConfigured ? 'email_webhook' : 'local_outbox',
+      nodeEnvironment: env.NODE_ENV
+    },
+    footerNote:
+      'Live values are aggregated from configuration flags, database connection state, admin auth records, AI/RAG telemetry, evidence metadata, delivery status, privacy queues, and audit counts. Secrets, raw report payloads, raw evidence, prompts, and personal data are not returned.'
   };
 };
 
