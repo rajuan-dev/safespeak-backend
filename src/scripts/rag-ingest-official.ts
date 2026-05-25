@@ -1,12 +1,17 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { HydratedDocument } from 'mongoose';
 
 import { logger } from '@common/utils/logger';
 import { connectDatabase, disconnectDatabase } from '@config/database';
 import { createEmbedding } from '@modules/ai/ai.service';
 import { RAG_OFFICIAL_SOURCE_HOSTS } from '@modules/rag/rag.constants';
-import { RagChunkModel, RagKnowledgeSourceModel } from '@modules/rag/rag.model';
+import {
+  RagChunkModel,
+  RagKnowledgeSourceModel,
+  type RagKnowledgeSourceDocument
+} from '@modules/rag/rag.model';
 
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_FETCH_BYTES = 750000;
@@ -86,6 +91,75 @@ const chunkText = (text: string): string[] => {
 };
 
 const sha256 = (input: string): string => createHash('sha256').update(input).digest('hex');
+
+const embedSourceText = async (
+  doc: HydratedDocument<RagKnowledgeSourceDocument>,
+  text: string,
+  options: {
+    contentType?: string;
+    existingHash?: string;
+  } = {}
+): Promise<number> => {
+  const hash = sha256(text);
+  const chunks = chunkText(text);
+  const previousHash = options.existingHash;
+
+  doc.rawText = text;
+  doc.sha256Hash = hash;
+  doc.version = previousHash ? (previousHash === hash ? doc.version : (doc.version ?? 1) + 1) : 1;
+  doc.ingestedAt = new Date();
+  doc.ingestionStatus = 'fetched';
+  doc.ingestionError = undefined;
+  doc.metadata = {
+    ...doc.metadata,
+    ingestionMode: 'fetched_and_embedded',
+    fetchImplemented: true,
+    contentType: options.contentType
+  };
+  await doc.save();
+
+  await RagChunkModel.deleteMany({ sourceId: doc._id });
+  doc.ingestionStatus = 'chunked';
+  await doc.save();
+
+  const embeddedChunks = await Promise.all(
+    chunks.map(async (chunk, index) => ({
+      sourceId: doc._id,
+      sourceCategory: doc.sourceCategory,
+      jurisdiction: doc.jurisdiction,
+      topic: doc.topic,
+      chunkIndex: index,
+      chunkText: chunk,
+      embedding: await createEmbedding(chunk),
+      tokenCount: Math.ceil(chunk.length / 4),
+      citationLabel: `${doc.title} [chunk ${index + 1}]`,
+      citationUrl: doc.url,
+      metadata: {
+        sourceTitle: doc.title,
+        sourceType: doc.sourceType,
+        sourceCategory: doc.sourceCategory,
+        language: doc.language,
+        jurisdiction: doc.jurisdiction
+      }
+    }))
+  );
+
+  if (embeddedChunks.length > 0) {
+    await RagChunkModel.insertMany(embeddedChunks);
+  }
+
+  doc.ingestionStatus = 'embedded';
+  doc.metadata = {
+    ...doc.metadata,
+    ingestionMode: 'fetched_and_embedded',
+    fetchImplemented: true,
+    chunkCount: embeddedChunks.length,
+    contentType: options.contentType
+  };
+  await doc.save();
+
+  return embeddedChunks.length;
+};
 
 const isAllowedUrl = (raw: string): boolean => {
   const host = new URL(raw).hostname.toLowerCase();
@@ -195,8 +269,8 @@ const run = async (): Promise<void> => {
       }
 
       const existing = await RagKnowledgeSourceModel.findOne({
-        url: source.url,
-        sourceCategory: source.sourceCategory
+        sourceCategory: source.sourceCategory,
+        $or: [{ url: source.url }, { title: source.title }]
       });
       const lastUpdated = source.lastUpdated ? new Date(source.lastUpdated) : new Date();
       const nextRefreshAt = source.nextRefreshAt
@@ -259,8 +333,9 @@ const run = async (): Promise<void> => {
 
         const hash = sha256(fetched.text);
         const chunks = chunkText(fetched.text);
+        const existingChunkCount = await RagChunkModel.countDocuments({ sourceId: doc._id });
 
-        if (existing?.sha256Hash === hash) {
+        if (existing?.sha256Hash === hash && existingChunkCount > 0) {
           doc.ingestionStatus = 'embedded';
           doc.ingestionError = undefined;
           doc.metadata = {
@@ -275,73 +350,78 @@ const run = async (): Promise<void> => {
           continue;
         }
 
-        doc.rawText = fetched.text;
-        doc.sha256Hash = hash;
-        doc.version = existing ? (doc.version ?? 1) + 1 : 1;
-        doc.ingestedAt = new Date();
-        doc.ingestionStatus = 'fetched';
-        doc.metadata = {
-          ...doc.metadata,
-          ingestionMode: 'fetched_and_embedded',
-          fetchImplemented: true,
-          contentType: fetched.contentType
-        };
-        await doc.save();
-
-        await RagChunkModel.deleteMany({ sourceId: doc._id });
-        doc.ingestionStatus = 'chunked';
-        await doc.save();
-
-        const embeddedChunks = await Promise.all(
-          chunks.map(async (chunk, index) => ({
-            sourceId: doc._id,
-            sourceCategory: doc.sourceCategory,
-            jurisdiction: doc.jurisdiction,
-            topic: doc.topic,
-            chunkIndex: index,
-            chunkText: chunk,
-            embedding: await createEmbedding(chunk),
-            tokenCount: Math.ceil(chunk.length / 4),
-            citationLabel: `${doc.title} [chunk ${index + 1}]`,
-            citationUrl: doc.url,
-            metadata: {
-              sourceTitle: doc.title,
-              sourceType: doc.sourceType,
-              sourceCategory: doc.sourceCategory,
-              language: doc.language,
-              jurisdiction: doc.jurisdiction
-            }
-          }))
-        );
-
-        if (embeddedChunks.length > 0) {
-          await RagChunkModel.insertMany(embeddedChunks);
-        }
-
-        doc.ingestionStatus = 'embedded';
-        doc.metadata = {
-          ...doc.metadata,
-          ingestionMode: 'fetched_and_embedded',
-          fetchImplemented: true,
-          chunkCount: embeddedChunks.length,
-          contentType: fetched.contentType
-        };
-        await doc.save();
+        const embeddedChunkCount = await embedSourceText(doc, fetched.text, {
+          contentType: fetched.contentType,
+          existingHash: existing?.sha256Hash
+        });
         logger.info(
-          { title: source.title, chunks: embeddedChunks.length },
+          { title: source.title, chunks: embeddedChunkCount },
           'Official source ingested and embedded'
         );
       } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const cachedText =
+          typeof doc.rawText === 'string' && doc.rawText.trim().length >= 200
+            ? doc.rawText
+            : undefined;
+        const existingChunkCount = await RagChunkModel.countDocuments({ sourceId: doc._id });
+
+        if (cachedText && existingChunkCount === 0) {
+          const cachedContentType =
+            typeof doc.metadata.contentType === 'string' ? doc.metadata.contentType : undefined;
+          const embeddedChunkCount = await embedSourceText(doc, cachedText, {
+            contentType: cachedContentType,
+            existingHash: doc.sha256Hash
+          });
+
+          doc.metadata = {
+            ...doc.metadata,
+            refreshFallback: 'cached_raw_text',
+            lastRefreshError: errorMessage,
+            lastRefreshFailedAt: new Date().toISOString()
+          };
+          await doc.save();
+          logger.warn(
+            { title: source.title, chunks: embeddedChunkCount, errorMessage },
+            'Official source refresh failed; restored cached embedded source'
+          );
+          continue;
+        }
+
+        if (existingChunkCount > 0 || cachedText) {
+          doc.ingestionStatus = 'embedded';
+          doc.ingestionError = undefined;
+          doc.metadata = {
+            ...doc.metadata,
+            refreshFallback: 'existing_embedded_content',
+            lastRefreshError: errorMessage,
+            lastRefreshFailedAt: new Date().toISOString()
+          };
+          await doc.save();
+          logger.warn(
+            { title: source.title, chunks: existingChunkCount, errorMessage },
+            'Official source refresh failed; preserved existing embedded source'
+          );
+          continue;
+        }
+
         await RagChunkModel.deleteMany({ sourceId: doc._id });
         doc.ingestionStatus = 'failed';
-        doc.ingestionError = error instanceof Error ? error.message : String(error);
+        doc.ingestionError = errorMessage;
         doc.metadata = {
           ...doc.metadata,
           ingestionMode: 'failed_fetch',
           fetchImplemented: true
         };
         await doc.save();
-        logger.error({ title: source.title, error }, 'Official source ingestion failed');
+        logger.error(
+          {
+            title: source.title,
+            error,
+            errorMessage: error instanceof Error ? error.message : String(error)
+          },
+          'Official source ingestion failed'
+        );
       }
     }
   } finally {

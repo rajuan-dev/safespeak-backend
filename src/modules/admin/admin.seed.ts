@@ -3,7 +3,7 @@ import { logger } from '@common/utils/logger';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { UserModel } from '@modules/auth/auth.model';
 import { hashPassword, verifyPassword } from '@modules/auth/auth.utils';
-import { AdminDestinationModel } from './admin.model';
+import { AdminDestinationModel, AdminSubmissionTemplateModel } from './admin.model';
 
 const defaultReportDestinations = [
   {
@@ -197,6 +197,41 @@ const defaultReportDestinations = [
   }
 ] as const;
 
+const defaultSubmissionTemplates = defaultReportDestinations.map((destination) => ({
+  key: `${destination.key}-handoff-template`,
+  name: `${destination.name} handoff template`,
+  destinationType: destination.type,
+  channel: destination.channel,
+  jurisdiction: destination.jurisdiction,
+  titleTemplate: `SafeSpeak ${destination.name} report {{refNo}}`,
+  summaryTemplate: '{{summary}}',
+  fieldMappings: [
+    { source: 'refNo', target: 'referenceNumber', required: true },
+    { source: 'summary', target: 'incidentSummary', required: true },
+    { source: 'incidentType', target: 'incidentType', required: false },
+    { source: 'severity', target: 'severity', required: false },
+    { source: 'jurisdiction', target: 'jurisdiction', required: true },
+    { source: 'language', target: 'language', required: true },
+    { source: 'destination.name', target: 'destinationName', required: true },
+    { source: 'anonymityMode', target: 'anonymityMode', required: true },
+    { source: 'notes', target: 'userNotes', required: false }
+  ],
+  staticPayload: {
+    schemaVersion: '2026-05-report-handoff-v1',
+    source: 'safespeak',
+    destinationKey: destination.key,
+    informationOnly: true
+  },
+  acknowledgementMode: 'manual',
+  attachmentMode: 'metadata_only',
+  isActive: true,
+  metadata: {
+    seeded: true,
+    destinationKey: destination.key,
+    requiredConsentFlags: destination.metadata.requiredConsentFlags
+  }
+}));
+
 export const seedDefaultSuperAdmin = async (): Promise<void> => {
   if (!env.ENABLE_ADMIN_SEED) {
     logger.info('Default super admin seed skipped');
@@ -279,5 +314,31 @@ export const seedDefaultReportDestinations = async (): Promise<void> => {
       totalDefaults: defaultReportDestinations.length
     },
     'Default report destinations ready'
+  );
+};
+
+export const seedDefaultSubmissionTemplates = async (): Promise<void> => {
+  const results = await Promise.all(
+    defaultSubmissionTemplates.map((template) =>
+      AdminSubmissionTemplateModel.updateOne(
+        { key: template.key },
+        {
+          $setOnInsert: template
+        },
+        { upsert: true }
+      )
+    )
+  );
+  const insertedCount = results.reduce(
+    (count, result) => count + (result.upsertedCount ?? 0),
+    0
+  );
+
+  logger.info(
+    {
+      insertedCount,
+      totalDefaults: defaultSubmissionTemplates.length
+    },
+    'Default submission templates ready'
   );
 };

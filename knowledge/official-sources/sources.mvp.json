@@ -106,7 +106,7 @@
   },
   {
     "title": "Australian Cyber Security Centre - Report and Recover",
-    "url": "https://www.cyber.gov.au/report-and-recover",
+    "url": "https://www.cyber.gov.au/report-and-recover/recover-from/scams",
     "publisher": "Australian Cyber Security Centre",
     "sourceCategory": "official_support_source",
     "jurisdiction": "AU",
@@ -114,7 +114,7 @@
     "sourceType": "SupportResource",
     "licenseStatus": "Government copyright",
     "lastUpdated": "2026-05-22",
-    "lastVerifiedAt": "2026-05-22",
+    "lastVerifiedAt": "2026-05-25",
     "nextRefreshAt": "2026-08-20",
     "legalReviewed": false,
     "reviewNotes": "MVP ACSC support seed. Keep pending until reviewed against ScamShield referral copy."

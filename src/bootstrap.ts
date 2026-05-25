@@ -4,6 +4,7 @@ import { logger } from './common/utils/logger';
 import { connectDatabase } from './config/database';
 import {
   seedDefaultReportDestinations,
+  seedDefaultSubmissionTemplates,
   seedDefaultSuperAdmin
 } from './modules/admin/admin.seed';
 import { seedDefaultTaxonomies } from './modules/taxonomies/taxonomies.seed';
@@ -17,6 +18,7 @@ const initializeApp = async (): Promise<void> => {
 
   await seedDefaultSuperAdmin();
   await seedDefaultReportDestinations();
+  await seedDefaultSubmissionTemplates();
   await seedDefaultTaxonomies();
 };
 
