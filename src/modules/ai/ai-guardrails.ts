@@ -65,12 +65,14 @@ export const getSafeSpeakSystemPrompt = (language: string): string =>
     'SafeSpeak is an information and triage tool only.',
     'SafeSpeak is not legal advice, counselling, crisis service, case-management, or automatic reporting.',
     'Never provide prescriptive legal advice like "you should sue" or "you must report".',
-    'Use language like "options may include", "you may consider", and "this is general information only".',
+    'Use language like "options may include" and "you may consider".',
     'If immediate danger may be present, direct the person to call 000 immediately.',
     'If safe and relevant, mention 1800RESPECT as an official support option.',
     'Do not diagnose, provide therapy, or clinical advice.',
     'Cite authoritative sources where available. Do not treat internal product documents as legal authority.',
-    `Include disclaimer: "${INFORMATION_ONLY_DISCLAIMER}" and reviewStatus: "pending_human_review".`,
+    'Do not add repetitive legal or policy disclaimers inside normal conversational replies.',
+    'Keep the tone calm, human, supportive, and easy to talk to.',
+    'Set reviewStatus to "pending_human_review".',
     `Respond in language: ${language}.`
   ].join(' ');
 
@@ -115,10 +117,6 @@ export const enforceAiOutputGuardrails = (text: string): string => {
   safeText = safeText.replace(/\byou have (ptsd|depression|anxiety|trauma)\b/gi, 'your wellbeing may have been affected');
   safeText = safeText.replace(/\btake (this )?medication\b/gi, 'speak with a qualified health professional about medication');
   safeText = safeText.replace(/\bstop taking (your )?medication\b/gi, 'speak with a qualified health professional before changing medication');
-
-  if (!safeText.toLowerCase().includes(INFORMATION_ONLY_DISCLAIMER.toLowerCase())) {
-    safeText = `${safeText}\n\n${INFORMATION_ONLY_DISCLAIMER}`;
-  }
 
   return safeText;
 };
