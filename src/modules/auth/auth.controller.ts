@@ -22,7 +22,11 @@ import {
   verifyPasswordResetOtp
 } from './auth.service';
 import type { AuthData } from './auth.types';
-import { isGoogleOAuthConfigured, type GooglePassportUser } from './auth.passport';
+import {
+  getGoogleOAuthMissingConfig,
+  isGoogleOAuthConfigured,
+  type GooglePassportUser
+} from './auth.passport';
 import type {
   ChangePasswordInput,
   ForgotPasswordInput,
@@ -56,6 +60,16 @@ const redirectToClientAuthCallback = (res: Response, authData: AuthData): void =
   }).toString();
 
   res.redirect(url.toString());
+};
+
+const createGoogleOAuthConfigError = (): ApiError => {
+  const missingConfig = getGoogleOAuthMissingConfig();
+  const message =
+    missingConfig.length > 0
+      ? `Google OAuth is not configured. Missing: ${missingConfig.join(', ')}`
+      : 'Google OAuth is not configured';
+
+  return new ApiError(StatusCodes.SERVICE_UNAVAILABLE, message);
 };
 
 export const registerController = asyncHandler(async (req: Request, res: Response) => {
@@ -183,7 +197,7 @@ export const deactivateController = asyncHandler(async (req: Request, res: Respo
 
 export const googleLoginController: RequestHandler = (req, res, next) => {
   if (!isGoogleOAuthConfigured()) {
-    next(new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'Google OAuth is not configured'));
+    next(createGoogleOAuthConfigError());
     return;
   }
 
@@ -202,7 +216,7 @@ export const googleCallbackController = (
   next: NextFunction
 ): void => {
   if (!isGoogleOAuthConfigured()) {
-    next(new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'Google OAuth is not configured'));
+    next(createGoogleOAuthConfigError());
     return;
   }
 

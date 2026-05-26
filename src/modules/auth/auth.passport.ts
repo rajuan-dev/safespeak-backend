@@ -16,8 +16,27 @@ export type GooglePassportUser = Express.User & {
 
 let isConfigured = false;
 
+const googleCallbackPath = '/api/auth/google/callback';
+
+export const getGoogleOAuthMissingConfig = (): string[] => {
+  const missingConfig: string[] = [];
+
+  if (!env.GOOGLE_CLIENT_ID) {
+    missingConfig.push('GOOGLE_CLIENT_ID');
+  }
+
+  if (!env.GOOGLE_CLIENT_SECRET) {
+    missingConfig.push('GOOGLE_CLIENT_SECRET');
+  }
+
+  return missingConfig;
+};
+
+export const getGoogleCallbackUrl = (): string =>
+  env.GOOGLE_CALLBACK_URL ?? googleCallbackPath;
+
 export const isGoogleOAuthConfigured = (): boolean =>
-  Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GOOGLE_CALLBACK_URL);
+  getGoogleOAuthMissingConfig().length === 0;
 
 const getPrimaryEmail = (profile: Profile): string | undefined => {
   const verifiedEmail = profile.emails?.find((email) => email.verified)?.value;
@@ -35,7 +54,8 @@ export const configurePassport = (): void => {
       {
         clientID: env.GOOGLE_CLIENT_ID ?? '',
         clientSecret: env.GOOGLE_CLIENT_SECRET ?? '',
-        callbackURL: env.GOOGLE_CALLBACK_URL,
+        callbackURL: getGoogleCallbackUrl(),
+        proxy: true,
         passReqToCallback: true
       },
       (

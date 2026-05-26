@@ -73,8 +73,11 @@ Required variables:
 Optional but deployment-critical notes:
 
 - `ENABLE_ADMIN_SEED` defaults to `false`. Turn it on only when you also provide `DEFAULT_SUPER_ADMIN_EMAIL` and `DEFAULT_SUPER_ADMIN_PASSWORD`.
+- Google sign-in requires `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the backend. `GOOGLE_CALLBACK_URL` is optional; when omitted, the backend derives `/api/auth/google/callback` from the current request host so localhost, Render, and Vercel-style hosts can share the same code.
+- For Render, set `CLIENT_URL=https://safespeak-frontend.vercel.app` and `GOOGLE_CALLBACK_URL=https://safespeak-backend-ules.onrender.com/api/auth/google/callback` if you want an explicit callback override.
+- In Google Cloud OAuth Client settings, add `http://localhost:5000/api/auth/google/callback` and `https://safespeak-backend-ules.onrender.com/api/auth/google/callback` under Authorized redirect URIs. Add the Vercel frontend origin, for example `https://safespeak-frontend.vercel.app`, under Authorized JavaScript origins.
 - For Vercel, set the project Root Directory to `safespeak-backend`.
-- For Vercel, configure at least `MONGODB_URI`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `CLIENT_URL`, and `ADMIN_URL` in the project environment variables before deploying.
+- For Vercel, configure at least `MONGODB_URI`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `CLIENT_URL`, `ADMIN_URL`, `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET` in the project environment variables before deploying.
 - For Vercel, the deployment entrypoint is `api/index.js`, which bootstraps the database and then forwards requests to the Express app built into `dist/**`.
 
 ## Scripts
