@@ -7,8 +7,58 @@ import {
   RAG_SOURCE_TYPES,
   RAG_TOPICS
 } from './rag.constants';
+import {
+  normalizeSourceCategoryValue,
+  normalizeTopicValue
+} from './rag.normalization';
 
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
+const sourceCategoryAliases = [
+  'legislation',
+  'legal',
+  'regulation',
+  'regulations',
+  'support',
+  'resources',
+  'scam_pattern',
+  'scam_patterns',
+  'internal'
+] as const;
+const topicAliases = [
+  'domestic_violence',
+  'dv',
+  'racial_abuse',
+  'racial',
+  'cyber_scam',
+  'scam',
+  'scamshield',
+  'migrant_challenges',
+  'migrant',
+  'support',
+  'resources',
+  'local_intelligence',
+  'smart_dialler'
+] as const;
+const acceptedSourceCategoryValues = Array.from(
+  new Set([...RAG_SOURCE_CATEGORIES, ...sourceCategoryAliases])
+);
+const acceptedTopicValues = Array.from(new Set([...RAG_TOPICS, ...topicAliases]));
+const ragSourceCategorySchema = z.preprocess(
+  normalizeSourceCategoryValue,
+  z.enum(RAG_SOURCE_CATEGORIES, {
+    errorMap: () => ({
+      message: `Invalid sourceCategory. Accepted values: ${acceptedSourceCategoryValues.join(', ')}`
+    })
+  })
+);
+const ragTopicSchema = z.preprocess(
+  normalizeTopicValue,
+  z.enum(RAG_TOPICS, {
+    errorMap: () => ({
+      message: `Invalid topic. Accepted values: ${acceptedTopicValues.join(', ')}`
+    })
+  })
+);
 const incidentCategorySchema = z.enum([
   'domestic_violence',
   'racial_abuse',
@@ -17,14 +67,18 @@ const incidentCategorySchema = z.enum([
 ]);
 
 export const ragParamsSchema = z.object({ id: objectIdSchema });
+export const knowledgeSourceChunkQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(25)
+});
 
 export const ragSearchSchema = z.object({
   query: z.string().trim().min(1).max(2000),
   topK: z.number().int().min(1).max(20).default(5),
   language: z.string().trim().min(2).max(12).optional(),
   jurisdiction: z.enum(RAG_JURISDICTIONS).optional(),
-  sourceCategory: z.enum(RAG_SOURCE_CATEGORIES).optional(),
-  topic: z.enum(RAG_TOPICS).optional(),
+  sourceCategory: ragSourceCategorySchema.optional(),
+  topic: ragTopicSchema.optional(),
   filters: z.record(z.unknown()).optional()
 });
 
@@ -50,9 +104,9 @@ export const ragTimelineAssistantSchema = z.object({
 export const createKnowledgeSourceSchema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().trim().max(1000).optional(),
-  sourceCategory: z.enum(RAG_SOURCE_CATEGORIES),
+  sourceCategory: ragSourceCategorySchema,
   jurisdiction: z.enum(RAG_JURISDICTIONS),
-  topic: z.enum(RAG_TOPICS),
+  topic: ragTopicSchema,
   sourceType: z.enum(RAG_SOURCE_TYPES),
   language: z.string().trim().min(2).max(12).default('en'),
   url: z.string().url().optional(),
@@ -81,9 +135,6 @@ export const ingestKnowledgeSourceSchema = z
       .regex(/^[0-9a-fA-F]{64}$/)
       .optional(),
     metadata: z.record(z.unknown()).default({})
-  })
-  .refine((value) => Boolean(value.content || value.localFilePath), {
-    message: 'content or localFilePath is required'
   });
 
 export const refreshKnowledgeSourceSchema = z.object({
@@ -109,3 +160,4 @@ export type UpdateKnowledgeSourceInput = z.infer<typeof updateKnowledgeSourceSch
 export type IngestKnowledgeSourceInput = z.infer<typeof ingestKnowledgeSourceSchema>;
 export type RefreshKnowledgeSourceInput = z.infer<typeof refreshKnowledgeSourceSchema>;
 export type RejectKnowledgeSourceInput = z.infer<typeof rejectKnowledgeSourceSchema>;
+export type KnowledgeSourceChunkQueryInput = z.infer<typeof knowledgeSourceChunkQuerySchema>;

@@ -50,10 +50,22 @@ const bootstrap = async (): Promise<void> => {
       {
         port: env.PORT,
         environment: env.NODE_ENV,
-        apiPrefix: env.API_PREFIX
+        apiPrefix: env.API_PREFIX,
+        pineconeIndexName: env.PINECONE_INDEX_NAME,
+        pineconeNamespace: env.PINECONE_NAMESPACE
       },
       'SafeSpeak backend started'
     );
+
+    if (!env.PINECONE_API_KEY) {
+      logger.warn(
+        {
+          indexName: env.PINECONE_INDEX_NAME,
+          namespace: env.PINECONE_NAMESPACE
+        },
+        'Pinecone is disabled because PINECONE_API_KEY is missing; Mongo RAG fallback remains available'
+      );
+    }
   });
 };
 

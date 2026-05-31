@@ -180,6 +180,16 @@ const normalizeJsonCandidate = (text: string): string => {
 };
 
 export const createEmbedding = async (input: string): Promise<number[]> => {
+  const embeddings = await createEmbeddings([input]);
+
+  return embeddings[0];
+};
+
+export const createEmbeddings = async (inputs: string[]): Promise<number[][]> => {
+  if (inputs.length === 0) {
+    return [];
+  }
+
   if (!env.OPENAI_API_KEY) {
     throw new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'OPENAI_API_KEY is not configured');
   }
@@ -192,7 +202,7 @@ export const createEmbedding = async (input: string): Promise<number[]> => {
     },
     body: JSON.stringify({
       model: env.OPENAI_EMBEDDING_MODEL,
-      input
+      input: inputs
     })
   });
 
@@ -201,13 +211,13 @@ export const createEmbedding = async (input: string): Promise<number[]> => {
   }
 
   const payload = (await response.json()) as { data?: Array<{ embedding?: number[] }> };
-  const embedding = payload.data?.[0]?.embedding;
+  const embeddings = payload.data?.map((item) => item.embedding).filter(Array.isArray);
 
-  if (!embedding) {
+  if (!embeddings || embeddings.length !== inputs.length) {
     throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI embedding response was empty');
   }
 
-  return embedding;
+  return embeddings as number[][];
 };
 
 const callOpenAIJson = async <TOutput>(

@@ -44,3 +44,23 @@ test('expired official refresh dates block knowledge source approval', () => {
   assert.equal(blocker?.code, 'refresh_expired');
   assert.equal(blocker?.statusCode, 409);
 });
+
+test('failed or partially indexed knowledge sources cannot be approved', () => {
+  const failedBlocker = getKnowledgeSourceApprovalBlocker({
+    sourceCategory: 'official_legal_source',
+    ingestionStatus: 'failed',
+    legalReviewed: true,
+    status: 'pending_review'
+  });
+  const partialBlocker = getKnowledgeSourceApprovalBlocker({
+    sourceCategory: 'official_legal_source',
+    ingestionStatus: 'partial_index_failed',
+    legalReviewed: true,
+    status: 'pending_review'
+  });
+
+  assert.equal(failedBlocker?.code, 'ingestion_failed');
+  assert.equal(failedBlocker?.statusCode, 409);
+  assert.equal(partialBlocker?.code, 'ingestion_failed');
+  assert.equal(partialBlocker?.statusCode, 409);
+});

@@ -10,6 +10,7 @@ import {
   approveKnowledgeSource,
   createKnowledgeSource,
   deleteKnowledgeSource,
+  getPineconeHealth,
   ingestKnowledgeSource,
   getKnowledgeSourceReadiness,
   listKnowledgeSourceChunks,
@@ -25,6 +26,7 @@ import {
 import type { RagServiceContext } from './rag.types';
 import type {
   CreateKnowledgeSourceInput,
+  KnowledgeSourceChunkQueryInput,
   IngestKnowledgeSourceInput,
   RagAnswerInput,
   RagSearchInput,
@@ -89,11 +91,23 @@ export const knowledgeSourceReadinessController = asyncHandler(
   }
 );
 
+export const pineconeHealthController = asyncHandler(async (req: Request, res: Response) => {
+  const health = await getPineconeHealth(getContext(req));
+
+  res.status(StatusCodes.OK).json(successResponse('Pinecone health retrieved', { health }));
+});
+
 export const listKnowledgeSourceChunksController = asyncHandler(
   async (req: Request, res: Response) => {
-    const chunks = await listKnowledgeSourceChunks(getContext(req), req.params.id);
+    const chunkPage = await listKnowledgeSourceChunks(
+      getContext(req),
+      req.params.id,
+      req.query as unknown as KnowledgeSourceChunkQueryInput
+    );
 
-    res.status(StatusCodes.OK).json(successResponse('Knowledge source chunks retrieved', { chunks }));
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Knowledge source chunks retrieved', chunkPage));
   }
 );
 

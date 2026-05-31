@@ -17,6 +17,7 @@ import {
   knowledgeSourceReadinessController,
   listKnowledgeSourceChunksController,
   listKnowledgeSourcesController,
+  pineconeHealthController,
   rejectKnowledgeSourceController,
   reindexKnowledgeSourceController,
   refreshKnowledgeSourceController,
@@ -27,6 +28,7 @@ import {
 } from './rag.controller';
 import {
   createKnowledgeSourceSchema,
+  knowledgeSourceChunkQuerySchema,
   ingestKnowledgeSourceSchema,
   ragAnswerSchema,
   ragParamsSchema,
@@ -65,6 +67,8 @@ ragRoutes.post(
   validate({ body: ragTimelineAssistantSchema }),
   timelineAssistantController
 );
+ragRoutes.use('/admin', authenticateUser, requireAdminRole('super_admin', 'content_admin'));
+ragRoutes.get('/admin/pinecone/health', pineconeHealthController);
 ragRoutes.use('/knowledge-sources', authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 ragRoutes.get('/knowledge-sources', listKnowledgeSourcesController);
 ragRoutes.get('/knowledge-sources/readiness', knowledgeSourceReadinessController);
@@ -85,7 +89,7 @@ ragRoutes.delete(
 );
 ragRoutes.get(
   '/knowledge-sources/:id/chunks',
-  validate({ params: ragParamsSchema }),
+  validate({ params: ragParamsSchema, query: knowledgeSourceChunkQuerySchema }),
   listKnowledgeSourceChunksController
 );
 ragRoutes.post(

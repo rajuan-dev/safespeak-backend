@@ -17,6 +17,60 @@ import type {
   RagTopic
 } from './rag.types';
 
+export interface RagKnowledgeSourceMetadata {
+  adminCategory?: string;
+  constitutionalBasis?: string;
+  legislationTags?: string[];
+  actName?: string;
+  actNumber?: string;
+  legislationType?: string;
+  country?: string;
+  state?: string;
+  effectiveDate?: string;
+  version?: number | string;
+  detectedLegalType?: string;
+  detectedActNames?: string[];
+  detectedSectionRefs?: string[];
+  detectedConstitutionalMentions?: string[];
+  detectedCourts?: string[];
+  extractedPageCount?: number;
+  extractionStatus?: string;
+  processingStage?: string;
+  processingError?: string;
+  pineconeIndexedAt?: string;
+  pineconeNamespace?: string;
+  pineconeIndexName?: string;
+  indexedChunkCount?: number;
+  indexingError?: string;
+  searchableAt?: string;
+  searchReadinessStatus?:
+    | 'not_indexed'
+    | 'indexing'
+    | 'indexed_pending_search'
+    | 'searchable'
+    | 'failed';
+  [key: string]: unknown;
+}
+
+export interface RagChunkMetadata {
+  legalSourceType?: string;
+  actName?: string;
+  sectionNumber?: string;
+  sectionHeading?: string;
+  part?: string;
+  division?: string;
+  schedule?: string;
+  pageStart?: number;
+  pageEnd?: number;
+  constitutionalBasis?: string;
+  legislationTags?: string[];
+  pineconeVectorId?: string;
+  pineconeIndexedAt?: string;
+  embeddingStatus?: 'pending' | 'indexed' | 'failed';
+  embeddingError?: string;
+  [key: string]: unknown;
+}
+
 export interface RagKnowledgeSourceDocument {
   _id: Types.ObjectId;
   title: string;
@@ -45,7 +99,7 @@ export interface RagKnowledgeSourceDocument {
   sha256Hash?: string;
   version: number;
   rawText?: string;
-  metadata: Record<string, unknown>;
+  metadata: RagKnowledgeSourceMetadata;
   createdBy?: Types.ObjectId;
   approvedBy?: Types.ObjectId;
   approvedAt?: Date;
@@ -71,7 +125,7 @@ export interface RagChunkDocument {
   tokenCount: number;
   citationLabel: string;
   citationUrl?: string;
-  metadata: Record<string, unknown>;
+  metadata: RagChunkMetadata;
   createdAt: Date;
   updatedAt: Date;
 }

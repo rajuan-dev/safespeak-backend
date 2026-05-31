@@ -31,9 +31,11 @@ export const RAG_JURISDICTIONS = [
 
 export const RAG_TOPICS = [
   'discrimination',
+  'racial',
   'racial_hatred',
   'online_safety',
   'scam',
+  'migrant',
   'privacy',
   'workplace',
   'dv',
@@ -43,6 +45,8 @@ export const RAG_TOPICS = [
   'consent',
   'crisis',
   'education',
+  'local_intelligence',
+  'smart_dialler',
   'other'
 ] as const;
 
@@ -119,6 +123,7 @@ export const RAG_INGESTION_STATUSES = [
   'fetched',
   'chunked',
   'embedded',
+  'partial_index_failed',
   'failed'
 ] as const;
 

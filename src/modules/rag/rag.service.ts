@@ -8,6 +8,7 @@ import mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
 
 import { ApiError } from '@common/errors/ApiError';
+import { logger } from '@common/utils/logger';
 import { env } from '@config/env';
 import {
   buildInformationOnlyDisclaimer,
@@ -23,6 +24,7 @@ import {
 import {
   answerWithContext,
   createEmbedding,
+  createEmbeddings,
   generateTimelineAssistantTurn
 } from '@modules/ai/ai.service';
 import type { AiCitation } from '@modules/ai/ai.types';
@@ -40,10 +42,23 @@ import {
 import {
   RagChunkModel,
   RagKnowledgeSourceModel,
+  type RagChunkDocument,
   type RagKnowledgeSourceDocument
 } from './rag.model';
+import {
+  getExpectedEmbeddingDimension,
+  getPineconeIndexName,
+  getPineconeNamespace,
+  isPineconeConfigured,
+  pineconeVectorStore
+} from './pinecone-vector.service';
+import {
+  normalizeKnowledgeSourceInput,
+  normalizeKnowledgeSourceMetadata
+} from './rag.normalization';
 import type {
   CreateKnowledgeSourceInput,
+  KnowledgeSourceChunkQueryInput,
   IngestKnowledgeSourceInput,
   RagAnswerInput,
   RagSearchInput,
@@ -88,6 +103,18 @@ const EMBEDDING_DIMENSIONS: Record<string, number> = {
 };
 const KNOWLEDGE_DOCUMENT_STORAGE_ROOT = path.resolve('./storage/rag-knowledge-sources');
 const KNOWLEDGE_DOCUMENT_MAX_BYTES = 52428800;
+const KNOWLEDGE_SOURCE_ADMIN_TEXT_PREVIEW_CHARS = 3000;
+const KNOWLEDGE_SOURCE_ADMIN_ERROR_PREVIEW_CHARS = 500;
+const KNOWLEDGE_SOURCE_CHUNK_PREVIEW_DEFAULT_LIMIT = 25;
+const KNOWLEDGE_SOURCE_CHUNK_PREVIEW_MAX_LIMIT = 50;
+const EMBEDDING_BATCH_MAX_CHUNKS = 50;
+const EMBEDDING_BATCH_MAX_ESTIMATED_TOKENS = 30000;
+const PINECONE_UPSERT_BATCH_SIZE = 50;
+const MONGO_CHUNK_WRITE_BATCH_SIZE = 50;
+const LARGE_DOCUMENT_PAGE_WARNING_THRESHOLD = 100;
+const LARGE_DOCUMENT_CHUNK_WARNING_THRESHOLD = 1000;
+const MAX_BATCH_ATTEMPTS = 2;
+const SEARCH_READINESS_DELAY_MS = 30000;
 const KNOWLEDGE_DOCUMENT_ALLOWED_EXTENSIONS = new Set([
   '.pdf',
   '.doc',
@@ -268,6 +295,7 @@ const isDateExpired = (value?: Date): boolean => Boolean(value && value.getTime(
 
 export type RagKnowledgeSourceApprovalBlockerCode =
   | 'source_not_approvable'
+  | 'ingestion_failed'
   | 'legal_review_missing'
   | 'review_expired'
   | 'refresh_expired';
@@ -280,7 +308,12 @@ export interface RagKnowledgeSourceApprovalBlocker {
 
 type ApprovalSourceSnapshot = Pick<
   RagKnowledgeSourceDocument,
-  'sourceCategory' | 'legalReviewed' | 'nextReviewAt' | 'nextRefreshAt' | 'status'
+  | 'sourceCategory'
+  | 'ingestionStatus'
+  | 'legalReviewed'
+  | 'nextReviewAt'
+  | 'nextRefreshAt'
+  | 'status'
 >;
 
 export const getKnowledgeSourceApprovalBlocker = (
@@ -292,6 +325,14 @@ export const getKnowledgeSourceApprovalBlocker = (
       code: 'source_not_approvable',
       statusCode: StatusCodes.CONFLICT,
       message: 'Archived or expired knowledge sources cannot be approved'
+    };
+  }
+
+  if (source.ingestionStatus === 'failed' || source.ingestionStatus === 'partial_index_failed') {
+    return {
+      code: 'ingestion_failed',
+      statusCode: StatusCodes.CONFLICT,
+      message: 'Failed or partially indexed knowledge sources cannot be approved'
     };
   }
 
@@ -379,6 +420,51 @@ const buildJurisdictionFilter = (
 };
 
 type HydratedRagKnowledgeSourceDocument = HydratedDocument<RagKnowledgeSourceDocument>;
+type SearchReadinessStatus =
+  NonNullable<RagKnowledgeSourceDocument['metadata']['searchReadinessStatus']>;
+
+const getSearchableAt = (date = new Date()): string =>
+  new Date(date.getTime() + SEARCH_READINESS_DELAY_MS).toISOString();
+
+const withSearchReadiness = (
+  metadata: Record<string, unknown>,
+  status: SearchReadinessStatus,
+  searchableAt?: string
+): Record<string, unknown> => ({
+  ...metadata,
+  searchReadinessStatus: status,
+  searchableAt
+});
+
+const resolveSearchReadinessStatus = (
+  metadata: Record<string, unknown>
+): SearchReadinessStatus => {
+  const status = metadataString(metadata, 'searchReadinessStatus') as
+    | SearchReadinessStatus
+    | undefined;
+
+  if (status === 'indexed_pending_search') {
+    const searchableAt = metadataString(metadata, 'searchableAt');
+
+    if (searchableAt && new Date(searchableAt).getTime() <= Date.now()) {
+      return 'searchable';
+    }
+  }
+
+  return status ?? 'not_indexed';
+};
+
+const decorateSourceReadiness = <T extends { metadata?: unknown }>(source: T): T => {
+  const metadata = toMetadataRecord(source.metadata);
+
+  return {
+    ...source,
+    metadata: {
+      ...metadata,
+      searchReadinessStatus: resolveSearchReadinessStatus(metadata)
+    }
+  };
+};
 
 const getSource = async (sourceId: string): Promise<HydratedRagKnowledgeSourceDocument> => {
   const source = await RagKnowledgeSourceModel.findOne({
@@ -406,6 +492,197 @@ const chunkText = (text: string): string[] => {
   return chunks;
 };
 
+type LegislationChunkCandidate = {
+  text: string;
+  sectionNumber?: string;
+  sectionHeading?: string;
+  part?: string;
+  division?: string;
+  schedule?: string;
+  pageStart?: number;
+  pageEnd?: number;
+};
+
+const LEGISLATION_TARGET_CHARS = 4200;
+const LEGISLATION_MAX_CHARS = 6000;
+const LEGISLATION_OVERLAP_CHARS = 500;
+
+const toMetadataRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const metadataString = (metadata: Record<string, unknown>, key: string): string | undefined =>
+  typeof metadata[key] === 'string' && metadata[key].trim()
+    ? metadata[key].trim()
+    : undefined;
+
+const metadataStringArray = (metadata: Record<string, unknown>, key: string): string[] => {
+  const value = metadata[key];
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean);
+};
+
+const isLegislationSource = (
+  source: Pick<RagKnowledgeSourceDocument, 'sourceCategory' | 'sourceType' | 'metadata'>
+): boolean => {
+  const metadata = toMetadataRecord(source.metadata);
+  const adminCategory = metadataString(metadata, 'adminCategory');
+
+  return (
+    adminCategory === 'Legislation' ||
+    source.sourceCategory === ('Legislation' as RagSourceCategory) ||
+    source.sourceType === 'Act' ||
+    source.sourceType === 'Regulation' ||
+    Boolean(metadataString(metadata, 'constitutionalBasis')) ||
+    metadataStringArray(metadata, 'legislationTags').length > 0
+  );
+};
+
+const detectLegalHeading = (
+  line: string
+): Partial<Omit<LegislationChunkCandidate, 'text'>> | undefined => {
+  const trimmed = line.trim();
+  const sectionMatch =
+    trimmed.match(/^(?:section|s)\.?\s+([0-9A-Za-z][0-9A-Za-z().-]*)\s*(.*)$/i) ??
+    trimmed.match(/^([0-9]{1,4}[A-Za-z]?)\s+([A-Z][^\n]{3,160})$/);
+  const partMatch = trimmed.match(/^part\s+([0-9A-Za-z.-]+)\s*(.*)$/i);
+  const divisionMatch = trimmed.match(/^division\s+([0-9A-Za-z.-]+)\s*(.*)$/i);
+  const scheduleMatch = trimmed.match(/^schedule\s+([0-9A-Za-z.-]+)\s*(.*)$/i);
+  const clauseMatch = trimmed.match(/^clause\s+([0-9A-Za-z.-]+)\s*(.*)$/i);
+
+  if (sectionMatch) {
+    return {
+      sectionNumber: sectionMatch[1],
+      sectionHeading: sectionMatch[2]?.trim() || undefined
+    };
+  }
+
+  if (partMatch) {
+    return {
+      part: partMatch[1],
+      sectionHeading: partMatch[2]?.trim() || `Part ${partMatch[1]}`
+    };
+  }
+
+  if (divisionMatch) {
+    return {
+      division: divisionMatch[1],
+      sectionHeading: divisionMatch[2]?.trim() || `Division ${divisionMatch[1]}`
+    };
+  }
+
+  if (scheduleMatch) {
+    return {
+      schedule: scheduleMatch[1],
+      sectionHeading: scheduleMatch[2]?.trim() || `Schedule ${scheduleMatch[1]}`
+    };
+  }
+
+  if (clauseMatch) {
+    return {
+      sectionNumber: clauseMatch[1],
+      sectionHeading: clauseMatch[2]?.trim() || `Clause ${clauseMatch[1]}`
+    };
+  }
+
+  return undefined;
+};
+
+const splitLongLegislationChunk = (
+  chunk: LegislationChunkCandidate
+): LegislationChunkCandidate[] => {
+  if (chunk.text.length <= LEGISLATION_MAX_CHARS) {
+    return [chunk];
+  }
+
+  const chunks: LegislationChunkCandidate[] = [];
+  let cursor = 0;
+
+  while (cursor < chunk.text.length) {
+    chunks.push({
+      ...chunk,
+      text: chunk.text.slice(cursor, cursor + LEGISLATION_TARGET_CHARS).trim()
+    });
+    cursor += LEGISLATION_TARGET_CHARS - LEGISLATION_OVERLAP_CHARS;
+  }
+
+  return chunks.filter((item) => item.text.length > 0);
+};
+
+const chunkLegislationText = (text: string): LegislationChunkCandidate[] => {
+  const normalized = text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  const lines = normalized.split('\n');
+  const chunks: LegislationChunkCandidate[] = [];
+  let current: LegislationChunkCandidate | null = null;
+  let currentPart: string | undefined;
+  let currentDivision: string | undefined;
+  let currentSchedule: string | undefined;
+
+  const flush = () => {
+    if (!current?.text.trim()) {
+      return;
+    }
+
+    chunks.push(...splitLongLegislationChunk({ ...current, text: current.text.trim() }));
+  };
+
+  for (const line of lines) {
+    const heading = detectLegalHeading(line);
+
+    if (heading?.part) currentPart = heading.part;
+    if (heading?.division) currentDivision = heading.division;
+    if (heading?.schedule) currentSchedule = heading.schedule;
+
+    if (heading?.sectionNumber || heading?.part || heading?.division || heading?.schedule) {
+      flush();
+      current = {
+        text: line.trim(),
+        sectionNumber: heading.sectionNumber,
+        sectionHeading: heading.sectionHeading,
+        part: heading.part ?? currentPart,
+        division: heading.division ?? currentDivision,
+        schedule: heading.schedule ?? currentSchedule
+      };
+      continue;
+    }
+
+    if (!current) {
+      current = { text: line.trim(), part: currentPart, division: currentDivision, schedule: currentSchedule };
+      continue;
+    }
+
+    current.text = `${current.text}\n${line}`.trim();
+  }
+
+  flush();
+
+  return chunks.filter((chunk) => chunk.text.length >= 80);
+};
+
+const buildKnowledgeSourceChunks = (
+  source: Pick<RagKnowledgeSourceDocument, 'sourceCategory' | 'sourceType' | 'metadata'>,
+  text: string
+): LegislationChunkCandidate[] => {
+  if (!isLegislationSource(source)) {
+    return chunkText(text).map((chunk) => ({ text: chunk }));
+  }
+
+  const legislationChunks = chunkLegislationText(text);
+
+  if (legislationChunks.length >= 2) {
+    return legislationChunks;
+  }
+
+  return chunkText(text).map((chunk) => ({ text: chunk }));
+};
+
 type KnowledgeSourceTextInput = Pick<IngestKnowledgeSourceInput, 'content' | 'localFilePath'>;
 
 const readIngestionText = async (input: KnowledgeSourceTextInput): Promise<string> => {
@@ -418,6 +695,53 @@ const readIngestionText = async (input: KnowledgeSourceTextInput): Promise<strin
   }
 
   return readFile(input.localFilePath, 'utf8');
+};
+
+const resolveKnowledgeSourceText = async (
+  source: Pick<RagKnowledgeSourceDocument, 'rawText' | 'metadata'>,
+  input: KnowledgeSourceTextInput
+): Promise<{
+  text: string;
+  metadata?: Record<string, unknown>;
+  contentType?: string;
+  contentLength?: number;
+}> => {
+  if (input.content || input.localFilePath) {
+    return { text: await readIngestionText(input) };
+  }
+
+  if (source.rawText?.trim()) {
+    return { text: source.rawText };
+  }
+
+  const storedDocument = await readStoredKnowledgeDocument(source);
+
+  if (!storedDocument) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'content or localFilePath is required when no stored extracted text or uploaded document is available'
+    );
+  }
+
+  const extracted = await extractTextFromUploadedDocument(storedDocument);
+  const sourceMetadata = toMetadataRecord(source.metadata);
+
+  return {
+    text: extracted.text,
+    contentType: storedDocument.mimetype,
+    contentLength: storedDocument.size,
+    metadata: {
+      uploadedFile: sourceMetadata.uploadedFile,
+      extractedPageCount: extracted.pageCount,
+      extractionStatus: 'extracted',
+      processingStage: 'indexing',
+      processingError: undefined,
+      ingestionPipeline: {
+        ...toMetadataRecord(sourceMetadata.ingestionPipeline),
+        extractor: extracted.extractor
+      }
+    }
+  };
 };
 
 const uniqueMatches = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
@@ -541,7 +865,10 @@ const normalizeFetchedText = (body: string, contentType: string): string => {
   return body.replace(/\s+/g, ' ').trim();
 };
 
-type UploadedKnowledgeDocument = Express.Multer.File;
+type UploadedKnowledgeDocument = Pick<
+  Express.Multer.File,
+  'originalname' | 'mimetype' | 'size' | 'buffer'
+>;
 
 const getDocumentExtension = (fileName: string): string => path.extname(fileName).toLowerCase();
 
@@ -597,9 +924,31 @@ const saveKnowledgeDocumentFile = async (
   return storageKey;
 };
 
+const readStoredKnowledgeDocument = async (
+  source: Pick<RagKnowledgeSourceDocument, 'metadata'>
+): Promise<UploadedKnowledgeDocument | null> => {
+  const sourceMetadata = toMetadataRecord(source.metadata);
+  const uploadedFile = toMetadataRecord(sourceMetadata.uploadedFile);
+  const storageKey = metadataString(uploadedFile, 'storageKey');
+
+  if (!storageKey) {
+    return null;
+  }
+
+  const absolutePath = getKnowledgeDocumentStoragePath(storageKey);
+  const buffer = await readFile(absolutePath);
+
+  return {
+    originalname: metadataString(uploadedFile, 'originalFileName') ?? path.basename(absolutePath),
+    mimetype: metadataString(uploadedFile, 'mimeType') ?? 'application/octet-stream',
+    size: metadataNumber(uploadedFile, 'fileSizeBytes') ?? buffer.length,
+    buffer
+  };
+};
+
 const extractTextFromUploadedDocument = async (
   file: UploadedKnowledgeDocument
-): Promise<{ text: string; extractor: string }> => {
+): Promise<{ text: string; extractor: string; pageCount?: number }> => {
   const extension = getDocumentExtension(file.originalname);
   const mimeType = file.mimetype.toLowerCase();
 
@@ -608,8 +957,13 @@ const extractTextFromUploadedDocument = async (
 
     try {
       const parsed = await parser.getText();
+      const parsedPageCount = (parsed as { total?: unknown; pages?: unknown }).total;
 
-      return { text: parsed.text.trim(), extractor: 'pdf-parse' };
+      return {
+        text: parsed.text.trim(),
+        extractor: 'pdf-parse',
+        pageCount: typeof parsedPageCount === 'number' ? parsedPageCount : undefined
+      };
     } finally {
       await parser.destroy();
     }
@@ -728,6 +1082,416 @@ type EmbedKnowledgeSourceTextOptions = {
   preserveApprovalOnUnchanged?: boolean;
 };
 
+const buildPineconeVectorId = (sourceId: string, chunkId: string): string =>
+  `rag_source_${sourceId}_chunk_${chunkId}`;
+
+const metadataNumber = (metadata: Record<string, unknown>, key: string): number | undefined =>
+  typeof metadata[key] === 'number' && Number.isFinite(metadata[key])
+    ? metadata[key]
+    : undefined;
+
+const toIdString = (value: { toString(): string } | string | undefined): string =>
+  typeof value === 'string' ? value : value?.toString() ?? '';
+
+const truncateTextForAdmin = (value: unknown, limit: number): string | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  if (value.length <= limit) {
+    return value;
+  }
+
+  return `${value.slice(0, limit)}...`;
+};
+
+const sanitizeKnowledgeSourceMetadataForAdmin = (
+  metadata: unknown
+): Record<string, unknown> => {
+  const record = toMetadataRecord(metadata);
+  const ingestionPipeline = toMetadataRecord(record.ingestionPipeline);
+
+  return {
+    ...record,
+    processingError: truncateTextForAdmin(
+      record.processingError,
+      KNOWLEDGE_SOURCE_ADMIN_ERROR_PREVIEW_CHARS
+    ),
+    indexingError: truncateTextForAdmin(
+      record.indexingError,
+      KNOWLEDGE_SOURCE_ADMIN_ERROR_PREVIEW_CHARS
+    ),
+    ingestionPipeline:
+      Object.keys(ingestionPipeline).length > 0
+        ? {
+            ...ingestionPipeline,
+            error: truncateTextForAdmin(
+              ingestionPipeline.error,
+              KNOWLEDGE_SOURCE_ADMIN_ERROR_PREVIEW_CHARS
+            )
+          }
+        : undefined
+  };
+};
+
+const serializeKnowledgeSourceForAdmin = (
+  source: {
+    _id?: { toString(): string } | string;
+    approvedAt?: unknown;
+    approvedBy?: unknown;
+    createdAt?: unknown;
+    createdBy?: unknown;
+    deletedAt?: unknown;
+    description?: unknown;
+    fetchedAt?: unknown;
+    ingestedAt?: unknown;
+    ingestionStatus?: unknown;
+    jurisdiction?: unknown;
+    language?: unknown;
+    lastUpdated?: unknown;
+    lastVerifiedAt?: unknown;
+    legalReviewed?: unknown;
+    legalReviewedAt?: unknown;
+    legalReviewedBy?: unknown;
+    licenseStatus?: unknown;
+    nextRefreshAt?: unknown;
+    nextReviewAt?: unknown;
+    publisher?: unknown;
+    rejectedAt?: unknown;
+    rejectedBy?: unknown;
+    rejectionReason?: unknown;
+    reviewNotes?: unknown;
+    rawText?: string;
+    sha256Hash?: unknown;
+    sourceCategory?: unknown;
+    sourceType?: unknown;
+    status?: unknown;
+    title?: unknown;
+    topic?: unknown;
+    updatedAt?: unknown;
+    url?: unknown;
+    version?: unknown;
+    metadata?: unknown;
+    ingestionError?: string;
+    localFilePath?: string;
+  }
+): Record<string, unknown> => {
+  const { _id, rawText, metadata, ingestionError, ...rest } = source;
+  const id = toIdString(_id);
+  const sanitizedMetadata = sanitizeKnowledgeSourceMetadataForAdmin(metadata);
+  const uploadedFileMetadata = toMetadataRecord(sanitizedMetadata.uploadedFile);
+
+  return decorateSourceReadiness({
+    ...rest,
+    _id: id,
+    id,
+    ingestionError: truncateTextForAdmin(
+      ingestionError,
+      KNOWLEDGE_SOURCE_ADMIN_ERROR_PREVIEW_CHARS
+    ),
+    rawTextPreview:
+      typeof rawText === 'string' && rawText.trim()
+        ? rawText.slice(0, KNOWLEDGE_SOURCE_ADMIN_TEXT_PREVIEW_CHARS)
+        : undefined,
+    rawTextLength: typeof rawText === 'string' ? rawText.length : 0,
+    hasStoredContent: Boolean(
+      (typeof rawText === 'string' && rawText.trim()) ||
+        (typeof rest.localFilePath === 'string' && rest.localFilePath.trim()) ||
+        metadataString(uploadedFileMetadata, 'storageKey')
+    ),
+    metadata: sanitizedMetadata
+  });
+};
+
+const chunkArray = <T>(items: readonly T[], size: number): T[][] => {
+  if (items.length === 0) {
+    return [];
+  }
+
+  const batches: T[][] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    batches.push(items.slice(index, index + size));
+  }
+
+  return batches;
+};
+
+const buildEmbeddingBatches = <T extends { text: string }>(items: readonly T[]): T[][] => {
+  const batches: T[][] = [];
+  let currentBatch: T[] = [];
+  let currentEstimatedTokens = 0;
+
+  for (const item of items) {
+    const estimatedTokens = Math.max(1, Math.ceil(item.text.length / 4));
+    const exceedsChunkLimit = currentBatch.length >= EMBEDDING_BATCH_MAX_CHUNKS;
+    const exceedsTokenLimit =
+      currentBatch.length > 0 &&
+      currentEstimatedTokens + estimatedTokens > EMBEDDING_BATCH_MAX_ESTIMATED_TOKENS;
+
+    if (exceedsChunkLimit || exceedsTokenLimit) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentEstimatedTokens = 0;
+    }
+
+    currentBatch.push(item);
+    currentEstimatedTokens += estimatedTokens;
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  return batches;
+};
+
+const formatBatchFailureMessage = (
+  operation: string,
+  batchNumber: number,
+  totalBatches: number,
+  attempts: number,
+  error: unknown
+): string => {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+
+  return `${operation} batch ${batchNumber}/${totalBatches} failed after ${attempts} attempt${attempts === 1 ? '' : 's'}: ${errorMessage}`;
+};
+
+const runBatchWithRetry = async <T>(
+  operation: string,
+  batchNumber: number,
+  totalBatches: number,
+  action: () => Promise<T>
+): Promise<T> => {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= MAX_BATCH_ATTEMPTS; attempt += 1) {
+    try {
+      return await action();
+    } catch (error) {
+      lastError = error;
+
+      logger.warn(
+        {
+          error,
+          operation,
+          batchNumber,
+          totalBatches,
+          attempt,
+          maxAttempts: MAX_BATCH_ATTEMPTS
+        },
+        'Knowledge source batch operation failed'
+      );
+    }
+  }
+
+  throw new Error(
+    formatBatchFailureMessage(
+      operation,
+      batchNumber,
+      totalBatches,
+      MAX_BATCH_ATTEMPTS,
+      lastError
+    )
+  );
+};
+
+const buildVectorMetadata = (
+  source: RagKnowledgeSourceDocument,
+  chunk: Pick<
+    RagChunkDocument,
+    '_id' | 'sourceId' | 'sectionRef' | 'chunkIndex' | 'metadata'
+  >
+): Record<string, unknown> => {
+  const sourceMetadata = toMetadataRecord(source.metadata);
+  const chunkMetadata = toMetadataRecord(chunk.metadata);
+
+  return {
+    chunkId: chunk._id.toString(),
+    sourceId: chunk.sourceId.toString(),
+    title: source.title,
+    sourceCategory: source.sourceCategory,
+    adminCategory: metadataString(sourceMetadata, 'adminCategory'),
+    jurisdiction: source.jurisdiction,
+    topic: source.topic,
+    sourceType: source.sourceType,
+    status: source.status,
+    legalReviewed: source.legalReviewed,
+    actName:
+      metadataString(chunkMetadata, 'actName') ??
+      metadataString(sourceMetadata, 'actName') ??
+      metadataStringArray(sourceMetadata, 'detectedActNames')[0],
+    sectionNumber:
+      metadataString(chunkMetadata, 'sectionNumber') ??
+      metadataString(chunkMetadata, 'sectionRef') ??
+      chunk.sectionRef,
+    sectionHeading: metadataString(chunkMetadata, 'sectionHeading'),
+    constitutionalBasis:
+      metadataString(chunkMetadata, 'constitutionalBasis') ??
+      metadataString(sourceMetadata, 'constitutionalBasis'),
+    legislationTags:
+      metadataStringArray(chunkMetadata, 'legislationTags').length > 0
+        ? metadataStringArray(chunkMetadata, 'legislationTags')
+        : metadataStringArray(sourceMetadata, 'legislationTags'),
+    language: source.language,
+    version: source.version,
+    pageStart: metadataNumber(chunkMetadata, 'pageStart'),
+    pageEnd: metadataNumber(chunkMetadata, 'pageEnd'),
+    chunkIndex: chunk.chunkIndex
+  };
+};
+
+type PineconeIndexableChunk = Pick<
+  RagChunkDocument,
+  '_id' | 'sourceId' | 'sectionRef' | 'chunkIndex' | 'metadata' | 'embedding'
+>;
+
+type EmbeddedKnowledgeSourceChunk = Omit<RagChunkDocument, '_id' | 'createdAt' | 'updatedAt'>;
+
+const persistSourceIndexingProgress = async (
+  source: HydratedRagKnowledgeSourceDocument,
+  chunkCount: number,
+  indexedChunkCount: number,
+  update: {
+    indexedAt?: string;
+    indexingError?: string;
+  } = {}
+): Promise<void> => {
+  const sourceMetadata = toMetadataRecord(source.metadata);
+  const ingestionPipeline = toMetadataRecord(sourceMetadata.ingestionPipeline);
+  const partiallyIndexed = Boolean(update.indexingError && indexedChunkCount > 0);
+
+  await RagKnowledgeSourceModel.updateOne(
+    { _id: source._id },
+    {
+      $set: {
+        'metadata.chunkCount': chunkCount,
+        'metadata.indexedChunkCount': indexedChunkCount,
+        'metadata.pineconeIndexedAt': update.indexedAt,
+        'metadata.pineconeNamespace': getPineconeNamespace(),
+        'metadata.pineconeIndexName': getPineconeIndexName(),
+        'metadata.indexingError': update.indexingError,
+        'metadata.processingError': update.indexingError,
+        'metadata.processingStage': update.indexingError
+          ? partiallyIndexed
+            ? 'partial_index_failed'
+            : 'indexing_failed'
+          : 'indexing',
+        'metadata.searchReadinessStatus': update.indexingError ? 'failed' : 'indexing',
+        'metadata.ingestionPipeline': {
+          ...ingestionPipeline,
+          status: update.indexingError
+            ? partiallyIndexed
+              ? 'partial_index_failed'
+              : 'failed'
+            : 'indexing',
+          updatedAt: new Date().toISOString(),
+          extractor: metadataString(ingestionPipeline, 'extractor'),
+          error: update.indexingError
+        }
+      }
+    }
+  );
+};
+
+const upsertChunksToPinecone = async (
+  source: HydratedRagKnowledgeSourceDocument,
+  chunks: PineconeIndexableChunk[]
+): Promise<{ indexedChunkCount: number; indexedAt?: string; indexingError?: string }> => {
+  if (!isPineconeConfigured()) {
+    logger.info({ sourceId: source._id.toString() }, 'Pinecone disabled; keeping Mongo RAG index only');
+
+    return { indexedChunkCount: 0 };
+  }
+
+  const chunkBatches = chunkArray(chunks, PINECONE_UPSERT_BATCH_SIZE);
+  let indexedChunkCount = 0;
+  let indexedAt: string | undefined;
+
+  for (const [batchIndex, batch] of chunkBatches.entries()) {
+    const batchNumber = batchIndex + 1;
+    const batchIndexedAt = new Date().toISOString();
+    const vectorBatch = batch.map((chunk) => {
+      const vectorId = buildPineconeVectorId(source._id.toString(), chunk._id.toString());
+
+      return {
+        id: vectorId,
+        values: chunk.embedding,
+        metadata: {
+          ...buildVectorMetadata(source, chunk),
+          pineconeVectorId: vectorId
+        }
+      };
+    });
+
+    try {
+      await runBatchWithRetry('Pinecone upsert', batchNumber, chunkBatches.length, async () =>
+        pineconeVectorStore.upsertChunks({ chunks: vectorBatch })
+      );
+    } catch (error) {
+      const indexingError =
+        error instanceof Error ? error.message : 'Pinecone indexing failed';
+
+      await RagChunkModel.updateMany(
+        { _id: { $in: batch.map((chunk) => chunk._id) } },
+        {
+          $set: {
+            'metadata.embeddingStatus': 'failed',
+            'metadata.embeddingError': indexingError
+          }
+        }
+      );
+
+      await persistSourceIndexingProgress(source, chunks.length, indexedChunkCount, {
+        indexedAt,
+        indexingError
+      });
+
+      logger.error(
+        {
+          error,
+          sourceId: source._id.toString(),
+          batchNumber,
+          totalBatches: chunkBatches.length,
+          indexName: getPineconeIndexName()
+        },
+        'Pinecone indexing failed'
+      );
+
+      return { indexedChunkCount, indexedAt, indexingError };
+    }
+
+    await RagChunkModel.bulkWrite(
+      batch.map((chunk) => ({
+        updateOne: {
+          filter: { _id: chunk._id },
+          update: {
+            $set: {
+              'metadata.pineconeVectorId': buildPineconeVectorId(
+                source._id.toString(),
+                chunk._id.toString()
+              ),
+              'metadata.pineconeIndexedAt': batchIndexedAt,
+              'metadata.embeddingStatus': 'indexed',
+              'metadata.embeddingError': undefined
+            }
+          }
+        }
+      }))
+    );
+
+    indexedChunkCount += batch.length;
+    indexedAt = batchIndexedAt;
+
+    await persistSourceIndexingProgress(source, chunks.length, indexedChunkCount, {
+      indexedAt
+    });
+  }
+
+  return { indexedChunkCount, indexedAt };
+};
+
 const embedKnowledgeSourceText = async (
   source: HydratedRagKnowledgeSourceDocument,
   text: string,
@@ -746,52 +1510,136 @@ const embedKnowledgeSourceText = async (
 
   const previousHash = source.sha256Hash;
   const hashChanged = previousHash !== sha256Hash;
-  const chunks = chunkText(text);
+  const chunks = buildKnowledgeSourceChunks(source, text);
+  const extractedLegalMetadata = extractLegalMetadataFromText(text, source);
+  const baseMetadata = {
+    ...toMetadataRecord(source.metadata),
+    ...toMetadataRecord(options.metadata),
+    ...extractedLegalMetadata
+  };
+  const extractedPageCount = metadataNumber(baseMetadata, 'extractedPageCount');
+  const largeDocumentWarning =
+    (typeof extractedPageCount === 'number' &&
+      extractedPageCount > LARGE_DOCUMENT_PAGE_WARNING_THRESHOLD) ||
+    chunks.length > LARGE_DOCUMENT_CHUNK_WARNING_THRESHOLD
+      ? `Large document detected. SafeSpeak will ingest this source in batches (${EMBEDDING_BATCH_MAX_CHUNKS} embeddings, ${PINECONE_UPSERT_BATCH_SIZE} Pinecone vectors, ${MONGO_CHUNK_WRITE_BATCH_SIZE} Mongo chunk writes).`
+      : undefined;
 
   source.ingestionStatus = 'chunked';
+  source.metadata = withSearchReadiness(
+    {
+      ...baseMetadata,
+      chunkCount: chunks.length,
+      indexedChunkCount: 0,
+      processingStage: 'indexing',
+      processingError: undefined,
+      indexingError: undefined,
+      largeDocumentWarning,
+      ingestionPipeline: {
+        ...toMetadataRecord(baseMetadata.ingestionPipeline),
+        status: 'indexing',
+        updatedAt: new Date().toISOString(),
+        extractor: metadataString(toMetadataRecord(baseMetadata.ingestionPipeline), 'extractor'),
+        error: undefined
+      }
+    },
+    'indexing'
+  );
   await source.save();
 
-  const extractedLegalMetadata = extractLegalMetadataFromText(text, source);
-  const embeddedChunks = await Promise.all(
-    chunks.map(async (chunk, index) => ({
-      sourceId: source._id,
-      sourceCategory: source.sourceCategory,
-      jurisdiction: source.jurisdiction,
-      topic: source.topic,
-      sectionRef: undefined,
-      chunkIndex: index,
-      chunkText: chunk,
-      embedding: await createEmbedding(chunk),
-      tokenCount: Math.ceil(chunk.length / 4),
-      citationLabel: `${source.title} [chunk ${index + 1}]`,
-      citationUrl: source.url,
-      metadata: {
-        ...options.metadata,
-        ...extractedLegalMetadata,
-        sourceTitle: source.title,
-        sourceType: source.sourceType,
+  const sourceMetadata = {
+    ...toMetadataRecord(source.metadata),
+    ...toMetadataRecord(options.metadata),
+    ...extractedLegalMetadata
+  };
+  const chunkDescriptors = chunks.map((chunk, index) => {
+    const sectionRef = chunk.sectionNumber
+      ? `Section ${chunk.sectionNumber}`
+      : chunk.part
+        ? `Part ${chunk.part}`
+        : chunk.division
+          ? `Division ${chunk.division}`
+          : chunk.schedule
+            ? `Schedule ${chunk.schedule}`
+            : undefined;
+
+    return {
+      ...chunk,
+      index,
+      sectionRef,
+      tokenCount: Math.ceil(chunk.text.length / 4),
+      citationLabel: sectionRef
+        ? `${source.title}, ${sectionRef}${chunk.sectionHeading ? ` - ${chunk.sectionHeading}` : ''}`
+        : `${source.title} [chunk ${index + 1}]`
+    };
+  });
+  const embeddingBatches = buildEmbeddingBatches(chunkDescriptors);
+  const embeddedChunks: EmbeddedKnowledgeSourceChunk[] = [];
+
+  for (const [batchIndex, batch] of embeddingBatches.entries()) {
+    const embeddings = await runBatchWithRetry(
+      'OpenAI embedding',
+      batchIndex + 1,
+      embeddingBatches.length,
+      async () => createEmbeddings(batch.map((item) => item.text))
+    );
+
+    batch.forEach((chunk, index) => {
+      embeddedChunks.push({
+        sourceId: source._id,
         sourceCategory: source.sourceCategory,
-        language: source.language,
-        jurisdiction: source.jurisdiction
-      }
-    }))
-  );
+        jurisdiction: source.jurisdiction,
+        topic: source.topic,
+        sectionRef: chunk.sectionRef,
+        chunkIndex: chunk.index,
+        chunkText: chunk.text,
+        embedding: embeddings[index],
+        tokenCount: chunk.tokenCount,
+        citationLabel: chunk.citationLabel,
+        citationUrl: source.url,
+        metadata: {
+          ...sourceMetadata,
+          sourceTitle: source.title,
+          sourceType: source.sourceType,
+          sourceCategory: source.sourceCategory,
+          language: source.language,
+          jurisdiction: source.jurisdiction,
+          legalSourceType: source.sourceType,
+          actName:
+            metadataString(sourceMetadata, 'actName') ??
+            metadataStringArray(sourceMetadata, 'detectedActNames')[0],
+          sectionNumber: chunk.sectionNumber,
+          sectionHeading: chunk.sectionHeading,
+          part: chunk.part,
+          division: chunk.division,
+          schedule: chunk.schedule,
+          pageStart: chunk.pageStart,
+          pageEnd: chunk.pageEnd,
+          constitutionalBasis: metadataString(sourceMetadata, 'constitutionalBasis'),
+          legislationTags: metadataStringArray(sourceMetadata, 'legislationTags'),
+          embeddingStatus: isPineconeConfigured() ? ('pending' as const) : ('indexed' as const)
+        }
+      });
+    });
+  }
 
   if (embeddedChunks.length > 0) {
-    await RagChunkModel.bulkWrite(
-      embeddedChunks.map((chunk) => ({
-        updateOne: {
-          filter: {
-            sourceId: chunk.sourceId,
-            chunkIndex: chunk.chunkIndex
-          },
-          update: {
-            $set: chunk
-          },
-          upsert: true
-        }
-      }))
-    );
+    for (const mongoBatch of chunkArray(embeddedChunks, MONGO_CHUNK_WRITE_BATCH_SIZE)) {
+      await RagChunkModel.bulkWrite(
+        mongoBatch.map((chunk) => ({
+          updateOne: {
+            filter: {
+              sourceId: chunk.sourceId,
+              chunkIndex: chunk.chunkIndex
+            },
+            update: {
+              $set: chunk
+            },
+            upsert: true
+          }
+        }))
+      );
+    }
   }
 
   await RagChunkModel.deleteMany({
@@ -830,21 +1678,68 @@ const embedKnowledgeSourceText = async (
   source.lastVerifiedAt = verificationDate;
   source.lastUpdated = options.lastUpdated ?? source.lastUpdated;
   source.nextRefreshAt = nextRefreshAt;
-  source.ingestionStatus = 'embedded';
-  source.ingestionError = undefined;
   source.version = (source.version ?? 1) + (hashChanged ? 1 : 0);
-  source.metadata = {
-    ...source.metadata,
-    ...options.metadata,
-    ...extractedLegalMetadata,
-    chunkCount: embeddedChunks.length,
-    sha256Verified: true,
-    contentHashChanged: hashChanged,
-    refreshMode: options.refreshMode,
-    contentType: options.contentType,
-    contentLength: options.contentLength,
-    lastVerifiedAt: verificationDate.toISOString()
-  };
+
+  if (isPineconeConfigured()) {
+    await pineconeVectorStore.deleteBySource(source._id.toString());
+  }
+
+  const savedChunks = await RagChunkModel.find({ sourceId: source._id }).sort({ chunkIndex: 1 });
+  const pineconeIndexing = await upsertChunksToPinecone(source, savedChunks);
+  const indexingFailed = Boolean(pineconeIndexing.indexingError);
+  const partiallyIndexed = indexingFailed && pineconeIndexing.indexedChunkCount > 0;
+  const searchableAt = indexingFailed ? undefined : getSearchableAt(verificationDate);
+  source.ingestionStatus = partiallyIndexed
+    ? 'partial_index_failed'
+    : indexingFailed
+      ? 'failed'
+      : 'embedded';
+  source.ingestionError = pineconeIndexing.indexingError;
+
+  source.metadata = withSearchReadiness(
+    {
+      ...source.metadata,
+      ...options.metadata,
+      ...extractedLegalMetadata,
+      chunkCount: embeddedChunks.length,
+      indexedChunkCount: isPineconeConfigured()
+        ? pineconeIndexing.indexedChunkCount
+        : embeddedChunks.length,
+      pineconeIndexedAt: pineconeIndexing.indexedAt,
+      pineconeNamespace: isPineconeConfigured() ? getPineconeNamespace() : undefined,
+      pineconeIndexName: isPineconeConfigured() ? getPineconeIndexName() : undefined,
+      indexingError: pineconeIndexing.indexingError,
+      extractionStatus: 'extracted',
+      processingStage: indexingFailed
+        ? partiallyIndexed
+          ? 'partial_index_failed'
+          : 'indexing_failed'
+        : 'indexed',
+      processingError: pineconeIndexing.indexingError,
+      ingestionPipeline: {
+        ...toMetadataRecord(sourceMetadata.ingestionPipeline),
+        status: indexingFailed
+          ? partiallyIndexed
+            ? 'partial_index_failed'
+            : 'failed'
+          : 'indexed',
+        updatedAt: verificationDate.toISOString(),
+        extractor: metadataString(
+          toMetadataRecord(sourceMetadata.ingestionPipeline),
+          'extractor'
+        ),
+        error: pineconeIndexing.indexingError
+      },
+      sha256Verified: true,
+      contentHashChanged: hashChanged,
+      refreshMode: options.refreshMode,
+      contentType: options.contentType,
+      contentLength: options.contentLength,
+      lastVerifiedAt: verificationDate.toISOString()
+    },
+    indexingFailed ? 'failed' : 'indexed_pending_search',
+    searchableAt
+  );
   await source.save();
 
   return {
@@ -856,9 +1751,9 @@ const embedKnowledgeSourceText = async (
 };
 
 export const listKnowledgeSources = async (): Promise<unknown[]> =>
-  RagKnowledgeSourceModel.find({ deletedAt: { $exists: false } })
+  (await RagKnowledgeSourceModel.find({ deletedAt: { $exists: false } })
     .sort({ createdAt: -1 })
-    .lean();
+    .lean()).map((source) => serializeKnowledgeSourceForAdmin(source as Record<string, unknown>));
 
 const addReadinessBlocker = (
   blockers: Map<ReadinessBlockerCode, RagKnowledgeReadinessBlocker>,
@@ -1200,34 +2095,80 @@ export const getKnowledgeSourceReadiness = async (
 
 export const listKnowledgeSourceChunks = async (
   context: RagServiceContext,
-  sourceId: string
-): Promise<unknown[]> => {
+  sourceId: string,
+  query: KnowledgeSourceChunkQueryInput
+): Promise<Record<string, unknown>> => {
   ownerFilter(context.owner);
   const source = await getSource(sourceId);
+  const page = Math.max(1, query.page ?? 1);
+  const limit = Math.min(
+    KNOWLEDGE_SOURCE_CHUNK_PREVIEW_MAX_LIMIT,
+    Math.max(1, query.limit ?? KNOWLEDGE_SOURCE_CHUNK_PREVIEW_DEFAULT_LIMIT)
+  );
+  const skip = (page - 1) * limit;
 
-  const chunks = await RagChunkModel.find({ sourceId: source._id })
-    .sort({ chunkIndex: 1 })
-    .limit(20)
-    .select('chunkIndex chunkText tokenCount citationLabel citationUrl sectionRef metadata createdAt updatedAt')
-    .lean();
+  const [chunks, totalCount] = await Promise.all([
+    RagChunkModel.find({ sourceId: source._id })
+      .sort({ chunkIndex: 1 })
+      .skip(skip)
+      .limit(limit)
+      .select(
+        'chunkIndex chunkText tokenCount citationLabel citationUrl sectionRef metadata createdAt updatedAt'
+      )
+      .lean(),
+    RagChunkModel.countDocuments({ sourceId: source._id })
+  ]);
+  const totalPages = totalCount > 0 ? Math.ceil(totalCount / limit) : 0;
 
   await auditRagAction(context, RAG_ACTIONS.search, source._id.toString(), {
     mode: 'admin_chunk_preview',
-    chunkCount: chunks.length
+    chunkCount: chunks.length,
+    totalCount,
+    page,
+    limit
   });
 
-  return chunks.map((chunk) => ({
-    id: chunk._id.toString(),
-    chunkIndex: chunk.chunkIndex,
-    text: chunk.chunkText,
-    tokenCount: chunk.tokenCount,
-    citationLabel: chunk.citationLabel,
-    citationUrl: chunk.citationUrl,
-    sectionRef: chunk.sectionRef,
-    metadata: chunk.metadata,
-    createdAt: chunk.createdAt,
-    updatedAt: chunk.updatedAt
-  }));
+  return {
+    page,
+    limit,
+    totalCount,
+    totalPages,
+    chunks: chunks.map((chunk) => ({
+      id: chunk._id.toString(),
+      chunkIndex: chunk.chunkIndex,
+      text: chunk.chunkText,
+      tokenCount: chunk.tokenCount,
+      citationLabel: chunk.citationLabel,
+      citationUrl: chunk.citationUrl,
+      sectionRef: chunk.sectionRef,
+      metadata: chunk.metadata,
+      createdAt: chunk.createdAt,
+      updatedAt: chunk.updatedAt
+    }))
+  };
+};
+
+export const getPineconeHealth = async (
+  context: RagServiceContext
+): Promise<Record<string, unknown>> => {
+  ownerFilter(context.owner);
+  const health = await pineconeVectorStore.healthCheck();
+
+  await auditRagAction(context, RAG_ACTIONS.sourceReadiness, undefined, {
+    mode: 'pinecone_health',
+    configured: health.configured,
+    reachable: health.reachable ?? health.healthy
+  });
+
+  return {
+    configured: health.configured,
+    indexName: health.indexName ?? getPineconeIndexName(),
+    namespace: health.namespace ?? getPineconeNamespace(),
+    embeddingModel: health.embeddingModel ?? env.OPENAI_EMBEDDING_MODEL,
+    expectedDimension: health.expectedDimension ?? getExpectedEmbeddingDimension(),
+    reachable: health.reachable ?? health.healthy,
+    error: health.healthy ? undefined : health.message
+  };
 };
 
 export const createKnowledgeSource = async (
@@ -1235,22 +2176,23 @@ export const createKnowledgeSource = async (
   input: CreateKnowledgeSourceInput
 ): Promise<unknown> => {
   ownerFilter(context.owner);
+  const normalizedInput = normalizeKnowledgeSourceInput(input);
 
-  if (input.status === 'approved') {
+  if (normalizedInput.status === 'approved') {
     throw new ApiError(
       StatusCodes.BAD_REQUEST,
       'Knowledge sources must be approved through the review workflow'
     );
   }
 
-  assertKnowledgeSourceGovernance(input);
+  assertKnowledgeSourceGovernance(normalizedInput);
 
   const source = await RagKnowledgeSourceModel.create({
-    ...input,
+    ...normalizedInput,
     createdBy: context.owner.userId,
-    legalReviewedBy: input.legalReviewed ? context.owner.userId : undefined,
-    legalReviewedAt: input.legalReviewed ? new Date() : undefined,
-    lastVerifiedAt: input.lastVerifiedAt ?? new Date()
+    legalReviewedBy: normalizedInput.legalReviewed ? context.owner.userId : undefined,
+    legalReviewedAt: normalizedInput.legalReviewed ? new Date() : undefined,
+    lastVerifiedAt: normalizedInput.lastVerifiedAt ?? new Date()
   });
 
   await auditRagAction(context, RAG_ACTIONS.sourceCreate, source._id.toString(), {
@@ -1258,7 +2200,7 @@ export const createKnowledgeSource = async (
     sourceCategory: source.sourceCategory
   });
 
-  return source;
+  return serializeKnowledgeSourceForAdmin(source.toObject());
 };
 
 export const updateKnowledgeSource = async (
@@ -1267,8 +2209,9 @@ export const updateKnowledgeSource = async (
   input: UpdateKnowledgeSourceInput
 ): Promise<unknown> => {
   ownerFilter(context.owner);
+  const normalizedInput = normalizeKnowledgeSourceInput(input);
 
-  if (input.status === 'approved') {
+  if (normalizedInput.status === 'approved') {
     throw new ApiError(
       StatusCodes.BAD_REQUEST,
       'Use the approval endpoint to approve a knowledge source'
@@ -1276,22 +2219,27 @@ export const updateKnowledgeSource = async (
   }
 
   const source = await getSource(sourceId);
-  assertMergedKnowledgeSourceGovernance(source, input);
+  assertMergedKnowledgeSourceGovernance(source, normalizedInput);
 
   const shouldReturnToReview =
-    source.status === 'approved' && hasMaterialReviewChange(input) && input.status === undefined;
+    source.status === 'approved' &&
+    hasMaterialReviewChange(normalizedInput) &&
+    normalizedInput.status === undefined;
   const legalReviewedChanged =
-    input.legalReviewed !== undefined && input.legalReviewed !== source.legalReviewed;
+    normalizedInput.legalReviewed !== undefined &&
+    normalizedInput.legalReviewed !== source.legalReviewed;
 
-  source.set(input);
+  source.set(normalizedInput);
 
   if (legalReviewedChanged) {
-    source.legalReviewedBy = input.legalReviewed ? (context.owner.userId as never) : undefined;
-    source.legalReviewedAt = input.legalReviewed ? new Date() : undefined;
+    source.legalReviewedBy = normalizedInput.legalReviewed
+      ? (context.owner.userId as never)
+      : undefined;
+    source.legalReviewedAt = normalizedInput.legalReviewed ? new Date() : undefined;
   }
 
-  if (hasMaterialReviewChange(input)) {
-    source.lastVerifiedAt = input.lastVerifiedAt ?? new Date();
+  if (hasMaterialReviewChange(normalizedInput)) {
+    source.lastVerifiedAt = normalizedInput.lastVerifiedAt ?? new Date();
   }
 
   if (shouldReturnToReview) {
@@ -1301,11 +2249,11 @@ export const updateKnowledgeSource = async (
   await source.save();
 
   await auditRagAction(context, RAG_ACTIONS.sourceUpdate, source._id.toString(), {
-    changedFields: Object.keys(input),
+    changedFields: Object.keys(normalizedInput),
     returnedToReview: shouldReturnToReview
   });
 
-  return source;
+  return serializeKnowledgeSourceForAdmin(source.toObject());
 };
 
 export const deleteKnowledgeSource = async (
@@ -1317,6 +2265,23 @@ export const deleteKnowledgeSource = async (
   source.status = 'expired';
   source.deletedAt = new Date();
   await source.save();
+
+  if (isPineconeConfigured()) {
+    try {
+      await pineconeVectorStore.deleteBySource(source._id.toString());
+    } catch (error) {
+      const indexingError = error instanceof Error ? error.message : 'Pinecone source delete failed';
+      source.metadata = {
+        ...source.metadata,
+        indexingError,
+        processingStage: 'vector_delete_failed',
+        processingError: indexingError
+      };
+      await source.save();
+      throw new ApiError(StatusCodes.BAD_GATEWAY, 'Pinecone vectors could not be deleted');
+    }
+  }
+
   await RagChunkModel.deleteMany({ sourceId: source._id });
 
   await auditRagAction(context, RAG_ACTIONS.sourceDelete, source._id.toString());
@@ -1347,14 +2312,21 @@ export const uploadKnowledgeSourceDocument = async (
     uploadedAt: uploadedAt.toISOString()
   };
 
-  source.metadata = {
-    ...source.metadata,
-    uploadedFile: documentMetadata,
-    ingestionPipeline: {
-      status: options.ingestImmediately === false ? 'needs_review' : 'extracting',
-      updatedAt: uploadedAt.toISOString()
-    }
-  };
+  source.metadata = withSearchReadiness(
+    {
+      ...toMetadataRecord(source.metadata),
+      uploadedFile: documentMetadata,
+      indexedChunkCount: 0,
+      processingStage: options.ingestImmediately === false ? 'not_indexed' : 'extracting',
+      processingError: undefined,
+      indexingError: undefined,
+      ingestionPipeline: {
+        status: options.ingestImmediately === false ? 'needs_review' : 'extracting',
+        updatedAt: uploadedAt.toISOString()
+      }
+    },
+    options.ingestImmediately === false ? 'not_indexed' : 'indexing'
+  );
   source.ingestionStatus = options.ingestImmediately === false ? 'metadata_only' : 'fetched';
   source.ingestionError = undefined;
   source.fetchedAt = uploadedAt;
@@ -1369,7 +2341,7 @@ export const uploadKnowledgeSourceDocument = async (
     });
 
     return {
-      source,
+      source: serializeKnowledgeSourceForAdmin(source.toObject()),
       uploadedFile: documentMetadata,
       ingestionStatus: source.ingestionStatus,
       message: 'Document uploaded. Run ingestion after review.'
@@ -1382,13 +2354,17 @@ export const uploadKnowledgeSourceDocument = async (
     if (extracted.text.length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH) {
       throw new ApiError(
         StatusCodes.UNPROCESSABLE_ENTITY,
-        'Extracted document text was too short to index safely.'
+        'Extracted document text was too short to index safely. The PDF may be scanned or image-only; OCR is not supported yet.'
       );
     }
 
     const result = await embedKnowledgeSourceText(source, extracted.text, {
       metadata: {
         uploadedFile: documentMetadata,
+        extractedPageCount: extracted.pageCount,
+        extractionStatus: 'extracted',
+        processingStage: 'indexing',
+        processingError: undefined,
         ingestionPipeline: {
           status: 'indexed',
           extractor: extracted.extractor,
@@ -1411,7 +2387,7 @@ export const uploadKnowledgeSourceDocument = async (
     });
 
     return {
-      source,
+      source: serializeKnowledgeSourceForAdmin(source.toObject()),
       uploadedFile: documentMetadata,
       chunkCount: result.chunkCount,
       sha256Hash: result.sha256Hash,
@@ -1422,15 +2398,18 @@ export const uploadKnowledgeSourceDocument = async (
     source.ingestionStatus = 'failed';
     source.ingestionError =
       error instanceof Error ? error.message : 'Document extraction failed';
-    source.metadata = {
-      ...source.metadata,
+    source.metadata = withSearchReadiness({
+      ...toMetadataRecord(source.metadata),
       uploadedFile: documentMetadata,
+      extractionStatus: 'failed',
+      processingStage: 'failed',
+      processingError: source.ingestionError,
       ingestionPipeline: {
         status: 'failed',
         updatedAt: new Date().toISOString(),
         error: source.ingestionError
       }
-    };
+    }, 'failed');
     await source.save();
 
     await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
@@ -1442,7 +2421,7 @@ export const uploadKnowledgeSourceDocument = async (
     });
 
     return {
-      source,
+      source: serializeKnowledgeSourceForAdmin(source.toObject()),
       uploadedFile: documentMetadata,
       ingestionStatus: source.ingestionStatus,
       error: source.ingestionError
@@ -1458,17 +2437,41 @@ export const ingestKnowledgeSource = async (
   ownerFilter(context.owner);
   const source = await getSource(sourceId);
   assertMergedKnowledgeSourceGovernance(source, {});
+  const normalizedMetadata = normalizeKnowledgeSourceMetadata(input.metadata);
 
   source.ingestionStatus = 'fetched';
   source.ingestionError = undefined;
+  source.metadata = withSearchReadiness(
+    {
+      ...toMetadataRecord(source.metadata),
+      ...toMetadataRecord(normalizedMetadata),
+      processingStage: 'indexing',
+      processingError: undefined,
+      indexingError: undefined
+    },
+    'indexing'
+  );
   await source.save();
 
   try {
-    const text = await readIngestionText(input);
-    const result = await embedKnowledgeSourceText(source, text, {
+    const resolvedText = await resolveKnowledgeSourceText(source, input);
+
+    if (resolvedText.text.length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH) {
+      throw new ApiError(
+        StatusCodes.UNPROCESSABLE_ENTITY,
+        'Extracted document text was too short to index safely. The PDF may be scanned or image-only; OCR is not supported yet.'
+      );
+    }
+
+    const result = await embedKnowledgeSourceText(source, resolvedText.text, {
       expectedSha256: input.expectedSha256,
-      metadata: input.metadata,
-      refreshMode: 'admin_ingest'
+      metadata: {
+        ...toMetadataRecord(normalizedMetadata),
+        ...toMetadataRecord(resolvedText.metadata)
+      },
+      refreshMode: 'admin_ingest',
+      contentType: resolvedText.contentType,
+      contentLength: resolvedText.contentLength
     });
 
     await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
@@ -1478,7 +2481,7 @@ export const ingestKnowledgeSource = async (
     });
 
     return {
-      source,
+      source: serializeKnowledgeSourceForAdmin(source.toObject()),
       chunkCount: result.chunkCount,
       sha256Hash: result.sha256Hash,
       extractedLegalMetadata: result.extractedLegalMetadata,
@@ -1488,6 +2491,12 @@ export const ingestKnowledgeSource = async (
     source.ingestionStatus = 'failed';
     source.ingestionError =
       error instanceof Error ? error.message : 'Knowledge source ingestion failed';
+    source.metadata = withSearchReadiness({
+      ...toMetadataRecord(source.metadata),
+      processingStage: 'failed',
+      processingError: source.ingestionError,
+      extractionStatus: source.metadata.extractionStatus ?? 'failed'
+    }, 'failed');
     await source.save();
     throw error;
   }
@@ -1501,8 +2510,9 @@ export const refreshKnowledgeSource = async (
   ownerFilter(context.owner);
   const source = await getSource(sourceId);
   assertMergedKnowledgeSourceGovernance(source, {});
+  const normalizedInput = normalizeKnowledgeSourceInput(input);
 
-  if (!source.url && !input.content && !input.localFilePath) {
+  if (!source.url && !normalizedInput.content && !normalizedInput.localFilePath) {
     throw new ApiError(
       StatusCodes.BAD_REQUEST,
       'Official source refresh requires a URL or extracted text content'
@@ -1524,16 +2534,26 @@ export const refreshKnowledgeSource = async (
   source.ingestionStatus = 'fetched';
   source.ingestionError = undefined;
   source.fetchedAt = verificationDate;
+  source.metadata = withSearchReadiness(
+    {
+      ...toMetadataRecord(source.metadata),
+      ...toMetadataRecord(normalizedInput.metadata),
+      processingStage: 'indexing',
+      processingError: undefined,
+      indexingError: undefined
+    },
+    'indexing'
+  );
   await source.save();
 
   try {
-    if (input.content || input.localFilePath) {
-      const text = await readIngestionText(input);
+    if (normalizedInput.content || normalizedInput.localFilePath) {
+      const text = await readIngestionText(normalizedInput);
       const result = await embedKnowledgeSourceText(source, text, {
-        expectedSha256: input.expectedSha256,
-        metadata: input.metadata,
+        expectedSha256: normalizedInput.expectedSha256,
+        metadata: normalizedInput.metadata,
         verificationDate,
-        nextRefreshAt: input.nextRefreshAt,
+        nextRefreshAt: normalizedInput.nextRefreshAt,
         refreshMode: 'admin_extracted_text',
         preserveApprovalOnUnchanged: true
       });
@@ -1547,7 +2567,7 @@ export const refreshKnowledgeSource = async (
       });
 
       return {
-        source,
+        source: serializeKnowledgeSourceForAdmin(source.toObject()),
         chunkCount: result.chunkCount,
         sha256Hash: result.sha256Hash,
         extractedLegalMetadata: result.extractedLegalMetadata,
@@ -1569,7 +2589,7 @@ export const refreshKnowledgeSource = async (
       source.lastVerifiedAt = verificationDate;
       source.lastUpdated = fetched.lastModified ?? source.lastUpdated;
       source.nextRefreshAt =
-        input.nextRefreshAt ?? addDays(verificationDate, OFFICIAL_REFRESH_DEFAULT_DAYS);
+        normalizedInput.nextRefreshAt ?? addDays(verificationDate, OFFICIAL_REFRESH_DEFAULT_DAYS);
       source.sha256Hash =
         fetched.sha256Hash ?? hashText(`${source.url}:${verificationDate.toISOString()}`);
       source.ingestionStatus = 'metadata_only';
@@ -1584,18 +2604,22 @@ export const refreshKnowledgeSource = async (
         }
       }
 
-      source.metadata = {
-        ...source.metadata,
-        ...input.metadata,
+      source.metadata = withSearchReadiness({
+        ...toMetadataRecord(source.metadata),
+        ...toMetadataRecord(normalizedInput.metadata),
         chunkCount: 0,
+        indexedChunkCount: 0,
         sha256Verified: Boolean(fetched.sha256Hash),
         contentHashChanged: hashChanged,
+        processingStage: 'not_indexed',
+        processingError: undefined,
+        indexingError: undefined,
         refreshMode: 'metadata_only',
         refreshMessage: fetched.message,
         contentType: fetched.contentType,
         contentLength: fetched.contentLength,
         lastVerifiedAt: verificationDate.toISOString()
-      };
+      }, 'not_indexed');
       await source.save();
 
       await auditRagAction(context, RAG_ACTIONS.sourceRefresh, source._id.toString(), {
@@ -1607,7 +2631,7 @@ export const refreshKnowledgeSource = async (
       });
 
       return {
-        source,
+        source: serializeKnowledgeSourceForAdmin(source.toObject()),
         chunkCount: 0,
         sha256Hash: source.sha256Hash,
         metadataOnly: true,
@@ -1618,10 +2642,10 @@ export const refreshKnowledgeSource = async (
     }
 
     const result = await embedKnowledgeSourceText(source, fetched.text, {
-      expectedSha256: input.expectedSha256,
-      metadata: input.metadata,
+      expectedSha256: normalizedInput.expectedSha256,
+      metadata: normalizedInput.metadata,
       verificationDate,
-      nextRefreshAt: input.nextRefreshAt,
+      nextRefreshAt: normalizedInput.nextRefreshAt,
       lastUpdated: fetched.lastModified,
       contentType: fetched.contentType,
       contentLength: fetched.contentLength,
@@ -1638,7 +2662,7 @@ export const refreshKnowledgeSource = async (
     });
 
     return {
-      source,
+      source: serializeKnowledgeSourceForAdmin(source.toObject()),
       chunkCount: result.chunkCount,
       sha256Hash: result.sha256Hash,
       extractedLegalMetadata: result.extractedLegalMetadata,
@@ -1651,6 +2675,11 @@ export const refreshKnowledgeSource = async (
     source.ingestionError =
       error instanceof Error ? error.message : 'Knowledge source refresh failed';
     source.lastVerifiedAt = verificationDate;
+    source.metadata = withSearchReadiness({
+      ...toMetadataRecord(source.metadata),
+      processingStage: 'failed',
+      processingError: source.ingestionError
+    }, 'failed');
     await source.save();
     throw error;
   }
@@ -1681,7 +2710,7 @@ export const approveKnowledgeSource = async (
 
   await auditRagAction(context, RAG_ACTIONS.sourceApprove, source._id.toString());
 
-  return source;
+  return serializeKnowledgeSourceForAdmin(source.toObject());
 };
 
 export const rejectKnowledgeSource = async (
@@ -1701,7 +2730,7 @@ export const rejectKnowledgeSource = async (
     reason: input.reason
   });
 
-  return source;
+  return serializeKnowledgeSourceForAdmin(source.toObject());
 };
 
 export const reindexKnowledgeSource = async (
@@ -1713,6 +2742,18 @@ export const reindexKnowledgeSource = async (
   if (!source.rawText) {
     throw new ApiError(StatusCodes.CONFLICT, 'Knowledge source has no ingested text to reindex');
   }
+
+  await RagChunkModel.updateMany(
+    { sourceId: source._id },
+    {
+      $set: {
+        'metadata.embeddingStatus': 'pending',
+        'metadata.embeddingError': undefined,
+        'metadata.pineconeVectorId': undefined,
+        'metadata.pineconeIndexedAt': undefined
+      }
+    }
+  );
 
   const result = await ingestKnowledgeSource(context, sourceId, {
     content: source.rawText,
@@ -1951,6 +2992,78 @@ const buildSourceFilter = (
   };
 };
 
+const searchRagWithPinecone = async (
+  input: RagSearchInput,
+  category: RagSourceCategory,
+  sourceFilter: FilterQuery<RagKnowledgeSourceDocument>,
+  queryVector: number[],
+  sourceIds: unknown[]
+): Promise<RagSearchResult[]> => {
+  const vectorResults = await pineconeVectorStore.search({
+    vector: queryVector,
+    topK: Math.max(input.topK ?? DEFAULT_RAG_TOP_K, DEFAULT_RAG_TOP_K),
+    filters: {
+      sourceCategory: category,
+      jurisdiction: input.jurisdiction,
+      topic: input.topic,
+      sourceIds: sourceIds.map((sourceId) => String(sourceId))
+    }
+  });
+
+  if (vectorResults.length === 0) {
+    return [];
+  }
+
+  const scoreByChunkId = new Map(vectorResults.map((result) => [result.chunkId, result.score]));
+  const orderByChunkId = new Map(vectorResults.map((result, index) => [result.chunkId, index]));
+  const chunkIds = vectorResults.map((result) => result.chunkId);
+  const candidateSourceIds = Array.from(new Set(vectorResults.map((result) => result.sourceId)));
+  const sources = await RagKnowledgeSourceModel.find({
+    ...sourceFilter,
+    _id: { $in: candidateSourceIds }
+  }).lean();
+  const sourceById = new Map(sources.map((source) => [source._id.toString(), source]));
+  const chunks = await RagChunkModel.find({
+    _id: { $in: chunkIds },
+    sourceId: { $in: sources.map((source) => source._id) }
+  }).lean();
+
+  const results: RagSearchResult[] = [];
+
+  for (const chunk of chunks) {
+      const source = sourceById.get(chunk.sourceId.toString());
+
+      if (!source) {
+        continue;
+      }
+
+      results.push({
+        chunkId: chunk._id.toString(),
+        sourceId: chunk.sourceId.toString(),
+        title: source.title,
+        publisher: source.publisher,
+        sourceCategory: source.sourceCategory,
+        sourceType: source.sourceType,
+        jurisdiction: source.jurisdiction,
+        topic: source.topic,
+        sectionRef: chunk.sectionRef,
+        citationUrl: chunk.citationUrl,
+        lastUpdated: source.lastUpdated,
+        text: chunk.chunkText,
+        score: scoreByChunkId.get(chunk._id.toString()),
+        metadata: chunk.metadata ?? {}
+      });
+  }
+
+  return results
+    .sort(
+      (left, right) =>
+        (orderByChunkId.get(left.chunkId) ?? Number.MAX_SAFE_INTEGER) -
+        (orderByChunkId.get(right.chunkId) ?? Number.MAX_SAFE_INTEGER)
+    )
+    .slice(0, input.topK ?? DEFAULT_RAG_TOP_K);
+};
+
 const isVectorSearchUnavailable = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error);
 
@@ -2083,15 +3196,73 @@ export const searchRag = async (
   await assertAiConsent(context.owner);
   const sourceCategory = classifySourceCategory(input);
   const sourceFilter = buildSourceFilter(input, sourceCategory);
-  const sourceIds = await RagKnowledgeSourceModel.find(sourceFilter)
+  const eligibleSources = await RagKnowledgeSourceModel.find(sourceFilter)
+    .select('_id metadata')
     .sort({ lastUpdated: -1 })
-    .distinct('_id');
+    .lean();
+  const sourceIds = eligibleSources.map((source) => source._id);
 
   if (sourceIds.length === 0) {
     return [];
   }
 
   const queryVector = await createEmbedding(input.query);
+  const pineconeCoverageIncomplete = eligibleSources.some((source) => {
+    const metadata = toMetadataRecord(source.metadata);
+    const chunkCount = metadataNumber(metadata, 'chunkCount') ?? 0;
+
+    if (chunkCount <= 0) {
+      return false;
+    }
+
+    const indexedChunkCount = metadataNumber(metadata, 'indexedChunkCount') ?? 0;
+
+    return (
+      Boolean(metadataString(metadata, 'indexingError')) ||
+      !metadataString(metadata, 'pineconeIndexedAt') ||
+      indexedChunkCount < chunkCount
+    );
+  });
+
+  if (isPineconeConfigured() && !pineconeCoverageIncomplete) {
+    try {
+      const pineconeResults = await searchRagWithPinecone(
+        input,
+        sourceCategory,
+        sourceFilter,
+        queryVector,
+        sourceIds
+      );
+
+      await auditRagAction(context, RAG_ACTIONS.search, undefined, {
+        resultCount: pineconeResults.length,
+        topK: input.topK ?? DEFAULT_RAG_TOP_K,
+        vectorStore: 'pinecone'
+      });
+
+      return pineconeResults;
+    } catch (error) {
+      logger.error(
+        {
+          error,
+          sourceCategory,
+          indexName: getPineconeIndexName(),
+          namespace: getPineconeNamespace()
+        },
+        'Pinecone RAG search failed; falling back to Mongo vector search'
+      );
+    }
+  } else if (isPineconeConfigured() && pineconeCoverageIncomplete) {
+    logger.warn(
+      {
+        sourceCategory,
+        eligibleSourceCount: eligibleSources.length,
+        indexName: getPineconeIndexName(),
+        namespace: getPineconeNamespace()
+      },
+      'Pinecone coverage incomplete for eligible sources; using Mongo vector search fallback'
+    );
+  }
 
   const pipeline: PipelineStage[] = [
     {
@@ -2154,7 +3325,8 @@ export const searchRag = async (
   const results = await RagChunkModel.aggregate<RagAggregateResult>(pipeline);
   await auditRagAction(context, RAG_ACTIONS.search, undefined, {
     resultCount: results.length,
-    topK: input.topK ?? DEFAULT_RAG_TOP_K
+    topK: input.topK ?? DEFAULT_RAG_TOP_K,
+    vectorStore: 'mongo'
   });
 
   return results.map((result) => ({
