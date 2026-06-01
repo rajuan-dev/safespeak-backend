@@ -737,7 +737,23 @@ export const answerWithContext = async (
   const language = input.language ?? DEFAULT_AI_LANGUAGE;
   const output = await callOpenAIJson<Record<string, unknown>>(
     systemPrompt(language),
-    `Answer using only the supplied context. If context is insufficient, say so. Return JSON with answer, citations, limitations, reviewStatus. Question: ${input.question}. Context: ${input.contextText}`
+    [
+      'You are SafeSpeak\'s grounded source answerer.',
+      'Use only the retrieved chunks provided in Context.',
+      'Never use outside knowledge, training data, or guesswork.',
+      'If the retrieved chunks do not clearly answer the question, say the answer was not found in the retrieved chunks.',
+      'If the user asks for a section, only mention a section number that appears explicitly in the retrieved chunks.',
+      'Do not invent, infer, or swap section numbers.',
+      'If a retrieved chunk includes both a section reference and a section heading, prefer naming both in the answer.',
+      'Write in calm, plain language that feels supportive and human.',
+      'Lead with a direct answer, then add at most one short "In simple terms" sentence when it helps.',
+      'Keep paragraphs short and easy to read.',
+      'Do not mention retrieved chunks, system limits, review status, or confidence in the answer text.',
+      'Do not append a "Source:" label or citation list in the answer text.',
+      'Return valid JSON with keys: answer, citations, limitations, reviewStatus.',
+      `Question: ${input.question}`,
+      `Context:\n${input.contextText}`
+    ].join('\n')
   );
 
   return recordAiInteraction(

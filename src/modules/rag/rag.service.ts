@@ -115,6 +115,8 @@ const LARGE_DOCUMENT_PAGE_WARNING_THRESHOLD = 100;
 const LARGE_DOCUMENT_CHUNK_WARNING_THRESHOLD = 1000;
 const MAX_BATCH_ATTEMPTS = 2;
 const SEARCH_READINESS_DELAY_MS = 30000;
+const PINECONE_SEARCH_CANDIDATE_MULTIPLIER = 5;
+const PINECONE_SEARCH_MIN_CANDIDATES = 20;
 const KNOWLEDGE_DOCUMENT_ALLOWED_EXTENSIONS = new Set([
   '.pdf',
   '.doc',
@@ -506,6 +508,33 @@ type LegislationChunkCandidate = {
 const LEGISLATION_TARGET_CHARS = 4200;
 const LEGISLATION_MAX_CHARS = 6000;
 const LEGISLATION_OVERLAP_CHARS = 500;
+const LEGISLATION_PAGE_MARKER_PATTERN = /^--\s*\d+\s+of\s+\d+\s*--$/i;
+const LEGISLATION_DOT_LEADER_PATTERN = /\.{8,}\s*\d+\s*$/;
+const LEGISLATION_RUNNING_HEADER_PATTERN =
+  /^(?:[A-Z][A-Za-z'’().,&/-]+(?:\s+[A-Z][A-Za-z'’().,&/-]+){0,8}\s+(?:Act|Regulation|Code|Charter|Constitution|Policy))(?:\s+\d{4})?\s+(?:\d+|[ivxlcdm]+)$/i;
+const LEGISLATION_PAGE_NUMBER_TITLE_PATTERN =
+  /^(?:\d{1,4}|[ivxlcdm]+)\s+(?:[A-Z][A-Za-z'’().,&/-]+(?:\s+[A-Z][A-Za-z'’().,&/-]+){0,8}\s+(?:Act|Regulation|Code|Charter|Constitution|Policy))(?:\s+\d{4})?$/i;
+const LEGAL_QUERY_STOP_WORDS = new Set([
+  'according',
+  'act',
+  'an',
+  'and',
+  'are',
+  'by',
+  'deals',
+  'does',
+  'for',
+  'is',
+  'of',
+  'section',
+  'the',
+  'to',
+  'under',
+  'uploaded',
+  'what',
+  'which',
+  'with'
+]);
 
 const toMetadataRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -529,6 +558,71 @@ const metadataStringArray = (metadata: Record<string, unknown>, key: string): st
     .filter(Boolean);
 };
 
+const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
+const normalizeLegalSearchText = (value: string): string =>
+  collapseWhitespace(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const normalizeSectionReferenceValue = (value: string): string =>
+  normalizeLegalSearchText(value).replace(/^(section|schedule|clause|cl|s)\s+/, '').trim();
+
+const extractExplicitSectionReferences = (value: string): string[] =>
+  Array.from(
+    new Set(
+      Array.from(
+        value.matchAll(/\b(?:section|sections|schedule|s\.?|clause|cl\.?)\s*([0-9A-Za-z().-]+)/gi)
+      )
+        .map((match) => normalizeSectionReferenceValue(match[1] ?? ''))
+        .filter(Boolean)
+    )
+  );
+
+const extractImportantLegalTerms = (value: string): string[] =>
+  Array.from(
+    new Set(
+      normalizeLegalSearchText(value)
+        .split(' ')
+        .filter(
+          (term) =>
+            term.length >= 3 &&
+            !LEGAL_QUERY_STOP_WORDS.has(term) &&
+            !/^\d+$/.test(term)
+        )
+    )
+  );
+
+const buildLegalSearchLabel = (result: Pick<RagSearchResult, 'title' | 'sectionRef' | 'metadata'>): string => {
+  const metadata = toMetadataRecord(result.metadata);
+  const sectionHeading = metadataString(metadata, 'sectionHeading');
+
+  return [result.title, result.sectionRef, sectionHeading].filter(Boolean).join(' ');
+};
+
+const looksLikeTableOfContentsChunk = (text: string): boolean =>
+  LEGISLATION_DOT_LEADER_PATTERN.test(text) || /(^|\n)contents(\n|$)/i.test(text);
+
+const isLikelyLegislationRunningHeaderLine = (line: string): boolean => {
+  const trimmed = line.trim();
+
+  return (
+    LEGISLATION_PAGE_MARKER_PATTERN.test(trimmed) ||
+    LEGISLATION_DOT_LEADER_PATTERN.test(trimmed) ||
+    /^Authorised Version\b/i.test(trimmed) ||
+    /^Compilation No\.\s*\d+/i.test(trimmed) ||
+    LEGISLATION_RUNNING_HEADER_PATTERN.test(trimmed) ||
+    LEGISLATION_PAGE_NUMBER_TITLE_PATTERN.test(trimmed)
+  );
+};
+
+const shouldSkipLegislationLine = (line: string): boolean => {
+  const trimmed = line.trim();
+
+  return !trimmed || isLikelyLegislationRunningHeaderLine(trimmed);
+};
+
 const isLegislationSource = (
   source: Pick<RagKnowledgeSourceDocument, 'sourceCategory' | 'sourceType' | 'metadata'>
 ): boolean => {
@@ -545,10 +639,15 @@ const isLegislationSource = (
   );
 };
 
-const detectLegalHeading = (
+export const detectLegalHeading = (
   line: string
 ): Partial<Omit<LegislationChunkCandidate, 'text'>> | undefined => {
   const trimmed = line.trim();
+
+  if (!trimmed || shouldSkipLegislationLine(trimmed)) {
+    return undefined;
+  }
+
   const sectionMatch =
     trimmed.match(/^(?:section|s)\.?\s+([0-9A-Za-z][0-9A-Za-z().-]*)\s*(.*)$/i) ??
     trimmed.match(/^([0-9]{1,4}[A-Za-z]?)\s+([A-Z][^\n]{3,160})$/);
@@ -634,6 +733,10 @@ const chunkLegislationText = (text: string): LegislationChunkCandidate[] => {
   };
 
   for (const line of lines) {
+    if (shouldSkipLegislationLine(line)) {
+      continue;
+    }
+
     const heading = detectLegalHeading(line);
 
     if (heading?.part) currentPart = heading.part;
@@ -2766,14 +2869,14 @@ export const reindexKnowledgeSource = async (
   return result;
 };
 
-const classifySourceCategory = (input: RagAnswerInput | RagSearchInput): RagSourceCategory => {
+export const classifySourceCategory = (input: RagAnswerInput | RagSearchInput): RagSourceCategory => {
   if (input.sourceCategory) {
     return input.sourceCategory;
   }
 
   const q = ('question' in input ? input.question : input.query).toLowerCase();
   if (
-    /(law|legal|legislation|act|rights|court|discrimination|racial abuse|racial hatred|vilification|harassment|employer|what are my options)/i.test(
+    /\b(law|legal|legislation|act|rights|court|discrimination|racial abuse|racial hatred|vilification|harassment|employer|privacy act|personal information|privacy principles?|australian privacy principles|interference with privacy|what are my options|what section|which section|schedule\s+\d+|section\s+[0-9a-z])/i.test(
       q
     )
   ) {
@@ -2813,6 +2916,110 @@ const uniqueByChunkId = (results: RagSearchResult[]): RagSearchResult[] => {
 
   return deduped;
 };
+
+export const buildFocusedLegalSearchQuery = (query: string): string => {
+  const trimmedQuery = collapseWhitespace(query).replace(/[?]+$/, '').trim();
+
+  if (!trimmedQuery) {
+    return query.trim();
+  }
+
+  const sectionTopicMatch = trimmedQuery.match(
+    /\b(?:what|which)\s+section(?:\s+of\s+the\s+[^?]+?)?\s+(?:deals with|covers|defines|contains|mentions|addresses|relates to)\s+(.+)$/i
+  );
+
+  if (sectionTopicMatch?.[1]) {
+    return collapseWhitespace(sectionTopicMatch[1]);
+  }
+
+  const definitionTopicMatch = trimmedQuery.match(
+    /^(?:what\s+(?:is|are)|what\s+does|define|definition of|meaning of)\s+(.+)$/i
+  );
+
+  if (definitionTopicMatch?.[1]) {
+    return collapseWhitespace(
+      definitionTopicMatch[1]
+        .replace(/\s+(?:under|in)\s+the\s+[^?]+$/i, '')
+        .replace(/\s+according to\s+[^?]+$/i, '')
+    );
+  }
+
+  return collapseWhitespace(
+    trimmedQuery
+      .replace(/^according to (?:the )?(?:uploaded )?[^,]+,\s*/i, '')
+      .replace(/\baccording to the uploaded\b/gi, '')
+      .replace(/\baccording to the\b/gi, '')
+      .replace(/\bunder the [A-Z][A-Za-z0-9'’().,&/-]*(?:\s+[A-Z][A-Za-z0-9'’().,&/-]+){0,10}\b/g, '')
+  );
+};
+
+const buildSearchEmbeddingQuery = (query: string, sourceCategory: RagSourceCategory): string => {
+  if (sourceCategory !== 'official_legal_source') {
+    return query;
+  }
+
+  const focusedQuery = buildFocusedLegalSearchQuery(query);
+
+  return focusedQuery || query;
+};
+
+const computeLegalResultRank = (result: RagSearchResult, query: string): number => {
+  const focusedQuery = buildFocusedLegalSearchQuery(query);
+  const normalizedFocusedQuery = normalizeLegalSearchText(focusedQuery);
+  const normalizedText = normalizeLegalSearchText(result.text);
+  const normalizedLabel = normalizeLegalSearchText(buildLegalSearchLabel(result));
+  const normalizedCorpus = `${normalizedLabel} ${normalizedText}`.trim();
+  const explicitSections = extractExplicitSectionReferences(query);
+  const resultSectionRef = normalizeSectionReferenceValue(result.sectionRef ?? '');
+  const importantTerms = extractImportantLegalTerms(focusedQuery);
+  const matchedTerms = importantTerms.filter((term) => normalizedCorpus.includes(term));
+  let score = (result.score ?? 0) * 100;
+
+  if (normalizedFocusedQuery && normalizedFocusedQuery.length >= 12) {
+    if (normalizedLabel.includes(normalizedFocusedQuery)) {
+      score += 36;
+    }
+
+    if (normalizedText.includes(normalizedFocusedQuery)) {
+      score += 28;
+    }
+
+    if (normalizedText.includes(`${normalizedFocusedQuery} means`)) {
+      score += 18;
+    }
+
+    if (normalizedText.startsWith(normalizedFocusedQuery)) {
+      score += 12;
+    }
+  }
+
+  if (importantTerms.length > 0) {
+    score += matchedTerms.length * 5;
+
+    if (matchedTerms.length === importantTerms.length) {
+      score += 14;
+    }
+  }
+
+  if (explicitSections.length > 0 && explicitSections.includes(resultSectionRef)) {
+    score += 32;
+  }
+
+  if (looksLikeTableOfContentsChunk(result.text)) {
+    score -= 18;
+  }
+
+  if (isLikelyLegislationRunningHeaderLine(result.text.split('\n')[0] ?? '')) {
+    score -= 22;
+  }
+
+  return score;
+};
+
+const rerankLegalSearchResults = (results: RagSearchResult[], query: string): RagSearchResult[] =>
+  [...results].sort(
+    (left, right) => computeLegalResultRank(right, query) - computeLegalResultRank(left, query)
+  );
 
 const buildTimelineRagCategories = (input: RagTimelineAssistantInput): RagSourceCategory[] => {
   const categories = new Set<RagSourceCategory>();
@@ -2999,9 +3206,14 @@ const searchRagWithPinecone = async (
   queryVector: number[],
   sourceIds: unknown[]
 ): Promise<RagSearchResult[]> => {
+  const requestedTopK = input.topK ?? DEFAULT_RAG_TOP_K;
+  const candidateTopK =
+    category === 'official_legal_source'
+      ? Math.max(requestedTopK * PINECONE_SEARCH_CANDIDATE_MULTIPLIER, PINECONE_SEARCH_MIN_CANDIDATES)
+      : Math.max(requestedTopK, DEFAULT_RAG_TOP_K);
   const vectorResults = await pineconeVectorStore.search({
     vector: queryVector,
-    topK: Math.max(input.topK ?? DEFAULT_RAG_TOP_K, DEFAULT_RAG_TOP_K),
+    topK: candidateTopK,
     filters: {
       sourceCategory: category,
       jurisdiction: input.jurisdiction,
@@ -3055,13 +3267,19 @@ const searchRagWithPinecone = async (
       });
   }
 
-  return results
+  const orderedResults = results
     .sort(
       (left, right) =>
         (orderByChunkId.get(left.chunkId) ?? Number.MAX_SAFE_INTEGER) -
         (orderByChunkId.get(right.chunkId) ?? Number.MAX_SAFE_INTEGER)
-    )
-    .slice(0, input.topK ?? DEFAULT_RAG_TOP_K);
+    );
+
+  const rerankedResults =
+    category === 'official_legal_source'
+      ? rerankLegalSearchResults(orderedResults, input.query)
+      : orderedResults;
+
+  return rerankedResults.slice(0, requestedTopK);
 };
 
 const isVectorSearchUnavailable = (error: unknown): boolean => {
@@ -3206,7 +3424,8 @@ export const searchRag = async (
     return [];
   }
 
-  const queryVector = await createEmbedding(input.query);
+  const searchQuery = buildSearchEmbeddingQuery(input.query, sourceCategory);
+  const queryVector = await createEmbedding(searchQuery);
   const pineconeCoverageIncomplete = eligibleSources.some((source) => {
     const metadata = toMetadataRecord(source.metadata);
     const chunkCount = metadataNumber(metadata, 'chunkCount') ?? 0;
@@ -3329,7 +3548,7 @@ export const searchRag = async (
     vectorStore: 'mongo'
   });
 
-  return results.map((result) => ({
+  const mappedResults = results.map((result) => ({
     chunkId: result._id.toString(),
     sourceId: result.sourceId.toString(),
     title: result.source.title,
@@ -3345,6 +3564,218 @@ export const searchRag = async (
     score: result.score,
     metadata: result.metadata ?? {}
   }));
+
+  return sourceCategory === 'official_legal_source'
+    ? rerankLegalSearchResults(mappedResults, input.query)
+    : mappedResults;
+};
+
+const buildRagContextEntry = (result: RagSearchResult, index: number): string => {
+  const metadata = toMetadataRecord(result.metadata);
+  const sectionHeading = metadataString(metadata, 'sectionHeading');
+  const heading = [result.title, result.sectionRef, sectionHeading].filter(Boolean).join(' | ');
+
+  return `[${index + 1}] ${heading || result.title}\n${result.text}`;
+};
+
+const buildRagContextText = (results: RagSearchResult[]): string =>
+  results.map((result, index) => buildRagContextEntry(result, index)).join('\n\n');
+
+const extractLeadingLegalHeadingText = (result: RagSearchResult): string | undefined => {
+  const metadata = toMetadataRecord(result.metadata);
+  const metadataHeading = metadataString(metadata, 'sectionHeading');
+  const lines = result.text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return metadataHeading;
+  }
+
+  const normalizedFirstLine = lines[0].replace(/^(?:section\s+)?[0-9A-Za-z().-]+\s+/i, '').trim();
+  const secondLine =
+    lines[1] &&
+    !/^\(?[0-9]+[A-Za-z]?\)?/.test(lines[1]) &&
+    !/^Authorised Version\b/i.test(lines[1]) &&
+    !/^Compilation No\.\s*\d+/i.test(lines[1]) &&
+    lines[1] !== normalizedFirstLine
+      ? lines[1]
+      : '';
+  const combinedHeading = collapseWhitespace(
+    [normalizedFirstLine, secondLine].filter(Boolean).join(' ')
+  );
+
+  return combinedHeading || metadataHeading;
+};
+
+const selectGroundedLegalResults = (results: RagSearchResult[], query: string): RagSearchResult[] => {
+  const focusedQuery = buildFocusedLegalSearchQuery(query);
+  const normalizedFocusedQuery = normalizeLegalSearchText(focusedQuery);
+  const explicitSections = extractExplicitSectionReferences(query);
+  const importantTerms = extractImportantLegalTerms(focusedQuery);
+  const annotatedResults = results.map((result) => {
+    const normalizedText = normalizeLegalSearchText(result.text);
+    const normalizedLabel = normalizeLegalSearchText(buildLegalSearchLabel(result));
+    const normalizedCorpus = `${normalizedLabel} ${normalizedText}`.trim();
+    const matchedTerms = importantTerms.filter((term) => normalizedCorpus.includes(term));
+    const resultSectionRef = normalizeSectionReferenceValue(result.sectionRef ?? '');
+    const exactPhraseMatch =
+      normalizedFocusedQuery.length >= 8 &&
+      (normalizedLabel.includes(normalizedFocusedQuery) ||
+        normalizedText.includes(normalizedFocusedQuery));
+    const definitionMatch =
+      normalizedFocusedQuery.length >= 8 &&
+      normalizedText.includes(`${normalizedFocusedQuery} means`);
+    const explicitSectionMatch =
+      explicitSections.length > 0 && explicitSections.includes(resultSectionRef);
+    const strongTermMatch =
+      importantTerms.length > 0 &&
+      matchedTerms.length >= Math.min(2, importantTerms.length) &&
+      matchedTerms.length / importantTerms.length >= 0.6;
+
+    return {
+      result,
+      explicitSectionMatch,
+      definitionMatch,
+      exactPhraseMatch,
+      strongTermMatch
+    };
+  });
+
+  if (annotatedResults.some((entry) => entry.definitionMatch)) {
+    return annotatedResults
+      .filter((entry) => entry.definitionMatch || entry.explicitSectionMatch)
+      .map((entry) => entry.result)
+      .slice(0, 4);
+  }
+
+  if (annotatedResults.some((entry) => entry.explicitSectionMatch)) {
+    return annotatedResults
+      .filter((entry) => entry.explicitSectionMatch || entry.exactPhraseMatch)
+      .map((entry) => entry.result)
+      .slice(0, 4);
+  }
+
+  if (annotatedResults.some((entry) => entry.exactPhraseMatch)) {
+    return annotatedResults
+      .filter((entry) => entry.exactPhraseMatch)
+      .map((entry) => entry.result)
+      .slice(0, 4);
+  }
+
+  const groundedResults = annotatedResults
+    .filter((entry) => entry.strongTermMatch)
+    .map((entry) => entry.result)
+    .slice(0, 4);
+
+  return groundedResults;
+};
+
+export const buildGroundedSectionAnswer = (
+  question: string,
+  results: RagSearchResult[]
+): string | undefined => {
+  if (!/\b(?:what|which)\s+section\b/i.test(question) || results.length === 0) {
+    return undefined;
+  }
+
+  const topResult = results[0];
+
+  if (!topResult.sectionRef) {
+    return undefined;
+  }
+
+  const sectionRef = topResult.sectionRef.replace(/^Section\s+/i, 'section ');
+  const focusedQuery = buildFocusedLegalSearchQuery(question);
+  const sourceTitle = /^the\s+/i.test(topResult.title) ? topResult.title : `the ${topResult.title}`;
+  const sectionSubject = focusedQuery || 'that issue';
+  const heading = extractLeadingLegalHeadingText(topResult);
+  const simpleTopic =
+    heading && focusedQuery && !heading.toLowerCase().includes(focusedQuery.toLowerCase())
+      ? collapseWhitespace(heading).replace(/\.\.+$/, '')
+      : sectionSubject;
+
+  return [
+    `Yes — under ${sourceTitle}, ${sectionSubject} is dealt with in ${sectionRef}.`,
+    `In simple terms, this section is about ${simpleTopic}.`,
+    `I'm not making a legal decision for you, but this may be relevant if that issue affects your situation.`
+  ].join('\n\n');
+};
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export const buildGroundedDefinitionAnswer = (
+  question: string,
+  results: RagSearchResult[]
+): string | undefined => {
+  if (results.length === 0 || /\b(?:what|which)\s+section\b/i.test(question)) {
+    return undefined;
+  }
+
+  const focusedQuery = buildFocusedLegalSearchQuery(question);
+  const topResult = results[0];
+
+  if (!focusedQuery || !topResult?.sectionRef) {
+    return undefined;
+  }
+
+  const definitionMatch = topResult.text.match(
+    new RegExp(
+      `${escapeRegExp(focusedQuery)}\\s+means\\s+([\\s\\S]+?)(?=\\nNote:|\\n[A-Za-z][A-Za-z'’().,&/-]+\\s+means|$)`,
+      'i'
+    )
+  );
+  const definitionText = definitionMatch?.[1] ? collapseWhitespace(definitionMatch[1]) : '';
+
+  if (!definitionText) {
+    return undefined;
+  }
+
+  const sectionRef = topResult.sectionRef.replace(/^Section\s+/i, 'section ');
+  const normalizedDefinitionText = definitionText.replace(/\.\.+$/, '.');
+  const sourceTitle = /^the\s+/i.test(topResult.title) ? topResult.title : `the ${topResult.title}`;
+
+  return [
+    `Under ${sourceTitle}, ${sectionRef} says ${focusedQuery.toLowerCase()} means ${normalizedDefinitionText}`,
+    `In simple terms, this is the definition the source gives for that term.`
+  ].join('\n\n');
+};
+
+export const buildGroundedLegalNotFoundAnswer = (
+  question: string,
+  rawTopTitle: string,
+  focusedQuery: string
+): string => {
+  const sourceTitle = rawTopTitle || 'that legal source';
+  const normalizedTitle = /^the\s+/i.test(sourceTitle) ? sourceTitle : `the ${sourceTitle}`;
+
+  if (
+    /\b(domestic violence|family violence)\b/i.test(question) &&
+    /\b(prison|sentence|jail|gaol|imprison(?:ment|ed|ing)?)\b/i.test(question)
+  ) {
+    return [
+      `I couldn't find anything in ${normalizedTitle} that sets a prison sentence for domestic violence.`,
+      `That Act mainly deals with privacy, personal information, and privacy complaints, so this may not be the right source for that question.`,
+      `If someone is in immediate danger, emergency or specialist family violence support is more appropriate.`
+    ].join('\n\n');
+  }
+
+  return [
+    `I couldn't find anything in ${normalizedTitle} that clearly answers that question.`,
+    `This may mean that source does not cover ${focusedQuery || 'that issue'}, or that I need a more specific question to find the right section.`
+  ].join('\n\n');
+};
+
+const looksLikeSourceBackedQuestion = (message: string): boolean => {
+  const trimmedMessage = collapseWhitespace(message);
+
+  return (
+    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy)\b/i.test(
+      trimmedMessage
+    ) &&
+    (/\?/.test(trimmedMessage) || trimmedMessage.split(' ').length <= 8)
+  );
 };
 
 export const answerRag = async (
@@ -3353,6 +3784,8 @@ export const answerRag = async (
 ): Promise<Record<string, unknown>> => {
   const category = classifySourceCategory(input);
   let results: RagSearchResult[] = [];
+  let rawResultCount = 0;
+  let rawTopTitle = '';
   let fallbackReason: 'insufficient_sources' | 'vector_unavailable' = 'insufficient_sources';
   const includeNswLegalAwareness = shouldAttachNswLegalAwareness({
     text: input.question,
@@ -3366,6 +3799,12 @@ export const answerRag = async (
       query: input.question,
       sourceCategory: category
     });
+    rawResultCount = results.length;
+    rawTopTitle = results[0]?.title ?? '';
+
+    if (category === 'official_legal_source') {
+      results = selectGroundedLegalResults(results, input.question);
+    }
   } catch (error) {
     if (!isVectorSearchUnavailable(error)) {
       throw error;
@@ -3402,6 +3841,21 @@ export const answerRag = async (
   });
 
   if (insufficientSources) {
+    if (category === 'official_legal_source' && rawResultCount > 0) {
+      const focusedQuery = buildFocusedLegalSearchQuery(input.question).toLowerCase() || 'that topic';
+
+      return {
+        answer: buildGroundedLegalNotFoundAnswer(input.question, rawTopTitle, focusedQuery),
+        disclaimer: buildInformationOnlyDisclaimer(),
+        citations: [],
+        sourceCategoriesUsed: [],
+        confidence: 'low',
+        pendingHumanReview: true,
+        safetyFlags: { crisisRisk, legalAdviceRisk, clinicalAdviceRisk, insufficientSources: true },
+        legalAwareness
+      };
+    }
+
     return buildFallbackAnswer(
       input.question,
       category,
@@ -3411,9 +3865,7 @@ export const answerRag = async (
     );
   }
 
-  const contextText = results
-    .map((result, index) => `[${index + 1}] ${result.title}: ${result.text}`)
-    .join('\n\n');
+  const contextText = buildRagContextText(results);
 
   const modelResponse = await answerWithContext(context, {
     question: input.question,
@@ -3424,8 +3876,14 @@ export const answerRag = async (
 
   const output = (modelResponse.output ?? {}) as Record<string, unknown>;
   const answerCandidate = output.answer ?? output.text;
+  const deterministicAnswer =
+    buildGroundedSectionAnswer(input.question, results) ??
+    buildGroundedDefinitionAnswer(input.question, results);
   const answerText = enforceAiOutputGuardrails(
-    typeof answerCandidate === 'string' ? answerCandidate : JSON.stringify(answerCandidate ?? '')
+    deterministicAnswer ||
+      (typeof answerCandidate === 'string'
+        ? answerCandidate
+        : JSON.stringify(answerCandidate ?? ''))
   );
 
   await auditRagAction(context, RAG_ACTIONS.answer, undefined, {
@@ -3538,8 +3996,6 @@ const WHEN_PATTERNS = [
   /\b(?:around|about)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i,
   /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i
 ];
-
-const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
 
 const trimTimelineValueWords = (value: string, limit: number): string => {
   const words = collapseWhitespace(value).split(' ');
@@ -3826,6 +4282,38 @@ export const runTimelineAssistant = async (
 ): Promise<Record<string, unknown>> => {
   await assertAiConsent(context.owner);
 
+  if (looksLikeSourceBackedQuestion(input.message)) {
+    const groundedAnswer = await answerRag(context, {
+      query: input.message,
+      question: input.message,
+      topK: input.topK,
+      language: input.language,
+      jurisdiction: input.jurisdiction
+    });
+
+    return {
+      assistantMessage:
+        typeof groundedAnswer.answer === 'string' && groundedAnswer.answer.trim()
+          ? enforceAiOutputGuardrails(groundedAnswer.answer)
+          : 'I could not find that in the retrieved approved sources.',
+      nextQuestion: '',
+      timeline: normalizeTimelineObject(input.timeline),
+      readyForSubmission: false,
+      confidence: groundedAnswer.confidence ?? 'low',
+      disclaimer: groundedAnswer.disclaimer ?? buildInformationOnlyDisclaimer(),
+      citations: Array.isArray(groundedAnswer.citations) ? groundedAnswer.citations : [],
+      legalAwareness: groundedAnswer.legalAwareness,
+      rag: {
+        used: Array.isArray(groundedAnswer.citations) && groundedAnswer.citations.length > 0,
+        unavailable: false,
+        resultCount: Array.isArray(groundedAnswer.citations) ? groundedAnswer.citations.length : 0
+      },
+      reviewStatus: groundedAnswer.pendingHumanReview
+        ? 'pending_human_review'
+        : 'grounded_source_answer'
+    };
+  }
+
   let results: RagSearchResult[] = [];
   let ragUnavailable = false;
 
@@ -3835,9 +4323,7 @@ export const runTimelineAssistant = async (
     ragUnavailable = true;
   }
 
-  const contextText = results
-    .map((result, index) => `[${index + 1}] ${result.title}: ${result.text}`)
-    .join('\n\n');
+  const contextText = buildRagContextText(results);
   const citations: AiCitation[] = results.map((result) => ({
     sourceType: 'knowledge_source',
     sourceId: result.sourceId,
