@@ -87,7 +87,7 @@ export interface ConversationFlowTriageDocument {
   missingInformation: string[];
   canProceedToRecommendations: boolean;
   matchedResourceTypes: string[];
-  relatedIssueTypes: ConversationFlowCategory[];
+  relatedIssueTypes: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -309,7 +309,6 @@ const conversationFlowTriageSchema = new Schema<ConversationFlowTriageDocument>(
     },
     relatedIssueTypes: {
       type: [String],
-      enum: CONVERSATION_FLOW_CATEGORIES,
       default: []
     }
   },

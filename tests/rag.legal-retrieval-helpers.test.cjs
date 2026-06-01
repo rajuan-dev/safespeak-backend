@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  buildAssistantSourceDisplayMeta,
   buildGroundedDefinitionAnswer,
   buildGroundedLegalNotFoundAnswer,
   buildGroundedSectionAnswer,
@@ -77,6 +78,61 @@ test('grounded definition answers stay plain and cite the correct section', () =
 
   assert.match(answer, /^Under the Privacy Act 1988, section 6 says personal information means/i);
   assert.match(answer, /In simple terms, this is the definition the source gives for that term\./);
+});
+
+test('assistant source display meta shows compact legal footers only for grounded legal lookups', () => {
+  const legalLookup = buildAssistantSourceDisplayMeta({
+    message: 'What is personal information under the Privacy Act 1988?',
+    citations: [
+      {
+        title: 'Privacy Act 1988',
+        sectionRef: 'Section 6',
+        url: 'https://example.test/privacy-act-section-6'
+      }
+    ]
+  });
+  const explicitCitationRequest = buildAssistantSourceDisplayMeta({
+    message:
+      'According to the uploaded Privacy Act 1988, what section deals with serious interference with privacy?',
+    citations: [
+      {
+        title: 'Privacy Act 1988',
+        sectionRef: 'Section 13G',
+        url: 'https://example.test/privacy-act-section-13g'
+      }
+    ]
+  });
+  const supportiveReply = buildAssistantSourceDisplayMeta({
+    message: 'Someone shared my private photos.',
+    citations: [
+      {
+        title: 'Privacy Act 1988',
+        sectionRef: 'Section 6',
+        url: 'https://example.test/privacy-act-section-6'
+      }
+    ]
+  });
+  const notGrounded = buildAssistantSourceDisplayMeta({
+    message: 'What prison sentence does the Privacy Act give for domestic violence?',
+    citations: []
+  });
+
+  assert.deepEqual(legalLookup, {
+    showSources: true,
+    sourceDisplayReason: 'legal_lookup'
+  });
+  assert.deepEqual(explicitCitationRequest, {
+    showSources: true,
+    sourceDisplayReason: 'explicit_citation_request'
+  });
+  assert.deepEqual(supportiveReply, {
+    showSources: false,
+    sourceDisplayReason: 'hidden_support_reply'
+  });
+  assert.deepEqual(notGrounded, {
+    showSources: false,
+    sourceDisplayReason: 'not_directly_grounded'
+  });
 });
 
 test('grounded not-found answers stay supportive for irrelevant domestic violence sentencing questions', () => {

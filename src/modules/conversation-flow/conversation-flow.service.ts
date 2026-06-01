@@ -4,9 +4,11 @@ import { Types, type HydratedDocument } from 'mongoose';
 import { ApiError } from '@common/errors/ApiError';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { MicroEducationModel } from '@modules/microeducation/microeducation.model';
-import type { MicroEducationChip } from '@modules/microeducation/microeducation.types';
 import { RagKnowledgeSourceModel } from '@modules/rag/rag.model';
-import { runTimelineAssistant } from '@modules/rag/rag.service';
+import {
+  buildAssistantSourceDisplayMeta,
+  runTimelineAssistant
+} from '@modules/rag/rag.service';
 import { SupportServiceModel } from '@modules/support/support.model';
 
 import { CONVERSATION_FLOW_ACTIONS, CONVERSATION_FLOW_CATEGORIES } from './conversation-flow.constants';
@@ -223,9 +225,29 @@ type ConversationFlowStructuredFacts = {
   threatsPresent: boolean;
   immediateDanger: boolean;
   evidenceAvailable: boolean;
+  domesticFamilyContext: boolean;
+  coerciveControl: boolean;
+  blackmailOrExtortion: boolean;
+  privatePhotosOrMessages: boolean;
+  personalDataLeak: boolean;
+  companyOrOrganisationInvolved: boolean;
+  employerInvolved: boolean;
+  healthInformation: boolean;
+  identityDocumentsExposed: boolean;
+  bankDetailsExposed: boolean;
+  moneyLost: boolean;
+  protectedAttribute: boolean;
+  schoolContext: boolean;
+  workplaceDiscrimination: boolean;
+  housingOrServiceContext: boolean;
+  elderOrVulnerablePerson: boolean;
+  migrationOrVisaThreat: boolean;
+  languageOrInterpreterNeed: boolean;
+  selfHarmOrSuicidal: boolean;
   matchedFacts: string[];
   organisations: string[];
   platforms: string[];
+  protectedAttributes: string[];
   jurisdiction?: string;
 };
 
@@ -250,6 +272,147 @@ type ConversationFlowTriagePresentationRecord = {
 
 const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
 
+const TRIAGE_HANDOFF_MESSAGE = 'Of course — I can take you to your triage summary now.';
+const TRIAGE_HANDOFF_PHRASES = [
+  'give me the triage button',
+  'give me the trige button',
+  'show me the triage button',
+  'show me the trige button',
+  'give me the triage page',
+  'give me the trige page',
+  'show my triage',
+  'show my trige',
+  'go to triage',
+  'go to trige',
+  'continue to triage',
+  'continue to trige',
+  'take me to triage',
+  'take me to trige',
+  'show recommended steps',
+  'show next steps',
+  'continue to next steps',
+  'triage summary',
+  'support summary'
+] as const;
+
+const normalizeConversationIntentText = (value: string): string =>
+  collapseWhitespace(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+export const detectTriageHandoffIntent = (message: string): boolean => {
+  const normalizedMessage = normalizeConversationIntentText(message);
+
+  if (TRIAGE_HANDOFF_PHRASES.some((phrase) =>
+    normalizedMessage.includes(normalizeConversationIntentText(phrase))
+  )) {
+    return true;
+  }
+
+  const triageSignals = [
+    /\btriage\b/i,
+    /\btrige\b/i,
+    /\bnext steps\b/i,
+    /\brecommended steps\b/i,
+    /\bsupport summary\b/i
+  ];
+
+  return (
+    triageSignals.some((pattern) => pattern.test(normalizedMessage)) &&
+    /\b(page|button|go|take|continue|show|summary|steps?|give)\b/i.test(normalizedMessage)
+  );
+};
+
+const buildTriageHandoffAssistantPayload = () => ({
+  assistantMessage: TRIAGE_HANDOFF_MESSAGE,
+  nextQuestion: '',
+  readyForSubmission: false,
+  confidence: 'medium' as const,
+  disclaimer: 'This is information only, not legal advice.',
+  citations: [],
+  showSources: false,
+  sourceDisplayReason: 'triage_handoff',
+  triageReady: true,
+  nextAction: 'show_triage_button',
+  rag: {
+    used: false,
+    unavailable: false,
+    resultCount: 0
+  },
+  reviewStatus: 'triage_handoff'
+});
+
+export const buildConversationAssistantResponseMeta = (input: {
+  assistantPayload: Record<string, unknown>;
+  conversationSessionId: string;
+  offerTriage: boolean;
+}) => {
+  const citations = Array.isArray(input.assistantPayload.citations)
+    ? input.assistantPayload.citations
+    : [];
+  const triageReady =
+    Boolean(input.assistantPayload.triageReady) ||
+    input.assistantPayload.nextAction === 'show_triage_button' ||
+    input.offerTriage;
+  const sourceDisplayMeta = buildAssistantSourceDisplayMeta({
+    message:
+      typeof input.assistantPayload.assistantMessage === 'string'
+        ? input.assistantPayload.assistantMessage
+        : '',
+    citations: citations.map((citation) => {
+      if (!citation || typeof citation !== 'object') {
+        return {};
+      }
+
+      const safeCitation = citation as Record<string, unknown>;
+
+      return {
+        title:
+          typeof safeCitation.title === 'string'
+            ? safeCitation.title
+            : undefined,
+        sectionRef:
+          typeof safeCitation.sectionRef === 'string'
+            ? safeCitation.sectionRef
+            : undefined,
+        url: typeof safeCitation.url === 'string' ? safeCitation.url : undefined
+      };
+    }),
+    triageHandoff: input.assistantPayload.sourceDisplayReason === 'triage_handoff'
+  });
+
+  return {
+    confidence: input.assistantPayload.confidence ?? 'low',
+    disclaimer: 'This is information only, not legal advice.',
+    citations,
+    rag:
+      input.assistantPayload.rag ?? {
+        used: false,
+        unavailable: true,
+        resultCount: 0
+      },
+    reviewStatus: input.assistantPayload.reviewStatus ?? 'fallback_local',
+    triageReady,
+    nextAction:
+      typeof input.assistantPayload.nextAction === 'string'
+        ? input.assistantPayload.nextAction
+        : triageReady
+          ? 'show_triage_button'
+          : undefined,
+    conversationSessionId: input.conversationSessionId,
+    showSources:
+      typeof input.assistantPayload.showSources === 'boolean'
+        ? input.assistantPayload.showSources
+        : sourceDisplayMeta.showSources,
+    sourceDisplayReason:
+      typeof input.assistantPayload.sourceDisplayReason === 'string'
+        ? input.assistantPayload.sourceDisplayReason
+        : sourceDisplayMeta.sourceDisplayReason
+  };
+};
+
 const joinNaturalLanguageList = (items: string[]): string => {
   const filteredItems = items.map((item) => item.trim()).filter(Boolean);
 
@@ -270,26 +433,44 @@ const extractNamedMatches = (
   text: string,
   definitions: Array<{ label: string; pattern: RegExp }>
 ): string[] =>
-  definitions
-    .filter((definition) => definition.pattern.test(text))
-    .map((definition) => definition.label);
+  Array.from(
+    new Set(
+      definitions
+        .filter((definition) => definition.pattern.test(text))
+        .map((definition) => definition.label)
+    )
+  );
+
+const matchesAny = (text: string, patterns: RegExp[]): boolean =>
+  patterns.some((pattern) => pattern.test(text));
+
+const extractProtectedAttributes = (text: string): string[] =>
+  extractNamedMatches(text, [
+    { label: 'race', pattern: /\b(race|racial|ethnic|ethnicity|skin colour|skin color|nationality)\b/i },
+    { label: 'religion', pattern: /\b(muslim|islam|hijab|headscarf|jewish|christian|religion|faith)\b/i },
+    { label: 'disability', pattern: /\b(disability|disabled|wheelchair|autism|mental health condition)\b/i },
+    { label: 'sex or gender', pattern: /\b(gender|trans|transgender|woman|women|female|pregnan|mother)\b/i },
+    { label: 'sexuality', pattern: /\b(gay|lesbian|queer|sexual orientation)\b/i },
+    { label: 'visa status', pattern: /\b(visa status|migrant|migration|immigration|temporary visa|student visa)\b/i },
+    { label: 'age', pattern: /\b(age|too old|too young|elderly|old person)\b/i }
+  ]);
 
 const extractPrivacyIssueDescriptions = (facts: ConversationFlowStructuredFacts): string[] => {
   const issues: string[] = [];
 
-  if (facts.imageBasedAbuse) {
+  if (facts.imageBasedAbuse || facts.privatePhotosOrMessages) {
     issues.push('private photos or intimate content being shared without permission');
   }
 
-  if (facts.onlineThreatBlackmail) {
+  if (facts.onlineThreatBlackmail || facts.blackmailOrExtortion) {
     issues.push('online threats or blackmail');
   }
 
-  if (facts.privacyDataBreach) {
+  if (facts.privacyDataBreach || facts.personalDataLeak) {
     issues.push('privacy or data exposure');
   }
 
-  if (facts.identityTheftRisk || facts.scamFraud) {
+  if (facts.identityTheftRisk || facts.scamFraud || facts.identityDocumentsExposed) {
     issues.push('identity or financial risk');
   }
 
@@ -313,15 +494,27 @@ const buildMatchedFactLabels = (
     matchedFacts.push('identity theft risk');
   }
 
+  if (facts.identityDocumentsExposed) {
+    matchedFacts.push('identity documents exposed');
+  }
+
+  if (facts.bankDetailsExposed) {
+    matchedFacts.push('bank or account details exposed');
+  }
+
   if (facts.scamFraud) {
     matchedFacts.push('scam/fraud');
   }
 
-  if (facts.imageBasedAbuse) {
+  if (facts.moneyLost) {
+    matchedFacts.push('money lost or payment requested');
+  }
+
+  if (facts.imageBasedAbuse || facts.privatePhotosOrMessages) {
     matchedFacts.push('image-based abuse/private photos');
   }
 
-  if (facts.onlineThreatBlackmail) {
+  if (facts.onlineThreatBlackmail || facts.blackmailOrExtortion) {
     matchedFacts.push('online threat/blackmail');
   }
 
@@ -333,12 +526,40 @@ const buildMatchedFactLabels = (
     matchedFacts.push('workplace bullying or harassment');
   }
 
+  if (facts.workplaceDiscrimination) {
+    matchedFacts.push('workplace discrimination');
+  }
+
   if (facts.domesticViolence) {
     matchedFacts.push('domestic violence');
   }
 
+  if (facts.coerciveControl) {
+    matchedFacts.push('coercive control');
+  }
+
+  if (facts.migrationOrVisaThreat) {
+    matchedFacts.push('migration or visa pressure');
+  }
+
   if (facts.racismDiscrimination) {
     matchedFacts.push('racism/discrimination');
+  }
+
+  if (facts.schoolContext) {
+    matchedFacts.push('school or youth context');
+  }
+
+  if (facts.housingOrServiceContext) {
+    matchedFacts.push('housing or service setting');
+  }
+
+  if (facts.elderOrVulnerablePerson) {
+    matchedFacts.push('elder or vulnerable person involved');
+  }
+
+  if (facts.languageOrInterpreterNeed) {
+    matchedFacts.push('language or interpreter support may help');
   }
 
   if (facts.evidenceAvailable) {
@@ -353,8 +574,16 @@ const buildMatchedFactLabels = (
     matchedFacts.push(`platform involved: ${joinNaturalLanguageList(facts.platforms)}`);
   }
 
+  if (facts.protectedAttributes.length > 0) {
+    matchedFacts.push(
+      `protected attribute context: ${joinNaturalLanguageList(facts.protectedAttributes)}`
+    );
+  }
+
   if (facts.immediateDanger) {
     matchedFacts.push('immediate danger');
+  } else if (facts.selfHarmOrSuicidal) {
+    matchedFacts.push('self-harm or crisis language');
   } else if (facts.threatsPresent) {
     matchedFacts.push('threat level elevated');
   }
@@ -387,23 +616,103 @@ export const extractStructuredTriageFacts = (input: {
       .join(' ')
   );
   const lowerCombinedText = combinedText.toLowerCase();
-  const workplaceContext =
-    /\b(employer|manager|supervisor|coworker|co-worker|colleague|hr|human resources|workplace|at work|office)\b/i.test(
-      combinedText
-    );
+  const workplaceContext = matchesAny(combinedText, [
+    /\b(employer|manager|supervisor|coworker|co-worker|colleague|hr|human resources|workplace|at work|office|boss)\b/i
+  ]);
+  const schoolContext = matchesAny(combinedText, [
+    /\b(school|teacher|principal|classmate|class room|classroom|student|university|college|campus)\b/i
+  ]);
+  const housingOrServiceContext = matchesAny(combinedText, [
+    /\b(landlord|real estate|rental|housing|public housing|service counter|restaurant|shop|taxi|rideshare|uber|bus|train|public transport|service provider)\b/i
+  ]);
+  const employerInvolved = matchesAny(combinedText, [/\b(employer|manager|supervisor|hr|human resources|boss)\b/i]);
+  const domesticFamilyContext = matchesAny(combinedText, [
+    /\b(partner|husband|wife|boyfriend|girlfriend|spouse|ex partner|ex-partner|family|parent|child|kids|brother|sister|at home)\b/i
+  ]);
+  const coerciveControl = matchesAny(combinedText, [
+    /\b(coercive control|controls? me|monitor(?:s|ed)? me|tracks? me|won.t let me|won't let me|isolat(?:e|ed|es)|takes my pay|checks my phone|keeps me from leaving)\b/i
+  ]);
+  const healthInformation = matchesAny(combinedText, [
+    /\b(health information|medical information|medical details|health details|diagnosis|mental health history|condition)\b/i
+  ]);
   const employerHealthPrivacy =
+    employerInvolved &&
+    healthInformation &&
+    matchesAny(combinedText, [/\b(shared|disclosed|told|sent|leaked|exposed|revealed)\b/i]);
+  const identityDocumentsExposed = matchesAny(combinedText, [
+    /\b(identity theft|passport|driver'?s licen[cs]e|medicare|birth certificate|tax file number|tfn|id\b|identity documents?)\b/i
+  ]);
+  const bankDetailsExposed = matchesAny(combinedText, [
+    /\b(bank details?|bank account|account details?|credit card|debit card|card number|one time code|one-time code|otp|bsb)\b/i
+  ]);
+  const moneyLost = matchesAny(combinedText, [
+    /\b(lost money|sent money|paid them|transferred money|they took my money|money was stolen)\b/i
+  ]);
+  const privatePhotosOrMessages = matchesAny(combinedText, [
+    /\b(private photos?|intimate photos?|nudes?|explicit images?|private messages?|chat logs?|dm|dms)\b/i
+  ]);
+  const imageBasedAbuse = matchesAny(combinedText, [
+    /\b(image-based abuse|revenge porn|shared my photos?|publish my photos?|post my photos?|threat(?:ened)? to share.*photo)\b/i
+  ]) || privatePhotosOrMessages;
+  const blackmailOrExtortion = matchesAny(combinedText, [
+    /\b(blackmail|extort|extortion|unless you pay|unless i pay|pay or i.ll share|pay or i'll share)\b/i
+  ]);
+  const threatKeywords = [
+    /\b(threats?|threatened|death threats?|kill me|kill him|kill her|publish|leak|expose|find me|come back|things will get worse)\b/i
+  ];
+  const onlineThreatBlackmail =
+    blackmailOrExtortion ||
+    matchesAny(combinedText, [
+      /\b(threat(?:ened)? to publish|threat(?:ened)? to share|publish private messages?|share private messages?|leak private messages?|post private messages?)\b/i
+    ]);
+  const personalDataLeak =
+    matchesAny(combinedText, [
+      /\b(data breach|privacy breach|personal details?.*(?:shared|leaked|exposed)|personal information.*(?:shared|leaked|exposed)|private information.*(?:shared|leaked|exposed)|details leaked|information leaked|doxx|doxed|doxxed)\b/i
+    ]) || employerHealthPrivacy;
+  const protectedAttributes = extractProtectedAttributes(combinedText);
+  const protectedAttribute = protectedAttributes.length > 0;
+  const racismOrHate = matchesAny(combinedText, [
+    /\b(racist|racism|racial abuse|racial slur|hate speech|racial hatred|vilification|go back to where you came from)\b/i
+  ]);
+  const workplaceDiscrimination =
     workplaceContext &&
-    /\b(health information|medical information|medical details|health details)\b/i.test(
-      combinedText
-    ) &&
-    /\b(shared|disclosed|told|sent|leaked|exposed|revealed)\b/i.test(combinedText);
+    protectedAttribute &&
+    matchesAny(combinedText, [
+      /\b(because of|due to|treated me differently|refused|excluded|humiliat|underpaid|cut my shifts|fired|dismissed|wouldn.t hire|wouldn't hire)\b/i
+    ]);
+  const workplaceBullying =
+    workplaceContext &&
+    matchesAny(combinedText, [
+      /\b(workplace bullying|bullying at work|manager humiliat|coworkers? harass|co-?workers? harass|workplace pressure|unsafe at work|boss .*harass|supervisor .*harass|repeatedly humiliate|constantly put me down)\b/i
+    ]) &&
+    !workplaceDiscrimination;
+  const migrationOrVisaThreat = matchesAny(combinedText, [
+    /\b(visa scam|immigration scam|migration scam|visa status|migration status|fix my visa|report me to immigration|cancel my visa|cancel my sponsorship|deport me|home affairs|registered migration agent|migration agent|immigration agent)\b/i
+  ]);
+  const elderOrVulnerablePerson = matchesAny(combinedText, [
+    /\b(elderly|older parent|older person|aged care|grandma|grandfather|grandmother|pensioner|vulnerable person)\b/i
+  ]);
+  const physicalViolence = matchesAny(combinedText, [
+    /\b(hit|hurt|assault|slap|punch|kick|strangle|choke|beat|grabbed me|pulled me)\b/i
+  ]);
+  const threatsPresent = matchesAny(combinedText, threatKeywords) || onlineThreatBlackmail;
+  const immediateDanger = matchesAny(lowerCombinedText, [
+    /\b(immediate danger|unsafe now|call 000|weapon|gun|shoot|shot|strangled|strangle|can.t breathe|death threat|kill me|kill him|kill her|coming now)\b/i
+  ]);
+  const selfHarmOrSuicidal = matchesAny(lowerCombinedText, [
+    /\b(self-harm|suicide|suicidal|hurt myself|end my life)\b/i
+  ]);
+  const languageOrInterpreterNeed = matchesAny(combinedText, [
+    /\b(interpreter|translation|translate|english is not my first language|don.t speak english|don't speak english|language support)\b/i
+  ]);
   const organisations = extractNamedMatches(combinedText, [
     { label: 'company', pattern: /\bcompany\b/i },
+    { label: 'organisation', pattern: /\borganisation|organization|agency|business\b/i },
     { label: 'employer', pattern: /\bemployer\b/i },
     { label: 'bank', pattern: /\bbank\b/i },
     { label: 'workplace', pattern: /\bworkplace\b/i },
-    { label: 'school', pattern: /\bschool\b/i },
-    { label: 'platform', pattern: /\bplatform\b/i }
+    { label: 'school', pattern: /\b(school|university|college)\b/i },
+    { label: 'platform', pattern: /\b(platform|social media)\b/i }
   ]);
   const platforms = extractNamedMatches(combinedText, [
     { label: 'instagram', pattern: /\binstagram\b/i },
@@ -416,57 +725,58 @@ export const extractStructuredTriageFacts = (input: {
     { label: 'sms', pattern: /\btext message|sms\b/i }
   ]);
   const structuredFacts: Omit<ConversationFlowStructuredFacts, 'matchedFacts'> = {
-    privacyDataBreach:
-      /\b(data breach|privacy breach|personal details?.*(?:shared|leaked|exposed)|personal information.*(?:shared|leaked|exposed)|private information.*(?:shared|leaked|exposed)|details leaked|information leaked|doxx|doxed|doxxed|health information.*(?:shared|disclosed|leaked|exposed))\b/i.test(
-        combinedText
-      ) || employerHealthPrivacy,
+    privacyDataBreach: personalDataLeak,
     identityTheftRisk:
-      /\b(identity theft|id\b|passport|driver'?s licen[cs]e|medicare|bank details?|account details?|credit card|debit card|date of birth|dob|tax file number)\b/i.test(
-        combinedText
-      ),
-    scamFraud:
-      /\b(scam|fraud|phishing|fake link|otp|one time code|one-time code|account hacked|stole my money|took my money|bank details?)\b/i.test(
-        combinedText
-      ),
-    imageBasedAbuse:
-      /\b(private photos?|intimate photos?|nudes?|explicit images?|image-based abuse|revenge porn|shared my photos?|publish my photos?|post my photos?)\b/i.test(
-        combinedText
-      ),
-    onlineThreatBlackmail:
-      /\b(threat(?:ened)? to publish|threat(?:ened)? to share|blackmail|extort|publish private messages?|share private messages?|leak private messages?|post private messages?)\b/i.test(
-        combinedText
-      ),
+      identityDocumentsExposed ||
+      bankDetailsExposed ||
+      matchesAny(combinedText, [/\b(date of birth|dob|identity theft)\b/i]),
+    scamFraud: matchesAny(combinedText, [
+      /\b(scam|scammer|fraud|phishing|fake link|fake migration agent|account hacked|stole my money|took my money|impersonation)\b/i
+    ]),
+    imageBasedAbuse,
+    onlineThreatBlackmail,
     employerHealthPrivacy,
-    workplaceBullying:
-      /\b(workplace bullying|bullying at work|manager humiliat|coworkers? harass|co-?workers? harass|workplace pressure|unsafe at work|boss .*harass|supervisor .*harass)\b/i.test(
-        combinedText
-      ),
+    workplaceBullying,
     workplaceContext,
     racismDiscrimination:
-      /\b(racist|racism|racial abuse|racial slur|discrimination|hate speech|vilification|because of my race|because i am muslim|because i am black|because of my skin|hijab|headscarf)\b/i.test(
-        combinedText
-      ),
+      racismOrHate ||
+      workplaceDiscrimination ||
+      (protectedAttribute &&
+        (housingOrServiceContext || schoolContext) &&
+        matchesAny(combinedText, [/\b(discrimination|abuse|refused|excluded|harass|slur|hate)\b/i])),
     domesticViolence:
-      /\b(domestic violence|family violence|family harm|coercive control)\b/i.test(combinedText) ||
-      (/\b(partner|husband|wife|boyfriend|girlfriend|ex partner|ex-partner)\b/i.test(combinedText) &&
-        /\b(hit|hurt|assault|slap|punch|kick|threat|threatened)\b/i.test(combinedText)),
-    physicalViolence: /\b(hit|hurt|assault|slap|punch|kick|strangle|choke|beat)\b/i.test(
-      combinedText
-    ),
-    threatsPresent:
-      /\b(threat|threatened|blackmail|extort|publish|leak|expose|find me|come back|things will get worse)\b/i.test(
-        combinedText
-      ),
-    immediateDanger:
-      /\b(immediate danger|unsafe now|call 000|weapon|gun|shoot|shot|strangled|strangle|can.t breathe|kill me|kill him|kill her)\b/i.test(
-        lowerCombinedText
-      ),
+      matchesAny(combinedText, [/\b(domestic violence|family violence|family harm)\b/i]) ||
+      (domesticFamilyContext &&
+        (physicalViolence || coerciveControl || threatsPresent || migrationOrVisaThreat)),
+    physicalViolence,
+    threatsPresent,
+    immediateDanger: immediateDanger || selfHarmOrSuicidal,
     evidenceAvailable:
-      /\b(screenshot|screenshots|message|messages|email|emails|photo|photos|recording|recordings|witness|witnesses|bank statement|receipt|receipts)\b/i.test(
-        combinedText
-      ) || Boolean(input.facts?.evidenceMentioned?.trim()),
+      matchesAny(combinedText, [
+        /\b(screenshot|screenshots|message|messages|email|emails|photo|photos|recording|recordings|witness|witnesses|bank statement|receipt|receipts|link|url|username)\b/i
+      ]) || Boolean(input.facts?.evidenceMentioned?.trim()),
+    domesticFamilyContext,
+    coerciveControl,
+    blackmailOrExtortion,
+    privatePhotosOrMessages,
+    personalDataLeak,
+    companyOrOrganisationInvolved: organisations.length > 0,
+    employerInvolved,
+    healthInformation,
+    identityDocumentsExposed,
+    bankDetailsExposed,
+    moneyLost,
+    protectedAttribute,
+    schoolContext,
+    workplaceDiscrimination,
+    housingOrServiceContext,
+    elderOrVulnerablePerson,
+    migrationOrVisaThreat,
+    languageOrInterpreterNeed,
+    selfHarmOrSuicidal,
     organisations,
     platforms,
+    protectedAttributes,
     jurisdiction: input.jurisdiction
   };
 
@@ -479,36 +789,80 @@ export const extractStructuredTriageFacts = (input: {
 export const buildRelatedIssueTypes = (
   category: ConversationFlowCategory,
   facts: ConversationFlowStructuredFacts
-): ConversationFlowCategory[] => {
-  const relatedIssueTypes = new Set<ConversationFlowCategory>([category]);
+): string[] => {
+  const relatedIssueTypes = new Set<string>([category]);
 
   if (facts.scamFraud || facts.identityTheftRisk) {
     relatedIssueTypes.add('scam_fraud');
+    relatedIssueTypes.add('identity_risk');
   }
 
-  if (
-    facts.privacyDataBreach ||
-    facts.imageBasedAbuse ||
-    facts.onlineThreatBlackmail ||
-    facts.employerHealthPrivacy
-  ) {
+  if (facts.privacyDataBreach || facts.personalDataLeak) {
     relatedIssueTypes.add('online_abuse');
+    relatedIssueTypes.add('privacy_data_breach');
+  }
+
+  if (facts.imageBasedAbuse || facts.privatePhotosOrMessages) {
+    relatedIssueTypes.add('online_abuse');
+    relatedIssueTypes.add('image_based_abuse');
+  }
+
+  if (facts.onlineThreatBlackmail || facts.blackmailOrExtortion || facts.threatsPresent) {
+    relatedIssueTypes.add('harassment');
+    relatedIssueTypes.add('online_threats');
+  }
+
+  if (facts.blackmailOrExtortion) {
+    relatedIssueTypes.add('blackmail_extortion');
+  }
+
+  if (facts.employerHealthPrivacy) {
+    relatedIssueTypes.add('workplace_privacy');
   }
 
   if (facts.workplaceBullying) {
     relatedIssueTypes.add('workplace_bullying');
   }
 
+  if (facts.workplaceDiscrimination) {
+    relatedIssueTypes.add('racism_discrimination');
+    relatedIssueTypes.add('workplace_discrimination');
+  }
+
   if (facts.domesticViolence) {
     relatedIssueTypes.add('domestic_violence');
+    relatedIssueTypes.add('domestic_family_violence');
+  }
+
+  if (facts.coerciveControl) {
+    relatedIssueTypes.add('coercive_control');
   }
 
   if (facts.racismDiscrimination) {
     relatedIssueTypes.add('racism_discrimination');
+    relatedIssueTypes.add('racism_hate');
   }
 
-  if (facts.threatsPresent || facts.imageBasedAbuse) {
-    relatedIssueTypes.add('harassment');
+  if (facts.schoolContext && facts.racismDiscrimination) {
+    relatedIssueTypes.add('school_racism');
+  } else if (facts.schoolContext) {
+    relatedIssueTypes.add('school_bullying');
+  }
+
+  if (facts.housingOrServiceContext && facts.racismDiscrimination) {
+    relatedIssueTypes.add('housing_or_service_discrimination');
+  }
+
+  if (facts.elderOrVulnerablePerson && (facts.scamFraud || facts.identityTheftRisk)) {
+    relatedIssueTypes.add('elder_scam');
+  }
+
+  if (facts.migrationOrVisaThreat) {
+    relatedIssueTypes.add('migration_visa_coercion');
+  }
+
+  if (facts.languageOrInterpreterNeed) {
+    relatedIssueTypes.add('interpreter_support');
   }
 
   return Array.from(relatedIssueTypes);
@@ -518,9 +872,14 @@ export const buildConversationFlowCategoryLabel = (
   category: ConversationFlowCategory,
   facts: ConversationFlowStructuredFacts
 ): string => {
+  if (category === 'general_support') {
+    return 'Review Your Options';
+  }
+
   if (
     facts.employerHealthPrivacy &&
     !facts.workplaceBullying &&
+    !facts.workplaceDiscrimination &&
     !facts.scamFraud &&
     !facts.imageBasedAbuse &&
     !facts.onlineThreatBlackmail
@@ -528,25 +887,69 @@ export const buildConversationFlowCategoryLabel = (
     return 'Workplace Privacy Concern';
   }
 
+  if (category === 'domestic_violence') {
+    return 'Domestic/Family Violence Safety Support';
+  }
+
   if (category === 'online_abuse') {
-    if (facts.imageBasedAbuse && facts.onlineThreatBlackmail) {
-      return 'Image-Based Abuse & Online Threat';
+    if ((facts.imageBasedAbuse || facts.privatePhotosOrMessages) && facts.onlineThreatBlackmail) {
+      return 'Image-Based Abuse & Online Threat Support';
+    }
+
+    if (facts.imageBasedAbuse) {
+      return 'Image-Based Abuse Support';
+    }
+
+    if (facts.onlineThreatBlackmail || facts.threatsPresent) {
+      return 'Online Abuse & Threat Support';
     }
 
     if (
-      facts.privacyDataBreach &&
+      (facts.privacyDataBreach || facts.personalDataLeak) &&
       (facts.onlineThreatBlackmail || facts.imageBasedAbuse || facts.employerHealthPrivacy)
     ) {
-      return 'Privacy, Data Breach & Online Threat';
+      return 'Privacy, Data Breach & Online Threat Support';
     }
 
     if (facts.privacyDataBreach || facts.identityTheftRisk || facts.scamFraud) {
-      return 'Cyber Safety & Privacy';
+      return 'Cyber Safety & Privacy Support';
     }
   }
 
-  if (category === 'scam_fraud' && facts.identityTheftRisk) {
-    return 'Scam & Identity Risk';
+  if (category === 'scam_fraud') {
+    if (facts.elderOrVulnerablePerson) {
+      return 'Elder Scam & Identity Risk Support';
+    }
+
+    if (facts.migrationOrVisaThreat) {
+      return 'Scam, Identity & Migration Risk Support';
+    }
+
+    if (facts.identityTheftRisk) {
+      return 'Scam & Identity Risk Support';
+    }
+  }
+
+  if (category === 'racism_discrimination') {
+    if (facts.schoolContext && facts.racismDiscrimination) {
+      return 'School Racism or Hate Support';
+    }
+
+    if (facts.workplaceDiscrimination) {
+      return 'Workplace Discrimination Support';
+    }
+
+    if (facts.housingOrServiceContext) {
+      return 'Discrimination in Housing or Services Support';
+    }
+
+    if (facts.threatsPresent) {
+      return 'Racism, Hate, or Public Abuse Support';
+    }
+  }
+
+  if (category === 'harassment' && facts.schoolContext) {
+    return 'School Bullying Support';
   }
 
   return categoryLabels[category];
@@ -558,7 +961,7 @@ const buildMatchedResourceTypesFromFacts = (
 ): string[] => {
   const resourceTypes = new Set<string>(['evidence_guidance', 'mental_health']);
 
-  if (facts.immediateDanger) {
+  if (facts.immediateDanger || facts.selfHarmOrSuicidal) {
     resourceTypes.add('emergency');
     resourceTypes.add('police');
     resourceTypes.add('safety_planning');
@@ -578,13 +981,13 @@ const buildMatchedResourceTypesFromFacts = (
     resourceTypes.add('online_safety');
   }
 
-  if (facts.employerHealthPrivacy || facts.workplaceBullying) {
+  if (facts.employerHealthPrivacy || facts.workplaceBullying || facts.workplaceDiscrimination) {
     resourceTypes.add('workplace_body');
     resourceTypes.add('legal');
     resourceTypes.add('government');
   }
 
-  if (facts.racismDiscrimination) {
+  if (facts.racismDiscrimination || facts.workplaceDiscrimination) {
     resourceTypes.add('anti_discrimination_body');
     resourceTypes.add('government');
   }
@@ -593,6 +996,17 @@ const buildMatchedResourceTypesFromFacts = (
     resourceTypes.add('domestic_violence_agency');
     resourceTypes.add('safety_planning');
     resourceTypes.add('council_support');
+  }
+
+  if (facts.schoolContext || facts.elderOrVulnerablePerson || facts.languageOrInterpreterNeed) {
+    resourceTypes.add('government');
+    resourceTypes.add('council_support');
+  }
+
+  if (facts.migrationOrVisaThreat) {
+    resourceTypes.add('legal');
+    resourceTypes.add('government');
+    resourceTypes.add('scam_support');
   }
 
   const fallbackResourceTypes = categoryDetectionRules.find(
@@ -613,6 +1027,13 @@ const buildCardReasonSummary = (facts: ConversationFlowStructuredFacts): string 
     facts.imageBasedAbuse ? 'image-based abuse' : '',
     facts.onlineThreatBlackmail ? 'online threats or blackmail' : '',
     facts.employerHealthPrivacy ? 'workplace privacy concerns' : '',
+    facts.workplaceBullying ? 'workplace bullying' : '',
+    facts.workplaceDiscrimination ? 'workplace discrimination' : '',
+    facts.racismDiscrimination ? 'racism or hate-based abuse' : '',
+    facts.domesticViolence ? 'domestic or family violence' : '',
+    facts.migrationOrVisaThreat ? 'migration or visa pressure' : '',
+    facts.schoolContext ? 'school context' : '',
+    facts.languageOrInterpreterNeed ? 'language support needs' : '',
     facts.evidenceAvailable ? 'evidence preservation' : ''
   ].filter(Boolean);
 
@@ -631,32 +1052,63 @@ export const buildConversationFlowPresentation = (input: {
   const assessmentNote = 'This is not a formal finding. You choose what to do next.';
   const immediateDangerBody =
     input.facts.immediateDanger || input.riskLevel === 'immediate'
-      ? 'If you are in immediate danger or think someone may act now, call 000 immediately.'
-      : input.facts.threatsPresent || input.riskLevel === 'high'
-        ? 'If the threats escalate or you feel unsafe, put immediate safety first and consider calling 000.'
-        : 'If you or someone else becomes unsafe, call 000 now. You can stop using SafeSpeak at any time.';
+      ? 'If you are in immediate danger, think someone may act now, or you cannot stay safe, call 000 immediately.'
+      : input.facts.selfHarmOrSuicidal
+        ? 'If you may hurt yourself or someone else, call 000 now. If you want crisis support and it feels safe, Lifeline is available on 13 11 14.'
+        : input.facts.threatsPresent || input.riskLevel === 'high'
+          ? 'If the threats escalate or you feel unsafe, put immediate safety first and consider calling 000.'
+          : 'If safety changes at any point, you can stop here and use emergency or support options first.';
+
+  if (input.category === 'general_support') {
+    return {
+      title: 'Review Your Options',
+      body:
+        'SafeSpeak does not have enough clear detail to place this into one strong pathway yet. You can review the facts, update anything important, and then look through broad support options.',
+      assessmentNote,
+      primaryStepTitle: 'Check or edit the key facts',
+      primaryStepBody:
+        'Add the main details that feel safest to share, such as what happened, who was involved, where it happened, and any immediate safety worries.',
+      immediateDangerBody,
+      secondTitle: 'Review broad support options',
+      secondBody:
+        'You can still look through support, reporting, privacy, and safety options without locking yourself into one path.',
+      secondActionLabel: 'Review options',
+      secondActionHref: '/dashboard?view=reportsubmissionrecommendations',
+      thirdTitle: 'Get support if this feels overwhelming',
+      thirdBody:
+        'You can choose emotional support now even if you are not ready to report or take another step.',
+      thirdActionLabel: 'Find support',
+      thirdActionHref: '/dashboard/explorer',
+      stepReasons: ['the current facts are mixed or incomplete', 'a broad review path is safer than over-classifying'],
+      microCardSummary: buildCardReasonSummary(input.facts)
+    };
+  }
 
   if (input.category === 'domestic_violence') {
     return {
-      title: 'Domestic or Family Violence Support',
+      title: label,
       body:
-        'From what you shared, this may involve domestic or family violence. You can focus on safety planning, support services, evidence steps, and reporting options at your pace.',
+        'From what you shared, this may involve domestic or family violence or controlling behaviour. Safety comes first here, and you can look at support and next steps at your own pace.',
       assessmentNote,
       primaryStepTitle: 'Put safety first',
       primaryStepBody:
-        'If it feels safe, think about where you can go, who you can contact, and what essentials or evidence you may need to keep with you.',
+        'If it feels safe, focus on where you can go, who you can contact, and what essentials you may need. Do not collect more evidence if that could increase the danger.',
       immediateDangerBody,
-      secondTitle: 'Confidential support',
+      secondTitle: 'Get confidential family violence support',
       secondBody:
-        'You can contact a specialist family violence service such as 1800RESPECT to talk through safety and options.',
+        'If it is safe to do so, 1800RESPECT can help with confidential safety planning and support options.',
       secondActionLabel: 'Get support',
       secondActionHref: '/dashboard/explorer',
-      thirdTitle: 'Save evidence safely',
+      thirdTitle: 'Save evidence only if it feels safe',
       thirdBody:
-        'If it feels safe, keep messages, photos, dates, and notes somewhere the other person cannot access.',
+        'If evidence is already available and it feels safe, keep messages, photos, dates, and notes somewhere the other person cannot access.',
       thirdActionLabel: 'Evidence steps',
       thirdActionHref: '/dashboard?view=reportsubmissionevidence',
-      stepReasons: ['domestic violence indicators matched', 'safety risk elevated', 'evidence may matter'],
+      stepReasons: [
+        'domestic or family context was detected',
+        input.facts.coerciveControl ? 'coercive control indicators were detected' : 'safety risk is elevated',
+        input.facts.migrationOrVisaThreat ? 'migration or visa pressure was also detected' : 'support can start without making a report'
+      ].filter(Boolean),
       microCardSummary: buildCardReasonSummary(input.facts)
     };
   }
@@ -665,15 +1117,15 @@ export const buildConversationFlowPresentation = (input: {
     return {
       title: 'Workplace Bullying Support',
       body:
-        'From what you shared, this may involve bullying, harassment, or pressure at work. You can review workplace options, support, and safe evidence steps.',
+        'From what you shared, this may involve bullying, humiliation, harassment, or pressure at work. You can keep a clear record, review workplace options, and get support without making a report right away.',
       assessmentNote,
       primaryStepTitle: 'Record the pattern',
       primaryStepBody:
-        'If it feels safe, keep dates, messages, witnesses, rosters, and notes about what happened and how often it happened.',
+        'If it feels safe, keep dates, messages, witnesses, rosters, and short notes about what happened and how often it happened.',
       immediateDangerBody,
       secondTitle: 'Review workplace options',
       secondBody:
-        'You can review workplace, HR, union, regulator, or legal information pathways without making a report yet.',
+        'You can review workplace, HR, union, regulator, Fair Work, or legal information options without making a report yet.',
       secondActionLabel: 'Review options',
       secondActionHref: '/dashboard?view=reportsubmissionrecommendations',
       thirdTitle: 'Get support',
@@ -686,11 +1138,16 @@ export const buildConversationFlowPresentation = (input: {
     };
   }
 
-  if (input.facts.employerHealthPrivacy && !input.facts.workplaceBullying && !input.facts.scamFraud) {
+  if (
+    input.facts.employerHealthPrivacy &&
+    !input.facts.workplaceBullying &&
+    !input.facts.workplaceDiscrimination &&
+    !input.facts.scamFraud
+  ) {
     return {
       title: 'Workplace Privacy Concern',
       body:
-        'From what you shared, this may involve a workplace privacy concern, including health information being shared without permission. You can focus on evidence, internal answers, and privacy options without rushing.',
+        'From what you shared, this may involve a workplace privacy concern, including health information being shared without permission. You can focus on keeping a clear record, asking what was disclosed, and reviewing privacy options without rushing.',
       assessmentNote,
       primaryStepTitle: 'Save evidence and key details',
       primaryStepBody:
@@ -703,12 +1160,14 @@ export const buildConversationFlowPresentation = (input: {
       secondActionHref: '/dashboard?view=reportsubmissionrecommendations',
       thirdTitle: 'Consider privacy pathways',
       thirdBody:
-        'You can look at workplace, privacy, regulator, or legal information pathways, including complaint options where appropriate.',
+        'You can look at workplace, privacy, regulator, or legal information pathways, including OAIC or workplace complaint options where appropriate.',
       thirdActionLabel: 'Evidence steps',
       thirdActionHref: '/dashboard?view=reportsubmissionevidence',
       stepReasons: [
         'employer/shared health information matched',
-        'no strong bullying pattern was detected',
+        input.facts.workplaceDiscrimination
+          ? 'workplace discrimination signals were weaker than the privacy issue'
+          : 'no strong bullying pattern was detected',
         'privacy and evidence steps are more relevant than a bullying pathway'
       ],
       microCardSummary: buildCardReasonSummary(input.facts)
@@ -723,13 +1182,17 @@ export const buildConversationFlowPresentation = (input: {
     input.facts.onlineThreatBlackmail
   ) {
     const issueDescription =
-      joinNaturalLanguageList(extractPrivacyIssueDescriptions(input.facts)) || 'privacy and cyber-safety issues';
+      joinNaturalLanguageList(extractPrivacyIssueDescriptions(input.facts)) ||
+      'online abuse, privacy, or identity risk';
     const secondBodySegments = [
       input.facts.imageBasedAbuse || input.facts.onlineThreatBlackmail
-        ? 'You can report abusive content or threats to the platform or service involved.'
+        ? 'You can report abusive content, threats, or image-based abuse to the platform involved and review eSafety options.'
         : '',
       input.facts.privacyDataBreach
         ? 'You can ask the company or organisation what data was exposed, how it happened, and what they are doing about it.'
+        : '',
+      input.facts.scamFraud || input.facts.identityTheftRisk
+        ? 'If accounts, identity documents, or money are involved, ReportCyber or Scamwatch may be worth reviewing.'
         : '',
       input.facts.employerHealthPrivacy
         ? 'If the issue involves an employer sharing health information, you can also ask what was shared and why.'
@@ -738,41 +1201,47 @@ export const buildConversationFlowPresentation = (input: {
         ? 'It may also be worth considering OAIC or privacy complaint options where appropriate.'
         : ''
     ].filter(Boolean);
+    const thirdTitle = input.facts.employerHealthPrivacy
+      ? 'Keep a short record of the workplace privacy issue'
+      : input.facts.privacyDataBreach
+        ? 'Ask what was exposed and what is being fixed'
+        : 'Get support while you decide next steps';
+    const thirdBody = input.facts.employerHealthPrivacy
+      ? 'Keep a short timeline of who shared the information, who received it, and how the disclosure has affected you.'
+      : input.facts.privacyDataBreach
+        ? 'Save the breach notice or messages and note what response the organisation gives you.'
+        : 'If the threats, privacy breach, or scam feel overwhelming, you can get support while you decide what to do next.';
 
     return {
-      title: `${label} Support`,
-      body: `From what you shared, this may involve ${issueDescription}. You can focus on account protection, evidence, reporting options, and support without doing everything at once.`,
+      title: /support$/i.test(label) ? label : `${label} Support`,
+      body: `From what you shared, this may involve ${issueDescription}. You can focus on safety, account protection, evidence, and reporting options without doing everything at once.`,
       assessmentNote,
       primaryStepTitle:
         input.facts.identityTheftRisk || input.facts.scamFraud
-          ? 'Secure accounts, bank details, and identity information'
-          : 'Protect your information and save evidence',
+          ? 'Protect accounts, bank details, and identity information'
+          : input.facts.imageBasedAbuse || input.facts.onlineThreatBlackmail
+            ? 'Save evidence somewhere private'
+            : 'Protect your information and save evidence',
       primaryStepBody:
         input.facts.identityTheftRisk || input.facts.scamFraud
-          ? 'If it feels safe, change passwords, contact your bank, watch for misuse of your identity details, and avoid sending more money, codes, or documents.'
-          : 'If it feels safe, save screenshots, messages, dates, account details, and any other evidence in a private place.',
+          ? 'If it feels safe, change passwords, contact your bank, turn on extra security, watch for misuse of your identity details, and avoid sending more money, codes, or documents.'
+          : 'If it feels safe, save screenshots, usernames, links, messages, and dates in a private place, and avoid deleting the original messages.',
       immediateDangerBody,
       secondTitle:
         input.facts.imageBasedAbuse || input.facts.onlineThreatBlackmail
-          ? 'Report the content and privacy issue'
-          : 'Ask what was exposed and review privacy options',
+          ? 'Report the content or account issue'
+          : 'Review reporting and privacy options',
       secondBody: secondBodySegments.join(' '),
       secondActionLabel: 'Review options',
       secondActionHref: '/dashboard?view=reportsubmissionrecommendations',
-      thirdTitle:
-        input.facts.employerHealthPrivacy
-          ? 'Keep a clear record of the workplace privacy issue'
-          : 'Get support while deciding next steps',
-      thirdBody:
-        input.facts.employerHealthPrivacy
-          ? 'Keep a short timeline of who shared the information, who received it, and how the disclosure has affected you.'
-          : 'If the threats, privacy breach, or scam are overwhelming, you can get emotional support while deciding what to do next.',
+      thirdTitle,
+      thirdBody,
       thirdActionLabel:
-        input.facts.employerHealthPrivacy || input.facts.evidenceAvailable
+        input.facts.employerHealthPrivacy || input.facts.privacyDataBreach || input.facts.evidenceAvailable
           ? 'Evidence steps'
           : 'Find support',
       thirdActionHref:
-        input.facts.employerHealthPrivacy || input.facts.evidenceAvailable
+        input.facts.employerHealthPrivacy || input.facts.privacyDataBreach || input.facts.evidenceAvailable
           ? '/dashboard?view=reportsubmissionevidence'
           : '/dashboard/explorer',
       stepReasons: [
@@ -791,26 +1260,63 @@ export const buildConversationFlowPresentation = (input: {
   }
 
   if (input.category === 'racism_discrimination') {
+    const reportingBody = input.facts.schoolContext
+      ? 'You can review options with a parent, guardian, school wellbeing contact, principal, education department, or anti-discrimination body, depending on what happened.'
+      : input.facts.workplaceDiscrimination
+        ? 'You can review workplace, Fair Work, anti-discrimination, police, or legal information options where they fit the facts.'
+        : input.facts.housingOrServiceContext
+          ? 'You can review complaint options with the provider, anti-discrimination pathways, or police if threats were involved.'
+          : 'You can review anti-discrimination, police, community, or eSafety options depending on where the abuse happened.';
     return {
-      title: 'Racism or Discrimination Support',
+      title: label,
       body:
-        'From what you shared, this may involve racism or discrimination. You can look at support, reporting options, rights information, and evidence steps.',
+        'From what you shared, this may involve racism, discrimination, or hate-based abuse. You can keep a factual record, review reporting options, and get support without having to decide everything now.',
       assessmentNote,
-      primaryStepTitle: 'Save the details',
+      primaryStepTitle: input.facts.immediateDanger ? 'Put safety first and save only what feels safe' : 'Record the details clearly',
       primaryStepBody:
-        'If it feels safe, keep screenshots, dates, locations, names, and notes in a private place.',
+        'If it feels safe, record the exact words or actions, the time and place, any witnesses, and any screenshots or photos that help explain what happened.',
       immediateDangerBody,
       secondTitle: 'Review rights and reporting options',
+      secondBody: reportingBody,
+      secondActionLabel: 'Review options',
+      secondActionHref: '/dashboard?view=reportsubmissionrecommendations',
+      thirdTitle: input.facts.languageOrInterpreterNeed ? 'Ask for language or interpreter support' : 'Get support',
+      thirdBody:
+        input.facts.languageOrInterpreterNeed
+          ? 'If English is a barrier, you can ask for interpreter support when contacting a service or complaint body.'
+          : 'You can reach out to a support service if the incident feels upsetting, isolating, or unsafe.',
+      thirdActionLabel: input.facts.languageOrInterpreterNeed ? 'Review options' : 'Find support',
+      thirdActionHref: '/dashboard/explorer',
+      stepReasons: [
+        'racism, hate, or discrimination indicators matched',
+        input.facts.schoolContext ? 'school context was detected' : '',
+        input.facts.workplaceDiscrimination ? 'workplace discrimination indicators matched' : 'rights and evidence pathways may be relevant'
+      ].filter(Boolean),
+      microCardSummary: buildCardReasonSummary(input.facts)
+    };
+  }
+
+  if (input.category === 'harassment' && input.facts.schoolContext) {
+    return {
+      title: label,
+      body:
+        'From what you shared, this may involve school bullying or harassment. You can keep a short record, ask for support, and look at school options at a pace that feels manageable.',
+      assessmentNote,
+      primaryStepTitle: 'Write down what happened',
+      primaryStepBody:
+        'If it feels safe, note what happened, when and where it happened, who was involved, and any messages or screenshots you already have.',
+      immediateDangerBody,
+      secondTitle: 'Review school support options',
       secondBody:
-        'You can review options such as anti-discrimination bodies, police, community support, or legal information.',
+        'You can ask a parent, guardian, school wellbeing worker, teacher, principal, or education department pathway for support.',
       secondActionLabel: 'Review options',
       secondActionHref: '/dashboard?view=reportsubmissionrecommendations',
       thirdTitle: 'Get support',
       thirdBody:
-        'You can reach out to a support service if the incident feels upsetting, isolating, or unsafe.',
+        'You can speak with a support person or service if the situation feels upsetting, isolating, or unsafe.',
       thirdActionLabel: 'Find support',
       thirdActionHref: '/dashboard/explorer',
-      stepReasons: ['racism/discrimination indicators matched', 'rights and evidence pathways may be relevant'],
+      stepReasons: ['school context was detected', 'a youth-friendly bullying pathway is more relevant than a generic harassment path'],
       microCardSummary: buildCardReasonSummary(input.facts)
     };
   }
@@ -1002,6 +1508,8 @@ const buildFallbackAssistantResponse = (message: string, timeline: Record<string
     confidence: 'low' as const,
     disclaimer: 'This is information only, not legal advice.',
     citations: [],
+    showSources: false,
+    sourceDisplayReason: 'hidden_support_reply',
     rag: {
       used: false,
       unavailable: true,
@@ -1020,7 +1528,7 @@ export const detectCategory = (input: {
   confidenceScore: number;
   evidenceScore: number;
   matchedResourceTypes: string[];
-  relatedIssueTypes: ConversationFlowCategory[];
+  relatedIssueTypes: string[];
 } => {
   const structuredFacts =
     input.structuredFacts ??
@@ -1048,40 +1556,67 @@ export const detectCategory = (input: {
       match.keywordScore + match.selectedTopicScore
     ])
   ) as Record<ConversationFlowCategory, number>;
+  const strongFactCount = [
+    structuredFacts.domesticViolence,
+    structuredFacts.coerciveControl,
+    structuredFacts.imageBasedAbuse,
+    structuredFacts.onlineThreatBlackmail,
+    structuredFacts.scamFraud,
+    structuredFacts.identityTheftRisk,
+    structuredFacts.racismDiscrimination,
+    structuredFacts.workplaceBullying,
+    structuredFacts.workplaceDiscrimination,
+    structuredFacts.employerHealthPrivacy
+  ].filter(Boolean).length;
   const scores: Record<ConversationFlowCategory, number> = {
     domestic_violence:
       baseScores.domestic_violence +
-      (structuredFacts.domesticViolence ? 6 : 0) +
+      (structuredFacts.domesticViolence ? 9 : 0) +
+      (structuredFacts.coerciveControl ? 4 : 0) +
+      (structuredFacts.migrationOrVisaThreat && structuredFacts.domesticFamilyContext ? 3 : 0) +
       (structuredFacts.physicalViolence ? 2 : 0) +
       (structuredFacts.immediateDanger ? 2 : 0),
     workplace_bullying:
       baseScores.workplace_bullying +
-      (structuredFacts.workplaceBullying ? 6 : 0) +
-      (structuredFacts.workplaceContext ? 1 : 0) +
-      (structuredFacts.employerHealthPrivacy ? 1 : 0) -
-      (!structuredFacts.workplaceBullying && structuredFacts.employerHealthPrivacy ? 2.5 : 0),
+      (structuredFacts.workplaceBullying ? 8 : 0) +
+      (structuredFacts.workplaceContext && structuredFacts.workplaceBullying ? 2 : 0) -
+      (!structuredFacts.workplaceBullying && structuredFacts.employerHealthPrivacy ? 4 : 0) -
+      (structuredFacts.workplaceDiscrimination ? 3 : 0),
     racism_discrimination:
-      baseScores.racism_discrimination + (structuredFacts.racismDiscrimination ? 6 : 0),
+      baseScores.racism_discrimination +
+      (structuredFacts.racismDiscrimination ? 8 : 0) +
+      (structuredFacts.workplaceDiscrimination ? 4 : 0) +
+      (structuredFacts.housingOrServiceContext && structuredFacts.racismDiscrimination ? 3 : 0) +
+      (structuredFacts.schoolContext && structuredFacts.racismDiscrimination ? 2 : 0) +
+      (structuredFacts.threatsPresent ? 1 : 0),
     online_abuse:
       baseScores.online_abuse +
-      (structuredFacts.imageBasedAbuse ? 5 : 0) +
-      (structuredFacts.onlineThreatBlackmail ? 4 : 0) +
-      (structuredFacts.privacyDataBreach ? 3 : 0) +
+      (structuredFacts.imageBasedAbuse ? 8 : 0) +
+      (structuredFacts.privatePhotosOrMessages ? 3 : 0) +
+      (structuredFacts.onlineThreatBlackmail ? 6 : 0) +
+      (structuredFacts.blackmailOrExtortion ? 3 : 0) +
+      (structuredFacts.privacyDataBreach ? 4 : 0) +
       (structuredFacts.employerHealthPrivacy ? 2 : 0) +
-      (structuredFacts.platforms.length > 0 ? 1 : 0) +
+      (structuredFacts.platforms.length > 0 ? 2 : 0) +
       (structuredFacts.organisations.length > 0 ? 0.5 : 0) +
       (structuredFacts.threatsPresent ? 1 : 0),
     scam_fraud:
       baseScores.scam_fraud +
-      (structuredFacts.scamFraud ? 5 : 0) +
-      (structuredFacts.identityTheftRisk ? 4 : 0) +
+      (structuredFacts.scamFraud ? 8 : 0) +
+      (structuredFacts.identityTheftRisk ? 5 : 0) +
+      (structuredFacts.moneyLost ? 3 : 0) +
+      (structuredFacts.migrationOrVisaThreat ? 2 : 0) +
+      (structuredFacts.elderOrVulnerablePerson ? 2 : 0) +
       (structuredFacts.privacyDataBreach ? 1 : 0),
-    theft_property: baseScores.theft_property,
+    theft_property:
+      baseScores.theft_property + (structuredFacts.physicalViolence && !structuredFacts.workplaceContext ? 1 : 0),
     harassment:
       baseScores.harassment +
-      (structuredFacts.threatsPresent ? 2 : 0) +
-      (structuredFacts.imageBasedAbuse ? 1 : 0),
-    mental_health_distress: baseScores.mental_health_distress,
+      (structuredFacts.threatsPresent ? 3 : 0) +
+      (structuredFacts.imageBasedAbuse ? 1 : 0) +
+      (structuredFacts.schoolContext ? 2 : 0),
+    mental_health_distress:
+      baseScores.mental_health_distress + (structuredFacts.selfHarmOrSuicidal ? 6 : 0),
     general_support: 0
   };
 
@@ -1095,11 +1630,13 @@ export const detectCategory = (input: {
     .sort((left, right) => right.score - left.score);
 
   if (matches.length === 0) {
-    const fallbackCategory = selectedTopicFallbackCategory(input.selectedTopic);
+    const fallbackCategory = input.selectedTopic
+      ? selectedTopicFallbackCategory(input.selectedTopic)
+      : 'general_support';
 
     return {
       category: fallbackCategory,
-      confidenceScore: input.selectedTopic ? 0.4 : 0.25,
+      confidenceScore: input.selectedTopic ? 0.32 : 0.2,
       evidenceScore: 0,
       matchedResourceTypes: buildMatchedResourceTypesFromFacts(
         fallbackCategory,
@@ -1111,13 +1648,31 @@ export const detectCategory = (input: {
 
   const best = matches[0];
   const runnerUpScore = matches[1]?.score ?? 0;
+  const gap = Math.max(best.score - runnerUpScore, 0);
   const confidenceScore = Math.min(
     0.95,
-    0.34 +
-      Math.min(best.score, 8) * 0.06 +
-      Math.min(best.keywordScore, 3) * 0.04 +
-      Math.max(best.score - runnerUpScore, 0) * 0.02
+    0.28 +
+      Math.min(best.score, 10) * 0.055 +
+      Math.min(best.keywordScore, 3) * 0.035 +
+      Math.min(gap, 5) * 0.025 +
+      Math.min(strongFactCount, 4) * 0.02
   );
+  const shouldUseBroadReviewPath =
+    best.score < 3 ||
+    (best.score < 5 && gap < 1.5 && strongFactCount < 2) ||
+    (best.category === 'workplace_bullying' &&
+      !structuredFacts.workplaceBullying &&
+      structuredFacts.employerHealthPrivacy);
+
+  if (shouldUseBroadReviewPath) {
+    return {
+      category: 'general_support',
+      confidenceScore: Math.min(confidenceScore, 0.42),
+      evidenceScore: Math.max(best.keywordScore, strongFactCount),
+      matchedResourceTypes: buildMatchedResourceTypesFromFacts('general_support', structuredFacts),
+      relatedIssueTypes: buildRelatedIssueTypes('general_support', structuredFacts)
+    };
+  }
 
   return {
     category: best.category,
@@ -1136,7 +1691,7 @@ const detectSafetyRiskLevel = (
     `${text}\n${facts.safetyConcerns ?? ''}\n${facts.emotionalState ?? ''}`.toLowerCase();
 
   if (
-    /\b(immediate danger|kill me|kill him|kill her|call 000|unsafe now|weapon|gun|shoot|shot|strangled|strangle|can.t breathe)\b/i.test(
+    /\b(immediate danger|kill me|kill him|kill her|call 000|unsafe now|weapon|gun|shoot|shot|strangled|strangle|can.t breathe|suicide|suicidal|self-harm|death threat)\b/i.test(
       combined
     )
   ) {
@@ -1144,14 +1699,14 @@ const detectSafetyRiskLevel = (
   }
 
   if (
-    /\b(threat|hit|assault|injured|stalking|followed|find me|come back|things will get worse|scared to go home|afraid to go home)\b/i.test(
+    /\b(threat|hit|assault|injured|stalking|followed|find me|come back|things will get worse|scared to go home|afraid to go home|blackmail|extort|publish my photos|publish my messages)\b/i.test(
       combined
     )
   ) {
     return 'high';
   }
 
-  if (/\b(anxious|overwhelmed|panic|distress|worried|harassed)\b/i.test(combined)) {
+  if (/\b(anxious|overwhelmed|panic|distress|worried|harassed|unsafe|bullied)\b/i.test(combined)) {
     return 'medium';
   }
 
@@ -1189,6 +1744,13 @@ const buildReasoningSummary = (input: {
   const issueDescription = joinNaturalLanguageList(
     extractPrivacyIssueDescriptions(input.structuredFacts)
   );
+  const contextHints = [
+    input.structuredFacts.workplaceDiscrimination ? 'possible workplace discrimination' : '',
+    input.structuredFacts.workplaceBullying ? 'possible workplace bullying' : '',
+    input.structuredFacts.schoolContext ? 'a school or youth context' : '',
+    input.structuredFacts.migrationOrVisaThreat ? 'migration or visa pressure' : '',
+    input.structuredFacts.elderOrVulnerablePerson ? 'an older or vulnerable person may be affected' : ''
+  ].filter(Boolean);
   const missingText =
     input.missingInformation.length > 0
       ? ` Some details are still missing, especially ${input.missingInformation
@@ -1203,8 +1765,19 @@ const buildReasoningSummary = (input: {
         ? ' There are signs this may involve a high level of risk.'
         : '';
 
+  if (input.category === 'general_support') {
+    const contextText = contextHints.length > 0 ? ` I also noticed ${joinNaturalLanguageList(contextHints)}.` : '';
+
+    return `SafeSpeak does not have enough detail to place this into one strong pathway yet.${contextText}${riskText}${missingText}`.trim();
+  }
+
   if (issueDescription) {
-    return `Based on what you shared so far, this looks most like ${categoryLabel.toLowerCase()}. I also picked up ${issueDescription}.${riskText}${missingText}`.trim();
+    const contextText = contextHints.length > 0 ? ` I also noticed ${joinNaturalLanguageList(contextHints)}.` : '';
+
+    return `Based on what you shared so far, this looks most like ${categoryLabel.toLowerCase()}. I also picked up ${issueDescription}.${contextText}${riskText}${missingText}`.replace(
+      /\.\s+\./g,
+      '.'
+    ).trim();
   }
 
   return `Based on what you shared so far, this looks most like ${categoryLabel.toLowerCase()}.${riskText}${missingText}`.trim();
@@ -1278,6 +1851,20 @@ const buildRecommendationsFilter = (input: {
   ]
 });
 
+const toSupportIssueTypes = (
+  relatedIssueTypes: string[],
+  fallbackCategory: ConversationFlowCategory
+): ConversationFlowCategory[] => {
+  const supportedCategories = relatedIssueTypes.filter(
+    (item): item is ConversationFlowCategory =>
+      CONVERSATION_FLOW_CATEGORIES.includes(item as ConversationFlowCategory)
+  );
+
+  return supportedCategories.length > 0
+    ? Array.from(new Set([...supportedCategories, fallbackCategory]))
+    : [fallbackCategory];
+};
+
 const toStructuredFactsRecord = (
   value: unknown
 ): ConversationFlowStructuredFacts => {
@@ -1301,6 +1888,25 @@ const toStructuredFactsRecord = (
     threatsPresent: Boolean(record.threatsPresent),
     immediateDanger: Boolean(record.immediateDanger),
     evidenceAvailable: Boolean(record.evidenceAvailable),
+    domesticFamilyContext: Boolean(record.domesticFamilyContext),
+    coerciveControl: Boolean(record.coerciveControl),
+    blackmailOrExtortion: Boolean(record.blackmailOrExtortion),
+    privatePhotosOrMessages: Boolean(record.privatePhotosOrMessages),
+    personalDataLeak: Boolean(record.personalDataLeak),
+    companyOrOrganisationInvolved: Boolean(record.companyOrOrganisationInvolved),
+    employerInvolved: Boolean(record.employerInvolved),
+    healthInformation: Boolean(record.healthInformation),
+    identityDocumentsExposed: Boolean(record.identityDocumentsExposed),
+    bankDetailsExposed: Boolean(record.bankDetailsExposed),
+    moneyLost: Boolean(record.moneyLost),
+    protectedAttribute: Boolean(record.protectedAttribute),
+    schoolContext: Boolean(record.schoolContext),
+    workplaceDiscrimination: Boolean(record.workplaceDiscrimination),
+    housingOrServiceContext: Boolean(record.housingOrServiceContext),
+    elderOrVulnerablePerson: Boolean(record.elderOrVulnerablePerson),
+    migrationOrVisaThreat: Boolean(record.migrationOrVisaThreat),
+    languageOrInterpreterNeed: Boolean(record.languageOrInterpreterNeed),
+    selfHarmOrSuicidal: Boolean(record.selfHarmOrSuicidal),
     matchedFacts: Array.isArray(record.matchedFacts)
       ? record.matchedFacts
           .map((item) => (typeof item === 'string' ? item.trim() : ''))
@@ -1316,15 +1922,23 @@ const toStructuredFactsRecord = (
           .map((item) => (typeof item === 'string' ? item.trim() : ''))
           .filter(Boolean)
       : [],
+    protectedAttributes: Array.isArray(record.protectedAttributes)
+      ? record.protectedAttributes
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .filter(Boolean)
+      : [],
     jurisdiction: typeof record.jurisdiction === 'string' ? record.jurisdiction : undefined
   };
 };
 
-const toRelatedIssueTypes = (value: unknown): ConversationFlowCategory[] =>
+const toRelatedIssueTypes = (value: unknown): string[] =>
   Array.isArray(value)
-    ? value.filter(
-        (item): item is ConversationFlowCategory =>
-          typeof item === 'string' && CONVERSATION_FLOW_CATEGORIES.includes(item as ConversationFlowCategory)
+    ? Array.from(
+        new Set(
+          value
+            .map((item) => (typeof item === 'string' ? item.trim() : ''))
+            .filter(Boolean)
+        )
       )
     : [];
 
@@ -1393,460 +2007,44 @@ const toRecommendationRecord = (
   active: typeof item.isActive === 'boolean' ? item.isActive : undefined
 });
 
-const violenceTerms = [
-  'abuse',
-  'assault',
-  'bullying',
-  'coercive',
-  'domestic',
-  'discrimination',
-  'family violence',
-  'harassment',
-  'harm',
-  'intimidation',
-  'racial',
-  'racial abuse',
-  'racism',
-  'sexual violence',
-  'stalking',
-  'threat',
-  'violence',
-  'workplace bullying'
-];
-
-type MicroEducationSuggestionProfile = {
-  category: ConversationFlowCategory;
-  safetyRiskLevel: ConversationFlowRiskLevel;
-  preferredChips: MicroEducationChip[];
-  keywords: string[];
-  anchorPatterns: RegExp[];
-  bridgePatterns: RegExp[];
-  protectedPatterns: RegExp[];
-  excludedPatterns: RegExp[];
-  minimumScore: number;
-};
-
-const buildSupportSearchText = (triage: {
-  likelyCategory: ConversationFlowCategory;
-  reasoningSummary: string;
-  matchedResourceTypes: string[];
-  missingInformation: string[];
-  matchedKnowledgeSources: Array<Record<string, unknown>>;
-}) =>
-  [
-    triage.likelyCategory,
-    categoryLabels[triage.likelyCategory],
-    triage.reasoningSummary,
-    ...triage.matchedResourceTypes,
-    ...triage.missingInformation,
-    ...triage.matchedKnowledgeSources.flatMap((source) => [
-      source.title,
-      source.summary,
-      source.sourceCategory,
-      source.sourceType
-    ])
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-
-const reorderRiskFirst = (
-  chips: MicroEducationChip[],
-  safetyRiskLevel: ConversationFlowRiskLevel
-): MicroEducationChip[] => {
-  if (safetyRiskLevel !== 'high' && safetyRiskLevel !== 'immediate') {
-    return chips;
-  }
-
-  const urgentOrder: MicroEducationChip[] = ['safety', 'mentalHealth', 'harassment', 'rights'];
-
-  return urgentOrder.filter((chip) => chips.includes(chip));
-};
-
-const buildMicroEducationSuggestionProfile = (triage: {
+export const buildSuggestedMicroCardTitles = (triage: {
   likelyCategory: ConversationFlowCategory;
   safetyRiskLevel: ConversationFlowRiskLevel;
-  reasoningSummary: string;
-  matchedResourceTypes: string[];
-  missingInformation: string[];
-  matchedKnowledgeSources: Array<Record<string, unknown>>;
   structuredFacts?: unknown;
-}): MicroEducationSuggestionProfile | null => {
-  const searchText = buildSupportSearchText(triage);
-  const structuredFacts = toStructuredFactsRecord(triage.structuredFacts);
-  const supportedCategory =
-    triage.likelyCategory === 'domestic_violence' ||
-    triage.likelyCategory === 'racism_discrimination' ||
-    triage.likelyCategory === 'online_abuse' ||
-    triage.likelyCategory === 'scam_fraud' ||
-    triage.likelyCategory === 'workplace_bullying' ||
-    triage.likelyCategory === 'mental_health_distress' ||
-    triage.likelyCategory === 'theft_property' ||
-    triage.likelyCategory === 'harassment';
-
-  if (!supportedCategory && !violenceTerms.some((term) => searchText.includes(term))) {
-    return null;
-  }
-
-  let preferredChips: MicroEducationChip[] = ['harassment', 'safety', 'rights', 'mentalHealth'];
-  let keywords = ['abuse', 'bullying', 'harassment', 'threat', 'safety', 'violence'];
-  let anchorPatterns: RegExp[] = [/\babuse\b/i, /\bviolence\b/i, /\bthreat/i, /\bharass/i];
-  let bridgePatterns: RegExp[] = [
-    /\bevidence\b/i,
-    /\bsupport\b/i,
-    /\bright/i,
-    /\bsafety plan/i,
-    /\bsafety planning/i
-  ];
-  let protectedPatterns: RegExp[] = [
-    /\blegal aid\b/i,
-    /\bmental health\b/i,
-    /\bcounsell?ing\b/i,
-    /\bevidence\b/i,
-    /\bsafety plan/i,
-    /\bsafety planning/i
-  ];
-  let excludedPatterns: RegExp[] = [];
-  let minimumScore = 18;
-
-  if (
-    structuredFacts.privacyDataBreach ||
-    structuredFacts.imageBasedAbuse ||
-    structuredFacts.onlineThreatBlackmail ||
-    structuredFacts.scamFraud ||
-    structuredFacts.identityTheftRisk ||
-    structuredFacts.employerHealthPrivacy
-  ) {
-    preferredChips = ['safety', 'rights', 'harassment', 'mentalHealth'];
-    keywords = [
-      'privacy',
-      'data breach',
-      'identity',
-      'scam',
-      'bank',
-      'photo',
-      'image',
-      'blackmail',
-      'evidence',
-      'health information'
-    ];
-    anchorPatterns = [
-      /\bprivacy\b/i,
-      /\bdata breach\b/i,
-      /\bidentity\b/i,
-      /\bscam\b/i,
-      /\bbank\b/i,
-      /\bimage-based\b/i,
-      /\bprivate photos?\b/i,
-      /\bblackmail\b/i,
-      /\bhealth information\b/i,
-      /\bevidence\b/i
-    ];
-    bridgePatterns = [
-      /\bonline safety\b/i,
-      /\beSafety\b/i,
-      /\bcomplaint\b/i,
-      /\bprivacy complaint\b/i,
-      /\bevidence\b/i,
-      /\bscreenshot\b/i,
-      /\bmessages?\b/i
-    ];
-    protectedPatterns = [
-      /\blegal aid\b/i,
-      /\bevidence\b/i,
-      /\bprivacy\b/i,
-      /\bidentity\b/i,
-      /\bonline safety\b/i
-    ];
-    excludedPatterns = [
-      /\bmigrant\b/i,
-      /\bstudent\b/i,
-      /\bdiscrimination\b/i,
-      /\bracial\b/i,
-      /\bbullying\b/i
-    ];
-    minimumScore = 18;
-  } else if (triage.likelyCategory === 'domestic_violence') {
-    preferredChips = ['safety', 'mentalHealth', 'harassment', 'rights'];
-    keywords = ['domestic', 'family', 'violence', 'safety', 'mental', 'support'];
-    anchorPatterns = [
-      /\bdomestic\b/i,
-      /\bfamily violence\b/i,
-      /\bfamily harm\b/i,
-      /\bpartner\b/i,
-      /\bcoercive\b/i,
-      /\babuse\b/i,
-      /\bviolence\b/i,
-      /\b1800respect\b/i
-    ];
-    bridgePatterns = [
-      /\bsafety plan/i,
-      /\bsafety planning/i,
-      /\bunsafe\b/i,
-      /\bthreat/i,
-      /\bevidence\b/i,
-      /\bsupport service\b/i,
-      /\bconfidential support\b/i,
-      /\bright/i
-    ];
-    protectedPatterns = [
-      /\blegal aid\b/i,
-      /\bmental health\b/i,
-      /\bcounsell?ing\b/i,
-      /\bcrisis\b/i,
-      /\bevidence\b/i,
-      /\bsafety plan/i,
-      /\bsafety planning/i,
-      /\b1800respect\b/i
-    ];
-    excludedPatterns = [
-      /\bonline\b/i,
-      /\bcyber\b/i,
-      /\bdigital footprint\b/i,
-      /\bbullying\b/i,
-      /\bdiscrimination\b/i,
-      /\bscam\b/i,
-      /\bfraud\b/i,
-      /\bworkplace\b/i
-    ];
-    minimumScore = 20;
-  } else if (triage.likelyCategory === 'racism_discrimination') {
-    preferredChips = ['harassment', 'rights', 'safety', 'mentalHealth'];
-    keywords = ['racial', 'discrimination', 'rights', 'harassment', 'report'];
-    anchorPatterns = [
-      /\bracis[mt]\b/i,
-      /\bracial\b/i,
-      /\bdiscriminat/i,
-      /\bhate\b/i,
-      /\bvilification\b/i,
-      /\bhijab\b/i
-    ];
-    excludedPatterns = [/\bdomestic\b/i, /\bscam\b/i, /\bfraud\b/i];
-  } else if (triage.likelyCategory === 'online_abuse') {
-    preferredChips = ['safety', 'harassment', 'rights', 'mentalHealth'];
-    keywords = ['online', 'cyber', 'digital', 'privacy', 'abuse', 'safety'];
-    anchorPatterns = [
-      /\bonline\b/i,
-      /\bcyber\b/i,
-      /\bdigital\b/i,
-      /\beSafety\b/i,
-      /\bprivacy\b/i,
-      /\bimage-based\b/i,
-      /\bdoxx/i,
-      /\baccount\b/i
-    ];
-    excludedPatterns = [/\bdomestic\b/i];
-  } else if (triage.likelyCategory === 'scam_fraud') {
-    preferredChips = ['safety', 'rights', 'mentalHealth'];
-    keywords = ['scam', 'fraud', 'online', 'privacy', 'bank', 'safety'];
-    anchorPatterns = [
-      /\bscam\b/i,
-      /\bfraud\b/i,
-      /\bphishing\b/i,
-      /\bbank\b/i,
-      /\bpassword\b/i,
-      /\botp\b/i,
-      /\baccount\b/i
-    ];
-    bridgePatterns = [/\bevidence\b/i, /\bsupport\b/i, /\bonline safety\b/i, /\bprivacy\b/i];
-    excludedPatterns = [/\bdomestic\b/i, /\bracial\b/i];
-  } else if (triage.likelyCategory === 'workplace_bullying') {
-    preferredChips = ['harassment', 'rights', 'safety', 'mentalHealth'];
-    keywords = ['bullying', 'harassment', 'workplace', 'document', 'rights'];
-    anchorPatterns = [
-      /\bworkplace\b/i,
-      /\bat work\b/i,
-      /\bboss\b/i,
-      /\bmanager\b/i,
-      /\bemployer\b/i,
-      /\bbully/i,
-      /\bharass/i
-    ];
-    excludedPatterns = [/\bdomestic\b/i, /\bscam\b/i, /\bonline abuse\b/i];
-  } else if (triage.likelyCategory === 'mental_health_distress') {
-    preferredChips = ['mentalHealth', 'safety', 'rights'];
-    keywords = ['mental', 'stress', 'support', 'grounding', 'safety'];
-    anchorPatterns = [
-      /\bmental health\b/i,
-      /\bstress/i,
-      /\banxiety\b/i,
-      /\blonely\b/i,
-      /\bgrounding\b/i,
-      /\bcounsell?ing\b/i,
-      /\bsupport\b/i
-    ];
-    bridgePatterns = [/\bsafety\b/i, /\bsupport\b/i, /\bwellbeing\b/i];
-    protectedPatterns = [/\bmental health\b/i, /\bcounsell?ing\b/i, /\bcrisis\b/i];
-    excludedPatterns = [
-      /\bdomestic\b/i,
-      /\bscam\b/i,
-      /\bfraud\b/i,
-      /\bdiscrimination\b/i,
-      /\bbullying\b/i
-    ];
-  } else if (triage.likelyCategory === 'theft_property') {
-    preferredChips = ['safety', 'rights', 'mentalHealth'];
-    keywords = ['theft', 'stolen', 'evidence', 'safety', 'rights'];
-    anchorPatterns = [/\btheft\b/i, /\bstolen\b/i, /\brobbed\b/i, /\bproperty\b/i];
-    bridgePatterns = [/\bevidence\b/i, /\bpolice\b/i, /\bright/i, /\bsafety\b/i];
-  } else if (triage.likelyCategory === 'harassment') {
-    preferredChips = ['harassment', 'safety', 'rights', 'mentalHealth'];
-    keywords = ['harassment', 'threat', 'safety', 'document', 'rights'];
-    anchorPatterns = [/\bharass/i, /\bthreat/i, /\bstalk/i, /\bintimidat/i];
-    bridgePatterns = [/\bevidence\b/i, /\bright/i, /\bsafety plan/i, /\bsupport\b/i];
-  }
-
-  return {
-    category: triage.likelyCategory,
-    safetyRiskLevel: triage.safetyRiskLevel,
-    preferredChips: reorderRiskFirst(preferredChips, triage.safetyRiskLevel),
-    keywords,
-    anchorPatterns,
-    bridgePatterns,
-    protectedPatterns,
-    excludedPatterns,
-    minimumScore
+}): string[] => {
+  const facts = toStructuredFactsRecord(triage.structuredFacts);
+  const titles: string[] = [];
+  const addTitle = (title: string, condition: boolean) => {
+    if (condition && !titles.includes(title)) {
+      titles.push(title);
+    }
   };
-};
 
-const buildMicroCardSearchText = (card: {
-  title?: string;
-  tag?: string;
-  summary?: string;
-  detailHeading?: string;
-  detailSummary?: string;
-  detailBody?: string;
-  detailTakeaway?: string;
-  chips?: MicroEducationChip[];
-}) =>
-  [
-    card.title,
-    card.tag,
-    card.summary,
-    card.detailHeading,
-    card.detailSummary,
-    card.detailBody,
-    card.detailTakeaway,
-    ...(card.chips ?? [])
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-
-const hasAnyPattern = (text: string, patterns: RegExp[]): boolean =>
-  patterns.some((pattern) => pattern.test(text));
-
-const isPlaceholderMicroCard = (card: {
-  title?: string;
-  tag?: string;
-  summary?: string;
-  detailHeading?: string;
-  detailSummary?: string;
-  detailBody?: string;
-  detailTakeaway?: string;
-  chips?: MicroEducationChip[];
-}): boolean =>
-  /\b(test|testing|sample|dummy|placeholder|lorem|new educational content|new description|create educational content)\b/i.test(
-    buildMicroCardSearchText(card)
+  addTitle('Domestic Violence Safety Planning', facts.domesticViolence);
+  addTitle('Migration or Visa Pressure', facts.migrationOrVisaThreat);
+  addTitle('Image-Based Abuse and Private Photos', facts.imageBasedAbuse || facts.privatePhotosOrMessages);
+  addTitle('Online Blackmail or Threats', facts.onlineThreatBlackmail || facts.blackmailOrExtortion);
+  addTitle('Protect Your Identity After a Scam', facts.scamFraud || facts.identityTheftRisk);
+  addTitle('Elder Scam and Identity Safety', facts.elderOrVulnerablePerson && (facts.scamFraud || facts.identityTheftRisk));
+  addTitle('What to Do After a Data Breach', facts.privacyDataBreach || facts.personalDataLeak);
+  addTitle(
+    'Saving Evidence Safely',
+    facts.evidenceAvailable &&
+      !(
+        facts.domesticViolence &&
+        (triage.safetyRiskLevel === 'high' || triage.safetyRiskLevel === 'immediate')
+      )
   );
+  addTitle('Privacy Complaint Steps', facts.privacyDataBreach || facts.employerHealthPrivacy);
+  addTitle('Employer Sharing Health Information', facts.employerHealthPrivacy);
+  addTitle('Workplace Bullying: Keep a Clear Record', facts.workplaceBullying);
+  addTitle('Workplace Discrimination and Fair Treatment', facts.workplaceDiscrimination);
+  addTitle('Racial Abuse or Hate Speech', facts.racismDiscrimination);
+  addTitle('School Bullying or School Racism', facts.schoolContext);
+  addTitle('Reporting Harmful Content to a Platform or eSafety', facts.platforms.length > 0 || triage.likelyCategory === 'online_abuse');
+  addTitle('Interpreter and Language Support', facts.languageOrInterpreterNeed);
 
-const isMicroCardEligibleForProfile = (
-  card: {
-    title?: string;
-    tag?: string;
-    summary?: string;
-    detailHeading?: string;
-    detailSummary?: string;
-    detailBody?: string;
-    detailTakeaway?: string;
-    chips?: MicroEducationChip[];
-  },
-  profile: MicroEducationSuggestionProfile
-): boolean => {
-  if (isPlaceholderMicroCard(card)) {
-    return false;
-  }
-
-  const searchText = buildMicroCardSearchText(card);
-  const hasAnchor = hasAnyPattern(searchText, profile.anchorPatterns);
-  const hasBridge = hasAnyPattern(searchText, profile.bridgePatterns);
-  const hasProtectedTopic = hasAnyPattern(searchText, profile.protectedPatterns);
-  const hasExcludedTopic = hasAnyPattern(searchText, profile.excludedPatterns);
-
-  if (hasExcludedTopic && !hasAnchor && !hasProtectedTopic) {
-    return false;
-  }
-
-  return hasAnchor || hasBridge || hasProtectedTopic;
-};
-
-const scoreMicroCardForProfile = (
-  card: {
-    title?: string;
-    tag?: string;
-    summary?: string;
-    detailHeading?: string;
-    detailSummary?: string;
-    detailBody?: string;
-    detailTakeaway?: string;
-    chips?: MicroEducationChip[];
-  },
-  profile: MicroEducationSuggestionProfile
-) => {
-  if (!isMicroCardEligibleForProfile(card, profile)) {
-    return 0;
-  }
-
-  const searchText = buildMicroCardSearchText(card);
-  let score = 0;
-
-  (card.chips ?? []).forEach((chip) => {
-    const chipIndex = profile.preferredChips.indexOf(chip);
-
-    if (chipIndex >= 0) {
-      score += (profile.preferredChips.length - chipIndex) * 12;
-    }
-  });
-
-  profile.keywords.forEach((keyword) => {
-    if (searchText.includes(keyword)) {
-      score += 8;
-    }
-  });
-
-  profile.anchorPatterns.forEach((pattern) => {
-    if (pattern.test(searchText)) {
-      score += 18;
-    }
-  });
-
-  profile.bridgePatterns.forEach((pattern) => {
-    if (pattern.test(searchText)) {
-      score += 8;
-    }
-  });
-
-  profile.protectedPatterns.forEach((pattern) => {
-    if (pattern.test(searchText)) {
-      score += 10;
-    }
-  });
-
-  if (
-    (profile.safetyRiskLevel === 'high' || profile.safetyRiskLevel === 'immediate') &&
-    card.chips?.includes('safety')
-  ) {
-    score += 18;
-  }
-
-  if (
-    (profile.safetyRiskLevel === 'high' || profile.safetyRiskLevel === 'immediate') &&
-    card.chips?.includes('mentalHealth')
-  ) {
-    score += 10;
-  }
-
-  return score;
+  return titles.slice(0, 7);
 };
 
 const getSuggestedMicroCardIds = async (triage: {
@@ -1858,9 +2056,9 @@ const getSuggestedMicroCardIds = async (triage: {
   matchedKnowledgeSources: Array<Record<string, unknown>>;
   structuredFacts?: unknown;
 }) => {
-  const profile = buildMicroEducationSuggestionProfile(triage);
+  const suggestedTitles = buildSuggestedMicroCardTitles(triage);
 
-  if (!profile) {
+  if (suggestedTitles.length === 0) {
     return [];
   }
 
@@ -1873,48 +2071,439 @@ const getSuggestedMicroCardIds = async (triage: {
     )
     .sort({ sortOrder: 1, createdAt: -1 })
     .lean();
+  const cardsByTitle = new Map(
+    cards.map((card) => [card.title.trim().toLowerCase(), card._id.toString()] as const)
+  );
 
-  return cards
-    .map((card) => ({
-      id: card._id.toString(),
-      sortOrder: card.sortOrder,
-      score: scoreMicroCardForProfile(
-        {
-          title: card.title,
-          tag: card.tag,
-          summary: card.summary,
-          detailHeading: card.detailHeading,
-          detailSummary: card.detailSummary,
-          detailBody: card.detailBody,
-          detailTakeaway: card.detailTakeaway,
-          chips: card.chips
-        },
-        profile
-      )
-    }))
-    .filter((item) => item.score >= profile.minimumScore)
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-
-      return left.sortOrder - right.sortOrder;
-    })
-    .map((item) => item.id)
-    .slice(0, 8);
+  return suggestedTitles
+    .map((title) => cardsByTitle.get(title.toLowerCase()))
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 6);
 };
 
-const toSupportAction = (
-  slot: 'immediateDanger' | 'esafety' | 'counselling',
+type TriageSupportActionSlot =
+  | 'immediateDanger'
+  | 'primarySupport'
+  | 'secondarySupport'
+  | 'additional';
+
+type TriageSupportActionRecord = {
+  slot: TriageSupportActionSlot;
+  serviceId?: string;
+  resourceType?: string;
+  title: string;
+  description: string;
+  whySuggested: string;
+  ctaLabel: string;
+  href: string;
+  phone?: string;
+  websiteUrl?: string;
+  actionKind: 'call' | 'external_link';
+  consentNote: string;
+};
+
+type TriageSupportResourceTemplate = Omit<
+  TriageSupportActionRecord,
+  'slot' | 'whySuggested' | 'serviceId'
+> & { id: string };
+
+const TRIAGE_SUPPORT_RESOURCE_LIBRARY: Record<string, TriageSupportResourceTemplate> = {
+  emergency_000: {
+    id: 'emergency_000',
+    resourceType: 'emergency',
+    title: 'Emergency services (000)',
+    description: 'Use 000 if there is immediate danger, serious threats, or someone may act now.',
+    ctaLabel: 'Call 000',
+    href: 'tel:000',
+    phone: '000',
+    actionKind: 'call',
+    consentNote: 'SafeSpeak does not call or contact emergency services for you.'
+  },
+  respect_1800: {
+    id: 'respect_1800',
+    resourceType: 'domestic_violence_agency',
+    title: '1800RESPECT',
+    description: 'Confidential domestic, family, and sexual violence support, including safety planning.',
+    ctaLabel: 'Call 1800RESPECT',
+    href: 'tel:1800737732',
+    phone: '1800 737 732',
+    websiteUrl: 'https://www.1800respect.org.au',
+    actionKind: 'call',
+    consentNote: 'SafeSpeak will not share your details with 1800RESPECT unless you choose to contact them.'
+  },
+  lifeline: {
+    id: 'lifeline',
+    resourceType: 'mental_health',
+    title: 'Lifeline',
+    description: '24/7 crisis support if you are overwhelmed or having thoughts of self-harm.',
+    ctaLabel: 'Call Lifeline',
+    href: 'tel:131114',
+    phone: '13 11 14',
+    websiteUrl: 'https://www.lifeline.org.au',
+    actionKind: 'call',
+    consentNote: 'SafeSpeak does not call Lifeline for you.'
+  },
+  esafety: {
+    id: 'esafety',
+    resourceType: 'online_safety',
+    title: 'eSafety Commissioner',
+    description: 'Official reporting guidance for serious online abuse, image-based abuse, and harmful content.',
+    ctaLabel: 'Open eSafety guidance',
+    href: 'https://www.esafety.gov.au/report',
+    websiteUrl: 'https://www.esafety.gov.au/report',
+    actionKind: 'external_link',
+    consentNote: 'Opening the link does not send anything from SafeSpeak.'
+  },
+  reportcyber: {
+    id: 'reportcyber',
+    resourceType: 'scam_support',
+    title: 'ReportCyber',
+    description: 'Official cybercrime reporting and recovery guidance for account compromise, identity theft, and online fraud.',
+    ctaLabel: 'Open ReportCyber',
+    href: 'https://www.cyber.gov.au/report-and-recover',
+    websiteUrl: 'https://www.cyber.gov.au/report-and-recover',
+    actionKind: 'external_link',
+    consentNote: 'Opening the link does not submit a report from SafeSpeak.'
+  },
+  scamwatch: {
+    id: 'scamwatch',
+    resourceType: 'scam_support',
+    title: 'Scamwatch',
+    description: 'Scam reporting and awareness guidance that helps track scam patterns in Australia.',
+    ctaLabel: 'Open Scamwatch',
+    href: 'https://portal.scamwatch.gov.au/report-a-scam/',
+    websiteUrl: 'https://portal.scamwatch.gov.au/report-a-scam/',
+    actionKind: 'external_link',
+    consentNote: 'Opening the link does not send your SafeSpeak details anywhere.'
+  },
+  oaic: {
+    id: 'oaic',
+    resourceType: 'government',
+    title: 'OAIC privacy complaints',
+    description: 'Official privacy complaint guidance for mishandled personal information and some data breaches.',
+    ctaLabel: 'Open OAIC privacy guidance',
+    href: 'https://www.oaic.gov.au/privacy/privacy-complaints',
+    websiteUrl: 'https://www.oaic.gov.au/privacy/privacy-complaints',
+    actionKind: 'external_link',
+    consentNote: 'SafeSpeak will not lodge a privacy complaint for you.'
+  },
+  fair_work: {
+    id: 'fair_work',
+    resourceType: 'workplace_body',
+    title: 'Fair Work workplace bullying guidance',
+    description: 'Official workplace bullying guidance, including information about stop-bullying applications.',
+    ctaLabel: 'Open Fair Work guidance',
+    href: 'https://www.fairwork.gov.au/employment-conditions/bullying-sexual-harassment-and-discrimination-at-work/bullying-in-the-workplace',
+    websiteUrl:
+      'https://www.fairwork.gov.au/employment-conditions/bullying-sexual-harassment-and-discrimination-at-work/bullying-in-the-workplace',
+    actionKind: 'external_link',
+    consentNote: 'SafeSpeak does not contact Fair Work for you.'
+  },
+  ahrc: {
+    id: 'ahrc',
+    resourceType: 'anti_discrimination_body',
+    title: 'Australian Human Rights Commission',
+    description: 'Official discrimination complaint guidance for race and other protected attribute issues.',
+    ctaLabel: 'Open AHRC complaints guidance',
+    href: 'https://humanrights.gov.au/complaints/make-complaint',
+    websiteUrl: 'https://humanrights.gov.au/complaints/make-complaint',
+    actionKind: 'external_link',
+    consentNote: 'Opening the link does not file a complaint from SafeSpeak.'
+  },
+  adnsw: {
+    id: 'adnsw',
+    resourceType: 'anti_discrimination_body',
+    title: 'Anti-Discrimination NSW',
+    description: 'Official NSW discrimination complaint guidance for racism, vilification, and other discrimination concerns.',
+    ctaLabel: 'Open Anti-Discrimination NSW',
+    href: 'https://antidiscrimination.nsw.gov.au/complaints.html',
+    websiteUrl: 'https://antidiscrimination.nsw.gov.au/complaints.html',
+    actionKind: 'external_link',
+    consentNote: 'SafeSpeak does not send a complaint to Anti-Discrimination NSW for you.'
+  },
+  legal_aid_nsw: {
+    id: 'legal_aid_nsw',
+    resourceType: 'legal',
+    title: 'Legal Aid NSW',
+    description: 'Legal information and referral help if you want advice about rights or options.',
+    ctaLabel: 'Open Legal Aid NSW',
+    href: 'https://www.legalaid.nsw.gov.au/contact-us',
+    websiteUrl: 'https://www.legalaid.nsw.gov.au/contact-us',
+    phone: '1300 888 529',
+    actionKind: 'external_link',
+    consentNote: 'SafeSpeak information is not legal advice and does not contact Legal Aid for you.'
+  },
+  home_affairs_visa_scams: {
+    id: 'home_affairs_visa_scams',
+    resourceType: 'government',
+    title: 'Home Affairs visa scam guidance',
+    description: 'Official guidance on spotting visa scams and avoiding fake migration services.',
+    ctaLabel: 'Open visa scam guidance',
+    href: 'https://immi.homeaffairs.gov.au/help-support/visa-scams',
+    websiteUrl: 'https://immi.homeaffairs.gov.au/help-support/visa-scams',
+    actionKind: 'external_link',
+    consentNote: 'Opening the link does not report anything automatically.'
+  },
+  omara: {
+    id: 'omara',
+    resourceType: 'government',
+    title: 'OMARA registered agent search',
+    description: 'Check whether a migration agent is officially registered before paying or sharing documents.',
+    ctaLabel: 'Check an agent',
+    href: 'https://portal.mara.gov.au/search-the-register-of-migration-agents/',
+    websiteUrl: 'https://portal.mara.gov.au/search-the-register-of-migration-agents/',
+    actionKind: 'external_link',
+    consentNote: 'SafeSpeak does not verify an agent for you.'
+  },
+  elder_support: {
+    id: 'elder_support',
+    resourceType: 'council_support',
+    title: 'Elder support line',
+    description: 'Official elder abuse and support information for older people and the people helping them.',
+    ctaLabel: 'Open elder support',
+    href: 'https://www.health.gov.au/contacts/elder-abuse-phone-line',
+    websiteUrl: 'https://www.health.gov.au/contacts/elder-abuse-phone-line',
+    phone: '1800 353 374',
+    actionKind: 'external_link',
+    consentNote: 'SafeSpeak does not contact the elder support line for you.'
+  },
+  tis_national: {
+    id: 'tis_national',
+    resourceType: 'government',
+    title: 'TIS National',
+    description: 'Immediate phone interpreting support if you need help speaking with a service in English.',
+    ctaLabel: 'Call TIS National',
+    href: 'tel:131450',
+    phone: '131 450',
+    websiteUrl: 'https://www.tisnational.gov.au/en/Our-services/Language-services/Phone-interpreting',
+    actionKind: 'call',
+    consentNote: 'SafeSpeak does not place the interpreter call for you.'
+  }
+};
+
+const createSupportAction = (
+  slot: TriageSupportActionSlot,
+  template: TriageSupportResourceTemplate,
+  whySuggested: string,
   recommendation?: ReturnType<typeof toRecommendationRecord>
-) => ({
+): TriageSupportActionRecord => ({
   slot,
-  serviceId: recommendation?.id,
-  resourceType: recommendation?.resourceType,
-  ctaLabel: recommendation?.ctaLabel,
-  phone: recommendation?.phone,
-  websiteUrl: recommendation?.websiteUrl
+  serviceId: recommendation?.id ?? template.id,
+  resourceType: recommendation?.resourceType ?? template.resourceType,
+  title: recommendation?.title || template.title,
+  description: recommendation?.description || template.description,
+  whySuggested,
+  ctaLabel: recommendation?.ctaLabel || template.ctaLabel,
+  href: recommendation?.phone
+    ? `tel:${recommendation.phone.replace(/\s+/g, '')}`
+    : recommendation?.websiteUrl || template.href,
+  phone: recommendation?.phone || template.phone,
+  websiteUrl: recommendation?.websiteUrl || template.websiteUrl,
+  actionKind: recommendation?.phone ? 'call' : template.actionKind,
+  consentNote: template.consentNote
 });
+
+const recommendationMatches = (
+  recommendation: ReturnType<typeof toRecommendationRecord>,
+  pattern: RegExp,
+  resourceTypes: string[] = []
+) =>
+  pattern.test(recommendation.title) ||
+  pattern.test(recommendation.description) ||
+  (resourceTypes.length > 0 && resourceTypes.includes(recommendation.resourceType));
+
+export const buildSupportResourceSuggestions = (input: {
+  category: ConversationFlowCategory;
+  facts: ConversationFlowStructuredFacts;
+  riskLevel: ConversationFlowRiskLevel;
+  jurisdiction?: string;
+  recommendations?: Array<ReturnType<typeof toRecommendationRecord>>;
+}): TriageSupportActionRecord[] => {
+  const suggestions: TriageSupportActionRecord[] = [];
+  const recommendations = input.recommendations ?? [];
+  const addSuggestion = (
+    slot: TriageSupportActionSlot,
+    templateKey: keyof typeof TRIAGE_SUPPORT_RESOURCE_LIBRARY,
+    whySuggested: string,
+    matcher?: (recommendation: ReturnType<typeof toRecommendationRecord>) => boolean
+  ) => {
+    const existing = suggestions.find((item) => item.title === TRIAGE_SUPPORT_RESOURCE_LIBRARY[templateKey].title);
+
+    if (existing) {
+      return;
+    }
+
+    const recommendation = matcher ? recommendations.find(matcher) : undefined;
+    suggestions.push(
+      createSupportAction(slot, TRIAGE_SUPPORT_RESOURCE_LIBRARY[templateKey], whySuggested, recommendation)
+    );
+  };
+
+  if (input.facts.immediateDanger || input.riskLevel === 'immediate') {
+    addSuggestion(
+      'immediateDanger',
+      'emergency_000',
+      'Suggested because the triage picked up immediate danger or a serious threat.'
+    );
+  }
+
+  if (input.facts.domesticViolence) {
+    addSuggestion(
+      'primarySupport',
+      'respect_1800',
+      'Suggested because domestic, family, or coercive-control indicators were detected.',
+      (recommendation) =>
+        recommendationMatches(recommendation, /1800respect/i, ['domestic_violence_agency'])
+    );
+  }
+
+  if (input.facts.selfHarmOrSuicidal || input.category === 'mental_health_distress') {
+    addSuggestion(
+      'secondarySupport',
+      'lifeline',
+      'Suggested because crisis or self-harm language was detected.',
+      (recommendation) => recommendationMatches(recommendation, /lifeline/i, ['mental_health'])
+    );
+  }
+
+  if (
+    input.category === 'online_abuse' ||
+    input.facts.imageBasedAbuse ||
+    input.facts.onlineThreatBlackmail ||
+    (input.facts.platforms.length > 0 &&
+      (input.facts.threatsPresent || input.facts.racismDiscrimination))
+  ) {
+    addSuggestion(
+      'additional',
+      'esafety',
+      'Suggested because the triage picked up online abuse, image-based abuse, or harmful content concerns.',
+      (recommendation) =>
+        recommendationMatches(recommendation, /esafety/i, ['online_safety'])
+    );
+  }
+
+  if (input.facts.scamFraud || input.facts.identityTheftRisk) {
+    addSuggestion(
+      'additional',
+      'reportcyber',
+      'Suggested because the triage picked up account compromise, identity risk, or cybercrime concerns.',
+      (recommendation) =>
+        recommendationMatches(recommendation, /reportcyber/i, ['scam_support', 'online_safety'])
+    );
+    addSuggestion(
+      'additional',
+      'scamwatch',
+      'Suggested because the triage picked up a scam or fraud pattern.',
+      (recommendation) =>
+        recommendationMatches(recommendation, /scamwatch/i, ['scam_support'])
+    );
+  }
+
+  if (input.facts.privacyDataBreach || input.facts.employerHealthPrivacy) {
+    addSuggestion(
+      'additional',
+      'oaic',
+      'Suggested because the triage picked up privacy, personal information, or data-breach concerns.'
+    );
+  }
+
+  if (input.facts.workplaceBullying || input.facts.workplaceDiscrimination) {
+    addSuggestion(
+      'additional',
+      'fair_work',
+      'Suggested because the triage picked up a workplace bullying or rights issue.',
+      (recommendation) =>
+        recommendationMatches(recommendation, /fair work/i, ['workplace_body'])
+    );
+  }
+
+  if (input.facts.racismDiscrimination || input.facts.workplaceDiscrimination) {
+    addSuggestion(
+      'additional',
+      input.jurisdiction === 'NSW' ? 'adnsw' : 'ahrc',
+      'Suggested because the triage picked up racism, hate-based abuse, or discrimination concerns.',
+      (recommendation) =>
+        recommendationMatches(recommendation, /anti-discrimination|human rights/i, ['anti_discrimination_body'])
+    );
+  }
+
+  if (
+    input.facts.workplaceDiscrimination ||
+    input.facts.domesticViolence ||
+    input.facts.migrationOrVisaThreat ||
+    input.facts.racismDiscrimination
+  ) {
+    addSuggestion(
+      'additional',
+      'legal_aid_nsw',
+      'Suggested because you may want formal rights information or a referral, not because SafeSpeak is giving legal advice.',
+      (recommendation) => recommendationMatches(recommendation, /legal aid/i, ['legal'])
+    );
+  }
+
+  if (input.facts.migrationOrVisaThreat) {
+    addSuggestion(
+      'additional',
+      'home_affairs_visa_scams',
+      'Suggested because the triage picked up a fake migration, visa, or immigration-pressure pattern.'
+    );
+    addSuggestion(
+      'additional',
+      'omara',
+      'Suggested because checking whether an agent is registered can help with migration-related scam concerns.'
+    );
+  }
+
+  if (input.facts.elderOrVulnerablePerson) {
+    addSuggestion(
+      'additional',
+      'elder_support',
+      'Suggested because an older or vulnerable person may be affected by the incident.',
+      (recommendation) => recommendationMatches(recommendation, /elder/i, ['council_support'])
+    );
+  }
+
+  if (input.facts.languageOrInterpreterNeed) {
+    addSuggestion(
+      'additional',
+      'tis_national',
+      'Suggested because language or interpreter support may help when contacting a service.'
+    );
+  }
+
+  return suggestions;
+};
+
+const buildFallbackSupportRecommendations = (input: {
+  category: ConversationFlowCategory;
+  facts: ConversationFlowStructuredFacts;
+  riskLevel: ConversationFlowRiskLevel;
+  jurisdiction?: string;
+}): Array<ReturnType<typeof toRecommendationRecord>> =>
+  buildSupportResourceSuggestions({
+    category: input.category,
+    facts: input.facts,
+    riskLevel: input.riskLevel,
+    jurisdiction: input.jurisdiction
+  }).map((suggestion, index) => ({
+    id: suggestion.serviceId ?? suggestion.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+    title: suggestion.title,
+    description: suggestion.description,
+    category: input.category,
+    resourceType: suggestion.resourceType ?? 'government',
+    ctaLabel: suggestion.ctaLabel,
+    phone: suggestion.phone,
+    email: undefined,
+    websiteUrl: suggestion.websiteUrl ?? suggestion.href,
+    priority: 100 - index,
+    jurisdiction: input.jurisdiction,
+    safetyNotes: suggestion.whySuggested,
+    eligibilityNotes: suggestion.consentNote,
+    languageSupportNotes: input.facts.languageOrInterpreterNeed
+      ? 'Ask for an interpreter or language support if you need one.'
+      : undefined,
+    active: true
+  }));
 
 const buildDetailSections = (input: {
   triage: {
@@ -2199,41 +2788,46 @@ export const appendConversationFlowMessage = async (
     text: `${input.content}\n${JSON.stringify(existingTimeline)}`,
     selectedTopic: session.selectedTopic
   }).category;
+  const triageHandoffIntent = detectTriageHandoffIntent(input.content);
 
   let assistantPayload: Record<string, unknown>;
 
-  try {
-    assistantPayload = await runTimelineAssistant(
-      {
-        owner: context.owner,
-        ip: context.ip,
-        userAgent: context.userAgent
-      },
-      {
-        message: input.content,
-        topK: 4,
-        conversation: conversationForAssistant,
-        timeline: existingTimeline,
-        language: input.language,
-        incidentCategory: categoryToRagIncidentCategory(detectedCategory),
-        jurisdiction: session.jurisdiction as
-          | 'Cth'
-          | 'NSW'
-          | 'VIC'
-          | 'QLD'
-          | 'SA'
-          | 'WA'
-          | 'TAS'
-          | 'NT'
-          | 'ACT'
-          | 'AU'
-          | 'Global'
-          | 'Internal'
-          | undefined
-      }
-    );
-  } catch {
-    assistantPayload = buildFallbackAssistantResponse(input.content, existingTimeline);
+  if (triageHandoffIntent) {
+    assistantPayload = buildTriageHandoffAssistantPayload();
+  } else {
+    try {
+      assistantPayload = await runTimelineAssistant(
+        {
+          owner: context.owner,
+          ip: context.ip,
+          userAgent: context.userAgent
+        },
+        {
+          message: input.content,
+          topK: 4,
+          conversation: conversationForAssistant,
+          timeline: existingTimeline,
+          language: input.language,
+          incidentCategory: categoryToRagIncidentCategory(detectedCategory),
+          jurisdiction: session.jurisdiction as
+            | 'Cth'
+            | 'NSW'
+            | 'VIC'
+            | 'QLD'
+            | 'SA'
+            | 'WA'
+            | 'TAS'
+            | 'NT'
+            | 'ACT'
+            | 'AU'
+            | 'Global'
+            | 'Internal'
+            | undefined
+        }
+      );
+    } catch {
+      assistantPayload = buildFallbackAssistantResponse(input.content, existingTimeline);
+    }
   }
 
   const assistantMessageContent = [
@@ -2270,7 +2864,8 @@ export const appendConversationFlowMessage = async (
     normalizedTimeline
   );
   const triage = enoughContextForTriageAssessment ? await buildTriageForSession(session) : null;
-  const offerTriage = Boolean(triage && !shouldBlockTriage(triage));
+  const offerTriage =
+    triageHandoffIntent || Boolean(triage && !shouldBlockTriage(triage));
 
   if (offerTriage && !session.triageOfferedAt) {
     session.triageOfferedAt = new Date();
@@ -2296,7 +2891,9 @@ export const appendConversationFlowMessage = async (
     triage: decorateConversationFlowTriage(triage),
     transition: {
       offerTriage,
-      prompt: offerTriage
+      prompt: triageHandoffIntent
+        ? null
+        : offerTriage
         ? 'I am sorry this happened to you. You are safe to explore your options here. Would you like help understanding reporting options, support services, evidence, or your rights?'
         : enoughContextForTriageAssessment
           ? 'Based on what you shared so far, this does not appear to fit the harm, safety, scam, violence, harassment, or discrimination categories that move to triage here. You can keep chatting if there is more context.'
@@ -2304,17 +2901,11 @@ export const appendConversationFlowMessage = async (
       primaryCta: offerTriage ? 'Continue to Triage' : null,
       secondaryCta: offerTriage ? 'Review my options' : null
     },
-    responseMeta: {
-      confidence: assistantPayload.confidence ?? 'low',
-      disclaimer: 'This is information only, not legal advice.',
-      citations: Array.isArray(assistantPayload.citations) ? assistantPayload.citations : [],
-      rag: assistantPayload.rag ?? {
-        used: false,
-        unavailable: true,
-        resultCount: 0
-      },
-      reviewStatus: assistantPayload.reviewStatus ?? 'fallback_local'
-    }
+    responseMeta: buildConversationAssistantResponseMeta({
+      assistantPayload,
+      conversationSessionId,
+      offerTriage
+    })
   };
 };
 
@@ -2341,10 +2932,12 @@ export const getConversationFlowSupport = async (
 ) => {
   const session = await getOwnedConversationSession(context, conversationSessionId);
   const triage = await buildTriageForSession(session, { finalizeSession: true });
-  const supportIssueTypes = toRelatedIssueTypes(triage.relatedIssueTypes);
+  const relatedIssueTypes = toRelatedIssueTypes(triage.relatedIssueTypes);
+  const supportIssueTypes = toSupportIssueTypes(relatedIssueTypes, triage.likelyCategory);
+  const structuredFacts = toStructuredFactsRecord(triage.structuredFacts);
   const recommendationDocs = await SupportServiceModel.find(
     buildRecommendationsFilter({
-      issueTypes: supportIssueTypes.length > 0 ? supportIssueTypes : [triage.likelyCategory],
+      issueTypes: supportIssueTypes,
       riskLevel: triage.safetyRiskLevel,
       matchedResourceTypes: triage.matchedResourceTypes,
       jurisdiction: session.jurisdiction
@@ -2353,23 +2946,27 @@ export const getConversationFlowSupport = async (
     .sort({ priority: -1, sortOrder: 1, name: 1 })
     .limit(8)
     .lean();
-  const recommendations = recommendationDocs.map((item) =>
-    toRecommendationRecord(
-      item as Record<string, unknown> & { _id?: { toString: () => string } },
-      triage.likelyCategory
-    )
-  );
-  const emergencyRecommendation = recommendations.find((item) =>
-    ['emergency', 'police'].includes(item.resourceType)
-  );
-  const esafetyRecommendation = recommendations.find(
-    (item) => item.resourceType === 'online_safety' || /esafety/i.test(item.title)
-  );
-  const counsellingRecommendation = recommendations.find(
-    (item) =>
-      ['mental_health', 'domestic_violence_agency'].includes(item.resourceType) ||
-      /counsell?ing|lifeline|1800respect/i.test(item.title)
-  );
+  const fallbackUsed = recommendationDocs.length === 0;
+  const recommendations = fallbackUsed
+    ? buildFallbackSupportRecommendations({
+        category: triage.likelyCategory,
+        facts: structuredFacts,
+        riskLevel: triage.safetyRiskLevel,
+        jurisdiction: session.jurisdiction
+      })
+    : recommendationDocs.map((item) =>
+        toRecommendationRecord(
+          item as Record<string, unknown> & { _id?: { toString: () => string } },
+          triage.likelyCategory
+        )
+      );
+  const supportSuggestions = buildSupportResourceSuggestions({
+    category: triage.likelyCategory,
+    facts: structuredFacts,
+    riskLevel: triage.safetyRiskLevel,
+    jurisdiction: session.jurisdiction,
+    recommendations
+  });
   const suggestedMicroCardIds = await getSuggestedMicroCardIds({
     likelyCategory: triage.likelyCategory,
     safetyRiskLevel: triage.safetyRiskLevel,
@@ -2391,17 +2988,10 @@ export const getConversationFlowSupport = async (
     triage: decorateConversationFlowTriage(triage),
     support: {
       suggestedMicroCardIds,
-      recommendedActions: [
-        toSupportAction('immediateDanger', emergencyRecommendation),
-        toSupportAction('esafety', esafetyRecommendation),
-        toSupportAction('counselling', counsellingRecommendation)
-      ],
-      additionalResources: [
-        toSupportAction('esafety', esafetyRecommendation),
-        toSupportAction('counselling', counsellingRecommendation)
-      ],
+      recommendedActions: supportSuggestions.filter((item) => item.slot !== 'additional').slice(0, 3),
+      additionalResources: supportSuggestions.filter((item) => item.slot === 'additional').slice(0, 6),
       matchedSupportServices: recommendations,
-      fallbackUsed: recommendations.length === 0
+      fallbackUsed
     }
   };
 };
@@ -2415,13 +3005,14 @@ export const getConversationFlowRecommendations = async (
     (await ConversationFlowTriageModel.findOne({
       conversationSessionId: session._id
     }).lean()) ?? (await buildTriageForSession(session));
-  const recommendationIssueTypes = toRelatedIssueTypes(triageRecord.relatedIssueTypes);
-  const recommendations = await SupportServiceModel.find(
+  const recommendationIssueTypes = toSupportIssueTypes(
+    toRelatedIssueTypes(triageRecord.relatedIssueTypes),
+    triageRecord.likelyCategory
+  );
+  const structuredFacts = toStructuredFactsRecord(triageRecord.structuredFacts);
+  const recommendationDocs = await SupportServiceModel.find(
     buildRecommendationsFilter({
-      issueTypes:
-        recommendationIssueTypes.length > 0
-          ? recommendationIssueTypes
-          : [triageRecord.likelyCategory],
+      issueTypes: recommendationIssueTypes,
       riskLevel: triageRecord.safetyRiskLevel,
       matchedResourceTypes: triageRecord.matchedResourceTypes,
       jurisdiction: session.jurisdiction
@@ -2430,6 +3021,20 @@ export const getConversationFlowRecommendations = async (
     .sort({ priority: -1, sortOrder: 1, name: 1 })
     .limit(8)
     .lean();
+  const fallbackUsed = recommendationDocs.length === 0;
+  const recommendations = fallbackUsed
+    ? buildFallbackSupportRecommendations({
+        category: triageRecord.likelyCategory,
+        facts: structuredFacts,
+        riskLevel: triageRecord.safetyRiskLevel,
+        jurisdiction: session.jurisdiction
+      })
+    : recommendationDocs.map((item) =>
+        toRecommendationRecord(
+          item as Record<string, unknown> & { _id?: { toString: () => string } },
+          triageRecord.likelyCategory
+        )
+      );
 
   session.status = triageRecord.canProceedToRecommendations
     ? 'recommendation_ready'
@@ -2442,13 +3047,8 @@ export const getConversationFlowRecommendations = async (
 
   return {
     session: toSessionRecord(session),
-    recommendations: recommendations.map((item) =>
-      toRecommendationRecord(
-        item as Record<string, unknown> & { _id?: { toString: () => string } },
-        triageRecord.likelyCategory
-      )
-    ),
-    fallbackUsed: recommendations.length === 0
+    recommendations,
+    fallbackUsed
   };
 };
 

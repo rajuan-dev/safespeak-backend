@@ -3767,15 +3767,85 @@ export const buildGroundedLegalNotFoundAnswer = (
   ].join('\n\n');
 };
 
+type AssistantSourceDisplayReason =
+  | 'legal_lookup'
+  | 'explicit_citation_request'
+  | 'hidden_support_reply'
+  | 'triage_handoff'
+  | 'not_directly_grounded';
+
 const looksLikeSourceBackedQuestion = (message: string): boolean => {
   const trimmedMessage = collapseWhitespace(message);
 
   return (
-    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy)\b/i.test(
+    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|uploaded source|covered by the legislation|can you cite the source)\b/i.test(
       trimmedMessage
     ) &&
     (/\?/.test(trimmedMessage) || trimmedMessage.split(' ').length <= 8)
   );
+};
+
+const looksLikeExplicitCitationRequest = (message: string): boolean =>
+  /\b(cite|citation|source|according to the uploaded source|according to the source|which section|what section|under the act|uploaded privacy act|covered by the legislation)\b/i.test(
+    collapseWhitespace(message)
+  );
+
+const hasRenderableUserCitation = (
+  citation: Partial<{
+    title: string;
+    sectionRef: string;
+    url: string;
+  }>
+): boolean => Boolean(citation.title && (citation.sectionRef || citation.url));
+
+export const buildAssistantSourceDisplayMeta = (input: {
+  message: string;
+  citations: Array<
+    Partial<{
+      title: string;
+      sectionRef: string;
+      url: string;
+    }>
+  >;
+  triageHandoff?: boolean;
+}): {
+  showSources: boolean;
+  sourceDisplayReason: AssistantSourceDisplayReason;
+} => {
+  if (input.triageHandoff) {
+    return {
+      showSources: false,
+      sourceDisplayReason: 'triage_handoff'
+    };
+  }
+
+  const hasDirectCitations = input.citations.some(hasRenderableUserCitation);
+
+  if (!hasDirectCitations) {
+    return {
+      showSources: false,
+      sourceDisplayReason: 'not_directly_grounded'
+    };
+  }
+
+  if (looksLikeExplicitCitationRequest(input.message)) {
+    return {
+      showSources: true,
+      sourceDisplayReason: 'explicit_citation_request'
+    };
+  }
+
+  if (looksLikeSourceBackedQuestion(input.message)) {
+    return {
+      showSources: true,
+      sourceDisplayReason: 'legal_lookup'
+    };
+  }
+
+  return {
+    showSources: false,
+    sourceDisplayReason: 'hidden_support_reply'
+  };
 };
 
 export const answerRag = async (
@@ -3848,6 +3918,8 @@ export const answerRag = async (
         answer: buildGroundedLegalNotFoundAnswer(input.question, rawTopTitle, focusedQuery),
         disclaimer: buildInformationOnlyDisclaimer(),
         citations: [],
+        showSources: false,
+        sourceDisplayReason: 'not_directly_grounded',
         sourceCategoriesUsed: [],
         confidence: 'low',
         pendingHumanReview: true,
@@ -3891,6 +3963,15 @@ export const answerRag = async (
     sourceCategory: category
   });
 
+  const sourceDisplayMeta = buildAssistantSourceDisplayMeta({
+    message: input.question,
+    citations: results.map((result) => ({
+      title: result.title,
+      sectionRef: result.sectionRef,
+      url: result.citationUrl
+    }))
+  });
+
   return {
     answer: answerText,
     disclaimer: buildInformationOnlyDisclaimer(),
@@ -3906,6 +3987,8 @@ export const answerRag = async (
       sectionRef: result.sectionRef,
       lastUpdated: result.lastUpdated
     })),
+    showSources: sourceDisplayMeta.showSources,
+    sourceDisplayReason: sourceDisplayMeta.sourceDisplayReason,
     sourceCategoriesUsed: Array.from(new Set(results.map((result) => result.sourceCategory))),
     confidence: results.length >= 4 ? 'high' : results.length >= 2 ? 'medium' : 'low',
     pendingHumanReview,
@@ -4302,6 +4385,11 @@ export const runTimelineAssistant = async (
       confidence: groundedAnswer.confidence ?? 'low',
       disclaimer: groundedAnswer.disclaimer ?? buildInformationOnlyDisclaimer(),
       citations: Array.isArray(groundedAnswer.citations) ? groundedAnswer.citations : [],
+      showSources: Boolean(groundedAnswer.showSources),
+      sourceDisplayReason:
+        typeof groundedAnswer.sourceDisplayReason === 'string'
+          ? groundedAnswer.sourceDisplayReason
+          : 'not_directly_grounded',
       legalAwareness: groundedAnswer.legalAwareness,
       rag: {
         used: Array.isArray(groundedAnswer.citations) && groundedAnswer.citations.length > 0,
@@ -4374,6 +4462,15 @@ export const runTimelineAssistant = async (
     ragUnavailable
   });
 
+  const sourceDisplayMeta = buildAssistantSourceDisplayMeta({
+    message: input.message,
+    citations: results.map((result) => ({
+      title: result.title,
+      sectionRef: result.sectionRef,
+      url: result.citationUrl
+    }))
+  });
+
   return {
     assistantMessage,
     nextQuestion: typeof output.nextQuestion === 'string' ? output.nextQuestion.trim() : '',
@@ -4398,6 +4495,8 @@ export const runTimelineAssistant = async (
       sectionRef: result.sectionRef,
       lastUpdated: result.lastUpdated
     })),
+    showSources: sourceDisplayMeta.showSources,
+    sourceDisplayReason: sourceDisplayMeta.sourceDisplayReason,
     legalAwareness,
     rag: {
       used: results.length > 0,
