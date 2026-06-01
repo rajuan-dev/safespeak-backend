@@ -9,6 +9,23 @@ import { env } from './config/env';
 const app = createApp();
 const server = http.createServer(app);
 
+const handleListenError = (error: NodeJS.ErrnoException): void => {
+  if (error.code === 'EADDRINUSE') {
+    logger.fatal(
+      {
+        port: env.PORT,
+        error
+      },
+      'HTTP server failed to start because the port is already in use. Stop the existing process or set PORT to a different value.'
+    );
+
+    process.exit(1);
+  }
+
+  logger.fatal({ error }, 'HTTP server failed to start');
+  process.exit(1);
+};
+
 const shutdown = (signal: string): void => {
   logger.info({ signal }, 'Graceful shutdown started');
 
@@ -45,7 +62,11 @@ process.on('uncaughtException', (error) => {
 const bootstrap = async (): Promise<void> => {
   await bootstrapApp();
 
+  server.once('error', handleListenError);
+
   server.listen(env.PORT, () => {
+    server.off('error', handleListenError);
+
     logger.info(
       {
         port: env.PORT,

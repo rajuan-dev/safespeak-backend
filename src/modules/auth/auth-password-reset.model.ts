@@ -91,7 +91,9 @@ const passwordResetRequestSchema = new Schema<PasswordResetRequestDocument>(
     expiresAt: {
       type: Date,
       required: true,
-      index: true
+      index: {
+        expires: 0
+      }
     },
     deliveredAt: {
       type: Date,
@@ -111,7 +113,6 @@ const passwordResetRequestSchema = new Schema<PasswordResetRequestDocument>(
   { timestamps: true }
 );
 
-passwordResetRequestSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 passwordResetRequestSchema.index({ email: 1, audience: 1, createdAt: -1 });
 passwordResetRequestSchema.index({ userId: 1, usedAt: 1, expiresAt: 1 });
 
