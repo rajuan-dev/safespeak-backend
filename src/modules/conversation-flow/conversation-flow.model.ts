@@ -80,12 +80,14 @@ export interface ConversationFlowTriageDocument {
   confidenceScore: number;
   safetyRiskLevel: ConversationFlowRiskLevel;
   reasoningSummary: string;
+  structuredFacts?: Record<string, unknown>;
   matchedLegislationIds: string[];
   matchedKnowledgeSources: unknown[];
   humanReviewRecommended: boolean;
   missingInformation: string[];
   canProceedToRecommendations: boolean;
   matchedResourceTypes: string[];
+  relatedIssueTypes: ConversationFlowCategory[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -277,6 +279,10 @@ const conversationFlowTriageSchema = new Schema<ConversationFlowTriageDocument>(
       required: true,
       trim: true
     },
+    structuredFacts: {
+      type: Schema.Types.Mixed,
+      default: {}
+    },
     matchedLegislationIds: {
       type: [String],
       default: []
@@ -299,6 +305,11 @@ const conversationFlowTriageSchema = new Schema<ConversationFlowTriageDocument>(
     },
     matchedResourceTypes: {
       type: [String],
+      default: []
+    },
+    relatedIssueTypes: {
+      type: [String],
+      enum: CONVERSATION_FLOW_CATEGORIES,
       default: []
     }
   },
