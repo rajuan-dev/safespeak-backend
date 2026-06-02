@@ -251,6 +251,46 @@ type ConversationFlowStructuredFacts = {
   jurisdiction?: string;
 };
 
+type ConversationAssistantResponseMode =
+  | 'legal_lookup'
+  | 'triage_handoff'
+  | 'support_victim_style'
+  | 'scamshield_style'
+  | 'emergency_safety'
+  | 'clarification_needed';
+
+type SupportResponseFacts = {
+  threat_present: boolean;
+  immediate_danger: boolean;
+  blackmail_or_extortion: boolean;
+  image_based_abuse: boolean;
+  private_photos_or_messages: boolean;
+  personal_data_leak: boolean;
+  company_or_organisation_involved: boolean;
+  scam_or_fraud: boolean;
+  identity_documents_exposed: boolean;
+  bank_details_exposed: boolean;
+  money_lost: boolean;
+  employer_involved: boolean;
+  workplace_context: boolean;
+  health_information: boolean;
+  racism_or_hate: boolean;
+  protected_attribute: boolean;
+  school_context: boolean;
+  neighbour_context: boolean;
+  housing_or_service_context: boolean;
+  domestic_family_context: boolean;
+  coercive_control: boolean;
+  migration_or_visa_threat: boolean;
+  elder_or_vulnerable_person: boolean;
+  evidence_available: boolean;
+  language_or_interpreter_need: boolean;
+  organisations: string[];
+  platforms: string[];
+  matched_facts: string[];
+  originalFacts: ConversationFlowStructuredFacts;
+};
+
 type ConversationFlowTriagePresentationRecord = {
   title: string;
   body: string;
@@ -344,6 +384,81 @@ const buildTriageHandoffAssistantPayload = () => ({
   reviewStatus: 'triage_handoff'
 });
 
+const looksLikeLegalLookupMessage = (message: string): boolean => {
+  const trimmedMessage = collapseWhitespace(message);
+
+  return (
+    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|uploaded source|covered by the legislation|can you cite the source|what does the act say|cite)\b/i.test(
+      trimmedMessage
+    ) &&
+    (/\?/.test(trimmedMessage) || trimmedMessage.split(' ').length <= 10)
+  );
+};
+
+export const shouldShowSources = (
+  responseMode: ConversationAssistantResponseMode,
+  userMessage: string,
+  citations: Array<
+    Partial<{
+      title: string;
+      sectionRef: string;
+      url: string;
+    }>
+  >
+): boolean => {
+  if (responseMode === 'triage_handoff') {
+    return false;
+  }
+
+  if (responseMode !== 'legal_lookup') {
+    return false;
+  }
+
+  return buildAssistantSourceDisplayMeta({
+    message: userMessage,
+    citations,
+    triageHandoff: false
+  }).showSources;
+};
+
+export const classifyResponseMode = (input: {
+  message: string;
+  sessionFacts: ConversationFlowStructuredFacts;
+  selectedTopic?: string;
+}): ConversationAssistantResponseMode => {
+  if (detectTriageHandoffIntent(input.message)) {
+    return 'triage_handoff';
+  }
+
+  if (looksLikeLegalLookupMessage(input.message)) {
+    return 'legal_lookup';
+  }
+
+  if (input.sessionFacts.immediateDanger || input.sessionFacts.selfHarmOrSuicidal) {
+    return 'emergency_safety';
+  }
+
+  if (
+    input.sessionFacts.scamFraud &&
+    !input.sessionFacts.domesticViolence &&
+    !input.sessionFacts.racismDiscrimination &&
+    !input.sessionFacts.imageBasedAbuse &&
+    !input.sessionFacts.employerHealthPrivacy &&
+    (input.selectedTopic === 'scamshield' ||
+      input.sessionFacts.bankDetailsExposed ||
+      input.sessionFacts.identityDocumentsExposed ||
+      input.sessionFacts.moneyLost)
+  ) {
+    return 'scamshield_style';
+  }
+
+  if (input.sessionFacts.matchedFacts.length === 0) {
+    return 'clarification_needed';
+  }
+
+  return 'support_victim_style';
+};
+
 export const buildConversationAssistantResponseMeta = (input: {
   assistantPayload: Record<string, unknown>;
   conversationSessionId: string;
@@ -410,6 +525,317 @@ export const buildConversationAssistantResponseMeta = (input: {
       typeof input.assistantPayload.sourceDisplayReason === 'string'
         ? input.assistantPayload.sourceDisplayReason
         : sourceDisplayMeta.sourceDisplayReason
+  };
+};
+
+export const extractSupportFacts = (input: {
+  message: string;
+  sessionHistory?: Record<string, string>;
+  facts?: Partial<ConversationFlowFactsDocument>;
+  jurisdiction?: string;
+}): SupportResponseFacts => {
+  const historyText = input.sessionHistory
+    ? Object.values(input.sessionHistory)
+        .map((value) => toSafeString(value))
+        .join(' ')
+    : '';
+  const fullText = collapseWhitespace([input.message, historyText].filter(Boolean).join(' '));
+  const originalFacts = extractStructuredTriageFacts({
+    text: fullText,
+    facts: input.facts,
+    jurisdiction: input.jurisdiction
+  });
+
+  return {
+    threat_present: originalFacts.threatsPresent || originalFacts.onlineThreatBlackmail,
+    immediate_danger: originalFacts.immediateDanger,
+    blackmail_or_extortion: originalFacts.blackmailOrExtortion,
+    image_based_abuse: originalFacts.imageBasedAbuse,
+    private_photos_or_messages: originalFacts.privatePhotosOrMessages,
+    personal_data_leak: originalFacts.personalDataLeak || originalFacts.privacyDataBreach,
+    company_or_organisation_involved: originalFacts.companyOrOrganisationInvolved,
+    scam_or_fraud: originalFacts.scamFraud,
+    identity_documents_exposed: originalFacts.identityDocumentsExposed,
+    bank_details_exposed: originalFacts.bankDetailsExposed,
+    money_lost: originalFacts.moneyLost,
+    employer_involved: originalFacts.employerInvolved,
+    workplace_context: originalFacts.workplaceContext,
+    health_information: originalFacts.healthInformation,
+    racism_or_hate: originalFacts.racismDiscrimination,
+    protected_attribute: originalFacts.protectedAttribute,
+    school_context: originalFacts.schoolContext,
+    neighbour_context: /\b(neighbou?r|next door|apartment building|unit block)\b/i.test(fullText),
+    housing_or_service_context: originalFacts.housingOrServiceContext,
+    domestic_family_context: originalFacts.domesticFamilyContext,
+    coercive_control: originalFacts.coerciveControl,
+    migration_or_visa_threat: originalFacts.migrationOrVisaThreat,
+    elder_or_vulnerable_person: originalFacts.elderOrVulnerablePerson,
+    evidence_available: originalFacts.evidenceAvailable,
+    language_or_interpreter_need: originalFacts.languageOrInterpreterNeed,
+    organisations: originalFacts.organisations,
+    platforms: originalFacts.platforms,
+    matched_facts: originalFacts.matchedFacts,
+    originalFacts
+  };
+};
+
+const pushUniqueStep = (steps: string[], step: string) => {
+  if (steps.length >= 3 || steps.includes(step)) {
+    return;
+  }
+
+  steps.push(step);
+};
+
+export const buildSafetySteps = (facts: SupportResponseFacts): string[] => {
+  const steps: string[] = [];
+
+  if (facts.immediate_danger) {
+    pushUniqueStep(
+      steps,
+      'If you are in immediate danger, call 000 now or get urgent help from someone nearby'
+    );
+  }
+
+  if (facts.domestic_family_context || facts.coercive_control) {
+    pushUniqueStep(
+      steps,
+      'Put safety first and avoid gathering evidence if that could increase the risk to you'
+    );
+    pushUniqueStep(
+      steps,
+      'If it feels safe, contact 1800RESPECT or a local domestic violence service for confidential support'
+    );
+  }
+
+  if (
+    facts.threat_present ||
+    facts.blackmail_or_extortion ||
+    facts.image_based_abuse ||
+    facts.private_photos_or_messages
+  ) {
+    pushUniqueStep(
+      steps,
+      'If it feels safe, save screenshots, links, usernames, and dates before anything is deleted'
+    );
+    pushUniqueStep(
+      steps,
+      'Avoid replying or negotiating if engaging with them could make things less safe'
+    );
+    pushUniqueStep(
+      steps,
+      'Report the account, post, or content to the platform if you want the material reviewed or removed'
+    );
+  }
+
+  if (facts.scam_or_fraud || facts.bank_details_exposed) {
+    pushUniqueStep(
+      steps,
+      'Contact your bank or card provider as soon as you can to secure the account and watch for suspicious activity'
+    );
+    pushUniqueStep(
+      steps,
+      'Change important passwords and turn on two-factor authentication where possible'
+    );
+    pushUniqueStep(
+      steps,
+      'Keep scam messages, payment details, and transaction records in one place in case you need them later'
+    );
+  }
+
+  if (facts.identity_documents_exposed) {
+    pushUniqueStep(
+      steps,
+      'Keep a note of which ID documents were exposed so you can monitor for identity misuse and seek official identity support if needed'
+    );
+  }
+
+  if (facts.personal_data_leak || facts.company_or_organisation_involved) {
+    pushUniqueStep(
+      steps,
+      'Save any breach notice or message and note exactly what information was exposed'
+    );
+    pushUniqueStep(
+      steps,
+      'Ask the organisation what they know was affected and what remediation steps they are offering'
+    );
+  }
+
+  if (facts.employer_involved && facts.health_information) {
+    pushUniqueStep(
+      steps,
+      'Write down who shared the health information, who received it, when it happened, and any emails or messages you still have'
+    );
+  }
+
+  if (facts.racism_or_hate) {
+    pushUniqueStep(
+      steps,
+      'Record the exact words or actions, where it happened, when it happened, and any witnesses if it feels safe'
+    );
+    pushUniqueStep(
+      steps,
+      'Preserve screenshots or posts if any of this happened online'
+    );
+  }
+
+  if (facts.language_or_interpreter_need) {
+    pushUniqueStep(
+      steps,
+      'If language support would help, you can ask for an interpreter when you contact support services or agencies'
+    );
+  }
+
+  if (steps.length === 0) {
+    pushUniqueStep(
+      steps,
+      'If it feels safe, keep any messages, emails, screenshots, or notes that help show what happened'
+    );
+    pushUniqueStep(
+      steps,
+      'Take this one step at a time and focus first on whatever feels most urgent or safest for you'
+    );
+  }
+
+  return steps.slice(0, 3);
+};
+
+export const buildFollowUpQuestion = (facts: SupportResponseFacts): string => {
+  if (facts.immediate_danger || (facts.domestic_family_context && facts.coercive_control)) {
+    return 'Are you safe right now?';
+  }
+
+  if (facts.threat_present || facts.blackmail_or_extortion) {
+    return 'Are they demanding money, contact, images, or something else?';
+  }
+
+  if (facts.scam_or_fraud || facts.bank_details_exposed) {
+    return 'Did they take money, or do they only have your details so far?';
+  }
+
+  if (facts.personal_data_leak || facts.company_or_organisation_involved) {
+    return 'What kind of details were leaked?';
+  }
+
+  if (facts.employer_involved && facts.health_information) {
+    return 'Who was it shared with?';
+  }
+
+  if (facts.racism_or_hate) {
+    return 'Did this happen in person, online, at work, school, or somewhere else?';
+  }
+
+  return 'What feels most important for me to understand next?';
+};
+
+const buildEmpathySentence = (
+  responseMode: ConversationAssistantResponseMode,
+  facts: SupportResponseFacts
+): string => {
+  if (responseMode === 'emergency_safety') {
+    return 'I am really sorry you are dealing with this.';
+  }
+
+  if (facts.domestic_family_context || facts.coercive_control) {
+    return 'I am sorry this is happening to you.';
+  }
+
+  if (facts.racism_or_hate) {
+    return 'I am sorry you were treated that way.';
+  }
+
+  if (facts.scam_or_fraud || facts.bank_details_exposed || facts.identity_documents_exposed) {
+    return 'I am sorry this happened to you.';
+  }
+
+  if (facts.employer_involved && facts.health_information) {
+    return 'I am sorry your health information was shared like that.';
+  }
+
+  if (facts.image_based_abuse || facts.private_photos_or_messages) {
+    return 'I am sorry this happened to you.';
+  }
+
+  return 'Thank you for telling me about this.';
+};
+
+const buildValidationSentence = (
+  responseMode: ConversationAssistantResponseMode,
+  facts: SupportResponseFacts
+): string => {
+  if (responseMode === 'emergency_safety') {
+    return 'Your safety matters most right now, and it makes sense to focus on immediate support first.';
+  }
+
+  if (facts.domestic_family_context || facts.coercive_control) {
+    return 'What you described can be very serious, and your safety comes first.';
+  }
+
+  if (facts.racism_or_hate) {
+    return 'No one should be spoken to or treated like that.';
+  }
+
+  if (facts.scam_or_fraud || facts.bank_details_exposed || facts.identity_documents_exposed) {
+    return 'Scams and identity risks can feel overwhelming, but there are practical steps we can take from here.';
+  }
+
+  if (facts.personal_data_leak || facts.company_or_organisation_involved) {
+    return 'It is understandable to feel unsettled when private information may have been exposed.';
+  }
+
+  if (facts.employer_involved && facts.health_information) {
+    return 'Health information is sensitive, so it is understandable to be upset by that.';
+  }
+
+  if (facts.image_based_abuse || facts.private_photos_or_messages || facts.threat_present) {
+    return 'What you described sounds really distressing, and you do not have to sort it all out at once.';
+  }
+
+  return 'You do not need to explain everything at once, and we can take it one step at a time.';
+};
+
+export const buildSupportReply = (input: {
+  facts: SupportResponseFacts;
+  responseMode: ConversationAssistantResponseMode;
+  sessionContext?: {
+    selectedTopic?: string;
+  };
+}) => {
+  const steps = buildSafetySteps(input.facts);
+  const empathySentence = buildEmpathySentence(input.responseMode, input.facts);
+  const validationSentence = buildValidationSentence(input.responseMode, input.facts);
+  const nextQuestion =
+    input.responseMode === 'clarification_needed'
+      ? 'Can you tell me a bit more about what happened and what feels most urgent right now?'
+      : buildFollowUpQuestion(input.facts);
+  const practicalSentence =
+    steps.length > 0
+      ? `A few practical steps that may help are: ${steps
+          .map((step, index) => `${index + 1}. ${step}`)
+          .join(' ')}.`
+      : '';
+  const topicSentence =
+    input.responseMode === 'scamshield_style' || input.sessionContext?.selectedTopic === 'scamshield'
+      ? 'We can focus on the scam, account, and identity-protection steps first.'
+      : '';
+
+  return {
+    assistantMessage: [empathySentence, validationSentence, topicSentence, practicalSentence]
+      .filter(Boolean)
+      .join(' '),
+    nextQuestion,
+    readyForSubmission: false,
+    confidence: input.responseMode === 'clarification_needed' ? 'low' : 'medium',
+    disclaimer: 'This is information only, not legal advice.',
+    citations: [],
+    showSources: shouldShowSources(input.responseMode, '', []),
+    sourceDisplayReason: 'hidden_support_reply',
+    rag: {
+      used: false,
+      unavailable: false,
+      resultCount: 0
+    },
+    reviewStatus: input.responseMode
   };
 };
 
@@ -633,23 +1059,23 @@ export const extractStructuredTriageFacts = (input: {
     /\b(coercive control|controls? me|monitor(?:s|ed)? me|tracks? me|won.t let me|won't let me|isolat(?:e|ed|es)|takes my pay|checks my phone|keeps me from leaving)\b/i
   ]);
   const healthInformation = matchesAny(combinedText, [
-    /\b(health information|medical information|medical details|health details|diagnosis|mental health history|condition)\b/i
+    /\b(health information|health info|medical information|medical info|medical details|health details|diagnosis|mental health history|condition)\b/i
   ]);
   const employerHealthPrivacy =
     employerInvolved &&
     healthInformation &&
-    matchesAny(combinedText, [/\b(shared|disclosed|told|sent|leaked|exposed|revealed)\b/i]);
+    matchesAny(combinedText, [/\b(shared|disclosed|told|sent|emailed|leaked|exposed|revealed)\b/i]);
   const identityDocumentsExposed = matchesAny(combinedText, [
     /\b(identity theft|passport|driver'?s licen[cs]e|medicare|birth certificate|tax file number|tfn|id\b|identity documents?)\b/i
   ]);
   const bankDetailsExposed = matchesAny(combinedText, [
-    /\b(bank details?|bank account|account details?|credit card|debit card|card number|one time code|one-time code|otp|bsb)\b/i
+    /\b(bank details?|bank info|bank account|account details?|credit card|debit card|card number|one time code|one-time code|otp|bsb)\b/i
   ]);
   const moneyLost = matchesAny(combinedText, [
     /\b(lost money|sent money|paid them|transferred money|they took my money|money was stolen)\b/i
   ]);
   const privatePhotosOrMessages = matchesAny(combinedText, [
-    /\b(private photos?|intimate photos?|nudes?|explicit images?|private messages?|chat logs?|dm|dms)\b/i
+    /\b(private photos?|intimate photos?|nudes?|explicit images?|private messages?|chat logs?|chat history|our chat|conversation|dm|dms)\b/i
   ]);
   const imageBasedAbuse = matchesAny(combinedText, [
     /\b(image-based abuse|revenge porn|shared my photos?|publish my photos?|post my photos?|threat(?:ened)? to share.*photo)\b/i
@@ -663,7 +1089,7 @@ export const extractStructuredTriageFacts = (input: {
   const onlineThreatBlackmail =
     blackmailOrExtortion ||
     matchesAny(combinedText, [
-      /\b(threat(?:ened)? to publish|threat(?:ened)? to share|publish private messages?|share private messages?|leak private messages?|post private messages?)\b/i
+      /\b(threat(?:en|ens|ening|ened)? to publish|threat(?:en|ens|ening|ened)? to share|threat(?:en|ens|ening|ened)? to post|publish private messages?|share private messages?|leak private messages?|post private messages?|post screenshots?)\b/i
     ]);
   const personalDataLeak =
     matchesAny(combinedText, [
@@ -687,7 +1113,7 @@ export const extractStructuredTriageFacts = (input: {
     ]) &&
     !workplaceDiscrimination;
   const migrationOrVisaThreat = matchesAny(combinedText, [
-    /\b(visa scam|immigration scam|migration scam|visa status|migration status|fix my visa|report me to immigration|cancel my visa|cancel my sponsorship|deport me|home affairs|registered migration agent|migration agent|immigration agent)\b/i
+    /\b(visa scam|immigration scam|migration scam|visa status|migration status|fix my visa|report me to immigration|cancel my visa|cancel my sponsorship|deport me|home affairs|registered migration agent|migration agent|immigration agent|visa agent|fake visa agent)\b/i
   ]);
   const elderOrVulnerablePerson = matchesAny(combinedText, [
     /\b(elderly|older parent|older person|aged care|grandma|grandfather|grandmother|pensioner|vulnerable person)\b/i
@@ -731,7 +1157,7 @@ export const extractStructuredTriageFacts = (input: {
       bankDetailsExposed ||
       matchesAny(combinedText, [/\b(date of birth|dob|identity theft)\b/i]),
     scamFraud: matchesAny(combinedText, [
-      /\b(scam|scammer|fraud|phishing|fake link|fake migration agent|account hacked|stole my money|took my money|impersonation)\b/i
+      /\b(scam|scammer|fraud|phishing|fake link|fake migration agent|fake visa agent|visa agent scam|account hacked|stole my money|took my money|impersonation)\b/i
     ]),
     imageBasedAbuse,
     onlineThreatBlackmail,
@@ -1471,52 +1897,50 @@ const buildFactsFromTimeline = (
   };
 };
 
-const buildFallbackAssistantResponse = (message: string, timeline: Record<string, string>) => {
-  const lowerMessage = message.toLowerCase();
-  const hasImmediateSafetySignal =
-    /\b(immediate danger|unsafe now|kill me|suicide|self[- ]?harm|weapon|gun|shoot|shot|strangled|can.t breathe)\b/i.test(
-      lowerMessage
-    );
-  const empatheticPrefix = hasImmediateSafetySignal
-    ? 'I am sorry you are dealing with this. If you are in immediate danger, you can call 000 now.'
-    : /(sorry|hurt|scared|afraid|threat|unsafe|panic|upset|cry|lonely|stressed|overwhelmed)/i.test(
-          lowerMessage
-        )
-      ? 'I am sorry this is happening. You can take this one step at a time here.'
-      : 'Thank you for sharing that. You do not need to explain everything at once.';
+const buildFallbackAssistantResponse = (
+  message: string,
+  timeline: Record<string, string>,
+  selectedTopic?: string,
+  jurisdiction?: string
+) => {
+  const supportFacts = extractSupportFacts({
+    message,
+    sessionHistory: timeline,
+    jurisdiction
+  });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: supportFacts.originalFacts,
+    selectedTopic
+  });
 
-  let nextQuestion = 'What feels most important for me to understand next?';
-
-  if (hasImmediateSafetySignal && !timeline.unsafe_now) {
-    nextQuestion = 'Are you safe right now?';
-  } else if (!timeline.what) {
-    nextQuestion = 'Can you tell me a little more about what happened?';
-  } else if (!timeline.when) {
-    nextQuestion = 'Do you remember when this happened?';
-  } else if (!timeline.where) {
-    nextQuestion = 'Where did this happen?';
-  } else if (!timeline.who) {
-    nextQuestion = 'Who was involved?';
-  } else if (!timeline.unsafe_now) {
-    nextQuestion = 'Do you feel safe right now?';
+  if (responseMode === 'legal_lookup') {
+    return {
+      assistantMessage:
+        'I could not reliably retrieve the legal source just now, but I can still help you think through the issue in plain language.',
+      nextQuestion: 'Would you like to try the legal question again, or would you prefer practical support steps first?',
+      readyForSubmission: false,
+      confidence: 'low' as const,
+      disclaimer: 'This is information only, not legal advice.',
+      citations: [],
+      showSources: false,
+      sourceDisplayReason: 'not_directly_grounded',
+      rag: {
+        used: false,
+        unavailable: true,
+        resultCount: 0
+      },
+      reviewStatus: 'fallback_local'
+    };
   }
 
-  return {
-    assistantMessage: empatheticPrefix,
-    nextQuestion,
-    readyForSubmission: false,
-    confidence: 'low' as const,
-    disclaimer: 'This is information only, not legal advice.',
-    citations: [],
-    showSources: false,
-    sourceDisplayReason: 'hidden_support_reply',
-    rag: {
-      used: false,
-      unavailable: true,
-      resultCount: 0
-    },
-    reviewStatus: 'fallback_local'
-  };
+  return buildSupportReply({
+    facts: supportFacts,
+    responseMode,
+    sessionContext: {
+      selectedTopic
+    }
+  });
 };
 
 export const detectCategory = (input: {
@@ -2784,16 +3208,35 @@ export const appendConversationFlowMessage = async (
     conversationSessionId: session._id
   }).lean();
   const existingTimeline = (existingFacts?.timeline ?? {}) as Record<string, string>;
+  const supportFacts = extractSupportFacts({
+    message: input.content,
+    sessionHistory: existingTimeline,
+    facts: existingFacts ?? undefined,
+    jurisdiction: session.jurisdiction ?? undefined
+  });
   const detectedCategory = detectCategory({
     text: `${input.content}\n${JSON.stringify(existingTimeline)}`,
     selectedTopic: session.selectedTopic
   }).category;
-  const triageHandoffIntent = detectTriageHandoffIntent(input.content);
+  const responseMode = classifyResponseMode({
+    message: input.content,
+    sessionFacts: supportFacts.originalFacts,
+    selectedTopic: session.selectedTopic
+  });
+  const triageHandoffIntent = responseMode === 'triage_handoff';
 
   let assistantPayload: Record<string, unknown>;
 
   if (triageHandoffIntent) {
     assistantPayload = buildTriageHandoffAssistantPayload();
+  } else if (responseMode !== 'legal_lookup') {
+    assistantPayload = buildSupportReply({
+      facts: supportFacts,
+      responseMode,
+      sessionContext: {
+        selectedTopic: session.selectedTopic
+      }
+    });
   } else {
     try {
       assistantPayload = await runTimelineAssistant(
@@ -2826,7 +3269,12 @@ export const appendConversationFlowMessage = async (
         }
       );
     } catch {
-      assistantPayload = buildFallbackAssistantResponse(input.content, existingTimeline);
+      assistantPayload = buildFallbackAssistantResponse(
+        input.content,
+        existingTimeline,
+        session.selectedTopic,
+        session.jurisdiction ?? undefined
+      );
     }
   }
 

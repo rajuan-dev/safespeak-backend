@@ -8,9 +8,14 @@ const {
   buildSuggestedMicroCardTitles,
   buildSupportResourceSuggestions,
   buildRelatedIssueTypes,
+  buildSafetySteps,
+  buildSupportReply,
+  classifyResponseMode,
   detectTriageHandoffIntent,
   detectCategory,
+  extractSupportFacts,
   extractStructuredTriageFacts,
+  shouldShowSources,
 } = require('../src/modules/conversation-flow/conversation-flow.service.ts');
 
 test('explicit triage handoff phrases trigger the triage button intent', () => {
@@ -55,6 +60,140 @@ test('triage handoff response meta preserves the same session and hides sources'
   assert.equal(responseMeta.showSources, false);
   assert.equal(responseMeta.sourceDisplayReason, 'triage_handoff');
   assert.equal(responseMeta.citations.length, 0);
+});
+
+test('dynamic support reply handles blackmail paraphrase without source footer', () => {
+  const message = 'My ex says he will leak our chat unless I pay him.';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+  const steps = buildSafetySteps(facts);
+  const reply = buildSupportReply({ facts, responseMode });
+
+  assert.equal(responseMode, 'support_victim_style');
+  assert.equal(facts.threat_present, true);
+  assert.equal(facts.blackmail_or_extortion, true);
+  assert.equal(facts.private_photos_or_messages, true);
+  assert.equal(shouldShowSources(responseMode, message, []), false);
+  assert.ok(steps.some((step) => /save screenshots|links|usernames|dates/i.test(step)));
+  assert.ok(steps.some((step) => /Avoid replying|negotiating/i.test(step)));
+  assert.match(reply.nextQuestion, /money|contact|images|something else/i);
+});
+
+test('dynamic support reply handles online screenshot threat paraphrase', () => {
+  const message = 'A stranger online is threatening to post screenshots of me.';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(responseMode, 'support_victim_style');
+  assert.equal(facts.threat_present, true);
+  assert.equal(shouldShowSources(responseMode, message, []), false);
+});
+
+test('dynamic support reply handles fake visa agent scam and identity risk', () => {
+  const message = 'My bank info and passport were taken by a fake visa agent.';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts,
+    selectedTopic: 'scamshield'
+  });
+  const steps = buildSafetySteps(facts);
+
+  assert.equal(responseMode, 'scamshield_style');
+  assert.equal(facts.scam_or_fraud, true);
+  assert.equal(facts.bank_details_exposed, true);
+  assert.equal(facts.identity_documents_exposed, true);
+  assert.equal(facts.migration_or_visa_threat, true);
+  assert.ok(steps.some((step) => /bank|card provider|account/i.test(step)));
+  assert.ok(steps.some((step) => /passwords|two-factor/i.test(step)));
+  assert.equal(shouldShowSources(responseMode, message, []), false);
+});
+
+test('clinic emailing health info to boss stays privacy-focused not bullying', () => {
+  const message = 'The clinic emailed my health info to my boss.';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+  const steps = buildSafetySteps(facts);
+
+  assert.equal(responseMode, 'support_victim_style');
+  assert.equal(facts.employer_involved, true);
+  assert.equal(facts.health_information, true);
+  assert.equal(facts.originalFacts.workplaceBullying, false);
+  assert.ok(steps.some((step) => /who shared the health information|who received it/i.test(step)));
+  assert.equal(shouldShowSources(responseMode, message, []), false);
+});
+
+test('racist abuse against family member gets evidence-oriented support reply', () => {
+  const message = 'Someone yelled racist abuse at my mum outside the shop.';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+  const steps = buildSafetySteps(facts);
+
+  assert.equal(responseMode, 'support_victim_style');
+  assert.equal(facts.racism_or_hate, true);
+  assert.ok(steps.some((step) => /exact words|actions|witnesses/i.test(step)));
+  assert.equal(shouldShowSources(responseMode, message, []), false);
+});
+
+test('domestic violence migration threat gets safety-first reply', () => {
+  const message = 'My partner says immigration will deport me if I leave.';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+  const reply = buildSupportReply({ facts, responseMode });
+
+  assert.equal(responseMode, 'support_victim_style');
+  assert.equal(facts.domestic_family_context, true);
+  assert.equal(facts.migration_or_visa_threat, true);
+  assert.match(reply.assistantMessage, /safety comes first|1800RESPECT|safe/i);
+  assert.equal(shouldShowSources(responseMode, message, []), false);
+});
+
+test('legal lookup keeps compact source display path available', () => {
+  const message = 'What section of the Privacy Act defines personal information?';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(responseMode, 'legal_lookup');
+  assert.equal(
+    shouldShowSources(responseMode, message, [
+      {
+        title: 'Privacy Act 1988',
+        sectionRef: 'section 6',
+        url: 'https://example.test/privacy'
+      }
+    ]),
+    true
+  );
+});
+
+test('triage command remains a hidden-source triage handoff', () => {
+  const message = 'give me the trige button';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(responseMode, 'triage_handoff');
+  assert.equal(shouldShowSources(responseMode, message, []), false);
 });
 
 test('supportive conversation responses keep citations hidden even when backend citations exist', () => {
