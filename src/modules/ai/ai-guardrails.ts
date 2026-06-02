@@ -1,3 +1,8 @@
+import {
+  getAssistantLanguagePromptLabel,
+  type SupportedAssistantLanguageCode
+} from './assistant-language';
+
 const INFORMATION_ONLY_DISCLAIMER =
   'This information is for general awareness only and does not constitute legal advice.';
 
@@ -73,7 +78,9 @@ export const getSafeSpeakSystemPrompt = (language: string): string =>
     'Do not add repetitive legal or policy disclaimers inside normal conversational replies.',
     'Keep the tone calm, human, supportive, and easy to talk to.',
     'Set reviewStatus to "pending_human_review".',
-    `Respond in language: ${language}.`
+    `Respond in language: ${getAssistantLanguagePromptLabel(
+      language as SupportedAssistantLanguageCode
+    )}.`
   ].join(' ');
 
 export const detectLegalAdviceRisk = (text: string): boolean =>

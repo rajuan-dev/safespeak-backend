@@ -5,18 +5,28 @@ const {
   buildConversationFlowCategoryLabel,
   buildConversationAssistantResponseMeta,
   buildConversationFlowPresentation,
+  buildInternalPathways,
+  buildIntakePlanner,
+  buildStructuredReportPreparation,
   buildSuggestedMicroCardTitles,
   buildSupportResourceSuggestions,
   buildRelatedIssueTypes,
   buildSafetySteps,
   buildSupportReply,
   classifyResponseMode,
+  detectAssistantLanguage,
   detectTriageHandoffIntent,
   detectCategory,
+  evaluateSafetyOverride,
   extractSupportFacts,
   extractStructuredTriageFacts,
+  localizeKnownLegalLookupAnswer,
   shouldShowSources,
 } = require('../src/modules/conversation-flow/conversation-flow.service.ts');
+const {
+  ASSISTANT_LANGUAGE_REGISTRY,
+  resolveAssistantLanguage,
+} = require('../src/modules/ai/assistant-language.ts');
 
 test('explicit triage handoff phrases trigger the triage button intent', () => {
   [
@@ -93,6 +103,74 @@ test('dynamic support reply handles online screenshot threat paraphrase', () => 
   assert.equal(responseMode, 'support_victim_style');
   assert.equal(facts.threat_present, true);
   assert.equal(shouldShowSources(responseMode, message, []), false);
+});
+
+test('assistant language detector identifies supported scripted and spanish inputs', () => {
+  assert.equal(detectAssistantLanguage('شخص يهدد بنشر رسائلي الخاصة'), 'ar');
+  assert.equal(
+    detectAssistantLanguage('एक नकली वीजा एजेंट ने मेरा पासपोर्ट नंबर और बैंक डिटेल ले ली'),
+    'hi'
+  );
+  assert.equal(
+    detectAssistantLanguage('একজন স্ক্যামার আমার আইডি আর ব্যাংকের তথ্য নিয়ে নিয়েছে'),
+    'bn'
+  );
+  assert.equal(detectAssistantLanguage('有人威胁要公开我的私人信息'), 'zh-Hans');
+  assert.equal(detectAssistantLanguage('有人威脅要公開我的私人信息'), 'zh-Hant');
+  assert.equal(
+    detectAssistantLanguage('Alguien amenaza con publicar mis mensajes privados'),
+    'es'
+  );
+});
+
+test('assistant language resolver falls back to english when latest message is uncertain', () => {
+  assert.equal(resolveAssistantLanguage({ message: 'ok', requestedLanguage: 'en' }), 'en');
+});
+
+test('arabic support reply stays localized and source-hidden', () => {
+  const message = 'شخص يهدد بنشر رسائلي الخاصة';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+  const reply = buildSupportReply({
+    facts,
+    responseMode,
+    sessionContext: { language: 'ar' }
+  });
+
+  assert.equal(reply.showSources, false);
+  assert.match(reply.assistantMessage, /آسف|سلامتك|خطوات/);
+});
+
+test('spanish support reply stays localized and source-hidden', () => {
+  const message = 'Alguien amenaza con publicar mis mensajes privados';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+  const reply = buildSupportReply({
+    facts,
+    responseMode,
+    sessionContext: { language: 'es' }
+  });
+
+  assert.equal(reply.showSources, false);
+  assert.match(reply.assistantMessage, /Siento|prácticos|capturas/);
+});
+
+test('future indigenous registry entries remain disabled until reviewed', () => {
+  const futureEntries = ASSISTANT_LANGUAGE_REGISTRY.filter(
+    (entry) => entry.family === 'indigenous_future'
+  );
+
+  assert.ok(futureEntries.length >= 8);
+  futureEntries.forEach((entry) => {
+    assert.equal(entry.enabled, false);
+    assert.equal(entry.humanReviewed, false);
+  });
 });
 
 test('dynamic support reply handles fake visa agent scam and identity risk', () => {
@@ -194,6 +272,389 @@ test('triage command remains a hidden-source triage handoff', () => {
 
   assert.equal(responseMode, 'triage_handoff');
   assert.equal(shouldShowSources(responseMode, message, []), false);
+});
+
+test('safety override marks partner violence tonight as urgent/high safety', () => {
+  const facts = extractSupportFacts({
+    message: 'My partner hit me tonight and threatened me if I leave.'
+  });
+  const override = evaluateSafetyOverride(facts);
+
+  assert.equal(override.safetyOverride, true);
+  assert.ok(['high', 'urgent'].includes(override.safetyLevel));
+  assert.ok(override.recommendedImmediateActions.some((item) => /000|1800RESPECT/i.test(item)));
+});
+
+test('safety override marks kill threat as urgent', () => {
+  const facts = extractSupportFacts({
+    message: 'He will kill me if I leave.'
+  });
+  const override = evaluateSafetyOverride(facts);
+
+  assert.equal(override.safetyLevel, 'urgent');
+});
+
+test('dv migration threat keeps dv, coercive control, and migration safety signals', () => {
+  const facts = extractSupportFacts({
+    message: 'My partner says immigration will deport me if I leave and controls my phone.'
+  });
+  const override = evaluateSafetyOverride(facts);
+
+  assert.equal(facts.domestic_family_context, true);
+  assert.equal(facts.coercive_control, true);
+  assert.equal(facts.migration_or_visa_threat, true);
+  assert.equal(override.safetyOverride, true);
+});
+
+test('blackmail with private photos becomes high-risk image abuse safety override', () => {
+  const facts = extractSupportFacts({
+    message: 'He says he will post my private photos unless I pay him.'
+  });
+  const override = evaluateSafetyOverride(facts);
+
+  assert.equal(facts.image_based_abuse, true);
+  assert.equal(facts.blackmail_or_extortion, true);
+  assert.equal(override.safetyLevel, 'high');
+});
+
+test('self-harm phrase triggers urgent safety support mode', () => {
+  const message = 'I feel suicidal and unsafe right now.';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+  const override = evaluateSafetyOverride(facts);
+
+  assert.equal(responseMode, 'emergency_safety');
+  assert.equal(override.safetyLevel, 'urgent');
+});
+
+test('child threatened online becomes child safety risk', () => {
+  const facts = extractSupportFacts({
+    message: 'Someone is threatening my child online and sharing her photos.'
+  });
+  const override = evaluateSafetyOverride(facts);
+
+  assert.equal(facts.child_safety_risk, true);
+  assert.equal(override.safetyOverride, true);
+});
+
+test('public transport racial abuse maps to anti-discrimination pathways', () => {
+  const structuredFacts = extractStructuredTriageFacts({
+    text: 'A man on the train shouted racist abuse at me because of my hijab.'
+  });
+  const pathways = buildInternalPathways({
+    category: 'racism_discrimination',
+    facts: structuredFacts
+  });
+
+  assert.ok(pathways.some((item) => item.pathwayId === 'anti_discrimination'));
+});
+
+test('data breach maps to OAIC and organisation complaint pathways', () => {
+  const structuredFacts = extractStructuredTriageFacts({
+    text: 'A company leaked my personal details in a data breach.'
+  });
+  const pathways = buildInternalPathways({
+    category: 'online_abuse',
+    facts: structuredFacts
+  });
+
+  assert.ok(pathways.some((item) => item.pathwayId === 'oaic_privacy'));
+});
+
+test('online threat maps to esafety and platform pathways', () => {
+  const structuredFacts = extractStructuredTriageFacts({
+    text: 'Someone online is threatening to post my screenshots on Instagram.'
+  });
+  const pathways = buildInternalPathways({
+    category: 'online_abuse',
+    facts: structuredFacts
+  });
+
+  assert.ok(pathways.some((item) => item.pathwayId === 'esafety_online_abuse'));
+});
+
+test('scam maps to scamwatch reportcyber and identity support pathways', () => {
+  const structuredFacts = extractStructuredTriageFacts({
+    text: 'A scammer took my bank details and passport.'
+  });
+  const pathways = buildInternalPathways({
+    category: 'scam_fraud',
+    facts: structuredFacts
+  });
+
+  assert.ok(pathways.some((item) => item.pathwayId === 'reportcyber_scam'));
+});
+
+test('agency intake planner returns consent-required eSafety fields', () => {
+  const structuredFacts = extractStructuredTriageFacts({
+    text: 'Someone is sharing my photos on TikTok.'
+  });
+  const plans = buildIntakePlanner({
+    pathways: buildInternalPathways({
+      category: 'online_abuse',
+      facts: structuredFacts
+    }),
+    facts: structuredFacts,
+    safetyOverride: {
+      safetyOverride: false,
+      safetyLevel: 'none',
+      safetyReasons: [],
+      recommendedImmediateActions: []
+    }
+  });
+  const plan = plans.find((item) => item.pathwayId === 'esafety_online_abuse');
+
+  assert.ok(plan);
+  assert.equal(plan.consentRequiredBeforeSharing, true);
+  assert.ok(plan.requiredFields.some((field) => field.key === 'platform'));
+});
+
+test('agency intake planner returns consent-required reportcyber fields', () => {
+  const structuredFacts = extractStructuredTriageFacts({
+    text: 'A fake link scam got my bank details.'
+  });
+  const plan = buildIntakePlanner({
+    pathways: buildInternalPathways({
+      category: 'scam_fraud',
+      facts: structuredFacts
+    }),
+    facts: structuredFacts,
+    safetyOverride: {
+      safetyOverride: false,
+      safetyLevel: 'none',
+      safetyReasons: [],
+      recommendedImmediateActions: []
+    }
+  }).find((item) => item.pathwayId === 'reportcyber_scam');
+
+  assert.ok(plan);
+  assert.equal(plan.consentRequiredBeforeSharing, true);
+  assert.ok(plan.requiredFields.some((field) => field.key === 'scam_type'));
+});
+
+test('agency intake planner returns consent-required oaic fields', () => {
+  const structuredFacts = extractStructuredTriageFacts({
+    text: 'My personal information was leaked by an organisation.'
+  });
+  const plan = buildIntakePlanner({
+    pathways: buildInternalPathways({
+      category: 'online_abuse',
+      facts: structuredFacts
+    }),
+    facts: structuredFacts,
+    safetyOverride: {
+      safetyOverride: false,
+      safetyLevel: 'none',
+      safetyReasons: [],
+      recommendedImmediateActions: []
+    }
+  }).find((item) => item.pathwayId === 'oaic_privacy');
+
+  assert.ok(plan);
+  assert.ok(plan.requiredFields.some((field) => field.key === 'organisation_name'));
+});
+
+test('support resources include language support when interpreter need is present', () => {
+  const facts = extractStructuredTriageFacts({
+    text: 'I need an interpreter because English is not my first language.'
+  });
+  const resources = buildSupportResourceSuggestions({
+    category: 'general_support',
+    facts,
+    riskLevel: 'low',
+    jurisdiction: 'AU'
+  });
+
+  assert.ok(resources.some((item) => /TIS National/i.test(item.title)));
+});
+
+test('support resources include esafety for image-based abuse', () => {
+  const facts = extractStructuredTriageFacts({
+    text: 'Someone shared my intimate photos online.'
+  });
+  const resources = buildSupportResourceSuggestions({
+    category: 'online_abuse',
+    facts,
+    riskLevel: 'high',
+    jurisdiction: 'AU'
+  });
+
+  assert.ok(resources.some((item) => /eSafety/i.test(item.title)));
+});
+
+test('support resources include oaic for privacy data breach', () => {
+  const facts = extractStructuredTriageFacts({
+    text: 'A company exposed my personal details.'
+  });
+  const resources = buildSupportResourceSuggestions({
+    category: 'online_abuse',
+    facts,
+    riskLevel: 'medium',
+    jurisdiction: 'AU'
+  });
+
+  assert.ok(resources.some((item) => /OAIC/i.test(item.title)));
+});
+
+test('support resources include 1800RESPECT and emergency for dv danger', () => {
+  const facts = extractStructuredTriageFacts({
+    text: 'My partner hit me and I am in immediate danger.'
+  });
+  const resources = buildSupportResourceSuggestions({
+    category: 'domestic_violence',
+    facts,
+    riskLevel: 'immediate',
+    jurisdiction: 'AU'
+  });
+
+  assert.ok(resources.some((item) => /1800RESPECT/i.test(item.title)));
+  assert.ok(resources.some((item) => /000/i.test(item.title)));
+});
+
+test('support resources include anti-discrimination and fair work pathways where relevant', () => {
+  const facts = extractStructuredTriageFacts({
+    text: 'My boss used racist abuse at work.'
+  });
+  const resources = buildSupportResourceSuggestions({
+    category: 'racism_discrimination',
+    facts,
+    riskLevel: 'high',
+    jurisdiction: 'NSW'
+  });
+
+  assert.ok(resources.some((item) => /Anti-Discrimination NSW|Human Rights/i.test(item.title)));
+  assert.ok(resources.some((item) => /Fair Work/i.test(item.title)));
+});
+
+test('structured report preparation stays draft-like and not submitted', () => {
+  const facts = {
+    whatHappened: 'The user says their private photos were shared online.',
+    evidenceMentioned: 'screenshots, links',
+    missingInformation: ['date_details']
+  };
+  const structuredFacts = extractStructuredTriageFacts({
+    text: 'Someone shared my private photos online.'
+  });
+  const report = buildStructuredReportPreparation({
+    facts,
+    structuredFacts,
+    intakePlans: [
+      {
+        pathwayId: 'esafety_online_abuse',
+        requiredFields: [],
+        optionalFields: [],
+        safetyWarnings: [],
+        consentRequiredBeforeSharing: true,
+        userFriendlyExplanation: 'Prepare for this pathway.'
+      }
+    ],
+    triageCategory: 'online_abuse'
+  });
+
+  assert.equal(report.notSentYet, true);
+  assert.equal(report.status, 'ready_to_review');
+  assert.equal(report.consentState, 'not_granted');
+});
+
+test('arabic threat support reply stays in arabic', () => {
+  const message = 'شخص يهددني بنشر رسائلي الخاصة';
+  const facts = extractSupportFacts({ message });
+  const reply = buildSupportReply({
+    facts,
+    responseMode: classifyResponseMode({
+      message,
+      sessionFacts: facts.originalFacts
+    }),
+    sessionContext: { language: detectAssistantLanguage(message) }
+  });
+
+  assert.equal(detectAssistantLanguage(message), 'ar');
+  assert.match(reply.assistantMessage, /أنا|سلامتك|الخطوات/);
+});
+
+test('hindi scam reply stays in hindi', () => {
+  const message = 'मेरे बैंक विवरण एक स्कैम में ले लिए गए';
+  const facts = extractSupportFacts({ message });
+  const reply = buildSupportReply({
+    facts,
+    responseMode: classifyResponseMode({
+      message,
+      sessionFacts: facts.originalFacts,
+      selectedTopic: 'scamshield'
+    }),
+    sessionContext: { language: detectAssistantLanguage(message), selectedTopic: 'scamshield' }
+  });
+
+  assert.equal(detectAssistantLanguage(message), 'hi');
+  assert.match(reply.assistantMessage, /मुझे|सुरक्षा|धोखाधड़ी/);
+});
+
+test('bengali scam reply stays in bengali', () => {
+  const message = 'একজন স্ক্যামার আমার ব্যাংক তথ্য নিয়ে গেছে';
+  const facts = extractSupportFacts({ message });
+  const reply = buildSupportReply({
+    facts,
+    responseMode: classifyResponseMode({
+      message,
+      sessionFacts: facts.originalFacts,
+      selectedTopic: 'scamshield'
+    }),
+    sessionContext: { language: detectAssistantLanguage(message), selectedTopic: 'scamshield' }
+  });
+
+  assert.equal(detectAssistantLanguage(message), 'bn');
+  assert.match(reply.assistantMessage, /দুঃখিত|ব্যবহারিক|ব্যাংক/);
+});
+
+test('chinese privacy threat support reply uses chinese detection', () => {
+  const message = '有人威胁公开我的私人信息';
+  assert.equal(detectAssistantLanguage(message), 'zh-Hans');
+});
+
+test('spanish threat support reply uses spanish detection', () => {
+  const message = 'Alguien me amenaza con publicar mis mensajes privados';
+  assert.equal(detectAssistantLanguage(message), 'es');
+});
+
+test('arabic legal lookup answer localizes privacy act section 6', () => {
+  const localized = localizeKnownLegalLookupAnswer({
+    language: 'ar',
+    message: 'ما هو القسم الذي يعرّف المعلومات الشخصية في Privacy Act 1988؟',
+    assistantPayload: {
+      assistantMessage: 'Under the Privacy Act 1988, personal information is defined in section 6.',
+      citations: [
+        {
+          title: 'Privacy Act 1988',
+          sectionRef: 'section 6',
+          url: 'https://example.test/privacy'
+        }
+      ]
+    }
+  });
+
+  assert.match(localized.assistantMessage, /section 6|القسم/);
+});
+
+test('hindi legal lookup answer localizes privacy act section 6', () => {
+  const localized = localizeKnownLegalLookupAnswer({
+    language: 'hi',
+    message: 'Privacy Act 1988 में personal information किस section में defined है?',
+    assistantPayload: {
+      assistantMessage: 'Under the Privacy Act 1988, personal information is defined in section 6.',
+      citations: [
+        {
+          title: 'Privacy Act 1988',
+          sectionRef: 'section 6',
+          url: 'https://example.test/privacy'
+        }
+      ]
+    }
+  });
+
+  assert.match(localized.assistantMessage, /section 6|परिभाषा/);
 });
 
 test('supportive conversation responses keep citations hidden even when backend citations exist', () => {

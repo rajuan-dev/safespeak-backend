@@ -27,7 +27,8 @@ import type {
 import type {
   ConversationFlowCategory,
   ConversationFlowContext,
-  ConversationFlowRiskLevel
+  ConversationFlowRiskLevel,
+  SupportedConversationLanguage
 } from './conversation-flow.types';
 
 type HydratedConversationFlowSessionDocument = HydratedDocument<ConversationFlowSessionDocument>;
@@ -244,6 +245,8 @@ type ConversationFlowStructuredFacts = {
   migrationOrVisaThreat: boolean;
   languageOrInterpreterNeed: boolean;
   selfHarmOrSuicidal: boolean;
+  childSafetyRisk: boolean;
+  sexualViolenceRisk: boolean;
   matchedFacts: string[];
   organisations: string[];
   platforms: string[];
@@ -285,10 +288,78 @@ type SupportResponseFacts = {
   elder_or_vulnerable_person: boolean;
   evidence_available: boolean;
   language_or_interpreter_need: boolean;
+  child_safety_risk: boolean;
+  sexual_violence_risk: boolean;
   organisations: string[];
   platforms: string[];
   matched_facts: string[];
   originalFacts: ConversationFlowStructuredFacts;
+};
+
+type SafetyOverrideLevel = 'none' | 'low' | 'medium' | 'high' | 'urgent';
+
+type SafetyOverrideRecord = {
+  safetyOverride: boolean;
+  safetyLevel: SafetyOverrideLevel;
+  safetyReasons: string[];
+  recommendedImmediateActions: string[];
+};
+
+type InternalPathwayRecord = {
+  pathwayId: string;
+  title: string;
+  description: string;
+  userFacingLabel: string;
+  userFacingIntro: string;
+  relatedCategory: string;
+};
+
+type IntakePlanField = {
+  key: string;
+  label: string;
+};
+
+type IntakePlanRecord = {
+  pathwayId: string;
+  requiredFields: IntakePlanField[];
+  optionalFields: IntakePlanField[];
+  safetyWarnings: string[];
+  consentRequiredBeforeSharing: true;
+  userFriendlyExplanation: string;
+};
+
+type ConsentGovernanceRecord = {
+  nothingSharedAutomatically: true;
+  userChoosesWhatToDoNext: true;
+  reviewWithoutSending: true;
+  consentRequiredBeforeSharing: true;
+  consentRequiredBeforeReferral: true;
+  consentRequiredBeforeExport: true;
+  consentRequiredBeforeEvidenceUpload: true;
+  consentRequiredBeforeCloudSync: true;
+  noAutomaticPoliceEscalation: true;
+  noBackgroundTracking: true;
+  messages: string[];
+};
+
+type StructuredReportPreparation = {
+  status: 'draft' | 'info_only' | 'ready_to_review' | 'submitted' | 'withdrawn';
+  informationOnlyDisclaimer: string;
+  consentState: 'not_granted';
+  notSentYet: true;
+  userNarrativeSummary: string;
+  structuredFactsSummary: string[];
+  timeline: Array<{ label: string; value: string }>;
+  evidenceList: string[];
+  selectedPathwayId?: string;
+  missingFields: string[];
+};
+
+type AssistantLanguageRegistryEntry = {
+  code: string;
+  label: string;
+  supported: boolean;
+  communityReviewed?: boolean;
 };
 
 type ConversationFlowTriagePresentationRecord = {
@@ -313,6 +384,39 @@ type ConversationFlowTriagePresentationRecord = {
 const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
 
 const TRIAGE_HANDOFF_MESSAGE = 'Of course — I can take you to your triage summary now.';
+const DEFAULT_CONSENT_GOVERNANCE_MESSAGES = [
+  'Nothing is shared automatically.',
+  'You choose what to do next.',
+  'You can review options without sending anything.',
+  'If you choose to contact a service, you will be shown what information may be shared first.'
+] as const;
+
+const ASSISTANT_LANGUAGE_REGISTRY: AssistantLanguageRegistryEntry[] = [
+  { code: 'en', label: 'English', supported: true },
+  { code: 'ar', label: 'Arabic', supported: true },
+  { code: 'hi', label: 'Hindi', supported: true },
+  { code: 'bn', label: 'Bengali', supported: true },
+  { code: 'zh-Hans', label: 'Mandarin Chinese (Simplified)', supported: true },
+  { code: 'zh-Hant', label: 'Chinese (Traditional / Cantonese-compatible)', supported: true },
+  { code: 'vi', label: 'Vietnamese', supported: true },
+  { code: 'pa', label: 'Punjabi', supported: true },
+  { code: 'ne', label: 'Nepali', supported: true },
+  { code: 'el', label: 'Greek', supported: true },
+  { code: 'es', label: 'Spanish', supported: true },
+  { code: 'kri', label: 'Kriol', supported: false, communityReviewed: false },
+  { code: 'djr', label: 'Yolngu Matha', supported: false, communityReviewed: false },
+  { code: 'pjt', label: 'Pitjantjatjara', supported: false, communityReviewed: false },
+  { code: 'wbp', label: 'Warlpiri', supported: false, communityReviewed: false },
+  { code: 'aer', label: 'Arrernte', supported: false, communityReviewed: false },
+  { code: 'tiw', label: 'Tiwi', supported: false, communityReviewed: false },
+  { code: 'mwp', label: 'Kala Lagaw Ya', supported: false, communityReviewed: false },
+  {
+    code: 'tcs',
+    label: 'Yumplatok / Torres Strait Creole',
+    supported: false,
+    communityReviewed: false
+  }
+] as const;
 const TRIAGE_HANDOFF_PHRASES = [
   'give me the triage button',
   'give me the trige button',
@@ -341,6 +445,96 @@ const normalizeConversationIntentText = (value: string): string =>
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+const getSupportedAssistantLanguage = (code?: string): SupportedConversationLanguage => {
+  const normalized = (code ?? '').trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    zh: 'zh-Hans',
+    'zh-cn': 'zh-Hans',
+    'zh-sg': 'zh-Hans',
+    'zh-hans': 'zh-Hans',
+    yue: 'zh-Hant',
+    'yue-hk': 'zh-Hant',
+    'zh-hk': 'zh-Hant',
+    'zh-tw': 'zh-Hant',
+    'zh-hant': 'zh-Hant',
+    'ar-sa': 'ar',
+    'hi-in': 'hi',
+    'bn-bd': 'bn',
+    'vi-vn': 'vi',
+    'pa-in': 'pa',
+    'ne-np': 'ne',
+    'el-gr': 'el',
+    'es-es': 'es',
+    'es-419': 'es',
+    'es-mx': 'es'
+  };
+  const resolvedCode = aliases[normalized] ?? normalized;
+  const match = ASSISTANT_LANGUAGE_REGISTRY.find(
+    (entry) => entry.code.toLowerCase() === resolvedCode && entry.supported
+  );
+
+  return (match?.code as SupportedConversationLanguage | undefined) ?? 'en';
+};
+
+export const detectAssistantLanguage = (
+  message: string,
+  requestedLanguage?: string
+): SupportedConversationLanguage => {
+  const trimmedMessage = message.trim();
+
+  if (/[\u0600-\u06FF]/.test(trimmedMessage)) {
+    return 'ar';
+  }
+
+  if (/[\u0980-\u09FF]/.test(trimmedMessage)) {
+    return 'bn';
+  }
+
+  if (/[\u0370-\u03FF]/.test(trimmedMessage)) {
+    return 'el';
+  }
+
+  if (/[\u0A00-\u0A7F]/.test(trimmedMessage)) {
+    return 'pa';
+  }
+
+  if (/[\u0900-\u097F]/.test(trimmedMessage)) {
+    const nepaliScore = ['तपाईं', 'मलाई', 'मेरो', 'भयो', 'छन्', 'छु'].reduce(
+      (total, word) => total + (trimmedMessage.includes(word) ? 1 : 0),
+      0
+    );
+    const hindiScore = ['मैं', 'मेरे', 'मुझे', 'क्या', 'है', 'और'].reduce(
+      (total, word) => total + (trimmedMessage.includes(word) ? 1 : 0),
+      0
+    );
+
+    return nepaliScore > hindiScore ? 'ne' : 'hi';
+  }
+
+  if (/\p{Script=Han}/u.test(trimmedMessage)) {
+    return /[這個們會從後時嗎讓為點開關應還邊話萬與專業臺灣網裡請發現訊]|(?:佢|哋|喺|咩|冇|嘅|咗|係|唔)/u.test(
+      trimmedMessage
+    )
+      ? 'zh-Hant'
+      : 'zh-Hans';
+  }
+
+  if (/[ăâđêôơưáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/iu.test(trimmedMessage)) {
+    return 'vi';
+  }
+
+  if (/\b(hola|alguien|amenaza|publicar|mensajes|privados|privacidad|informaci[oó]n|estafa)\b/i.test(trimmedMessage) || /[¿¡ñáéíóúü]/iu.test(trimmedMessage)) {
+    return 'es';
+  }
+
+  const requested = getSupportedAssistantLanguage(requestedLanguage);
+  if (requested !== 'en') {
+    return requested;
+  }
+
+  return 'en';
+};
 
 export const detectTriageHandoffIntent = (message: string): boolean => {
   const normalizedMessage = normalizeConversationIntentText(message);
@@ -434,7 +628,13 @@ export const classifyResponseMode = (input: {
     return 'legal_lookup';
   }
 
-  if (input.sessionFacts.immediateDanger || input.sessionFacts.selfHarmOrSuicidal) {
+  if (
+    input.sessionFacts.immediateDanger ||
+    input.sessionFacts.selfHarmOrSuicidal ||
+    input.sessionFacts.childSafetyRisk ||
+    (input.sessionFacts.domesticViolence && input.sessionFacts.physicalViolence) ||
+    input.sessionFacts.sexualViolenceRisk
+  ) {
     return 'emergency_safety';
   }
 
@@ -457,6 +657,222 @@ export const classifyResponseMode = (input: {
   }
 
   return 'support_victim_style';
+};
+
+const localizedJoiners: Record<string, { intro: string; andWord: string }> = {
+  en: { intro: 'A few practical steps that may help are:', andWord: 'and' },
+  ar: { intro: 'قد تساعدك هذه الخطوات العملية:', andWord: 'و' },
+  hi: { intro: 'ये व्यावहारिक कदम मदद कर सकते हैं:', andWord: 'और' },
+  bn: { intro: 'এই ব্যবহারিক পদক্ষেপগুলো সাহায্য করতে পারে:', andWord: 'এবং' },
+  zh: { intro: '这些实际步骤可能会有帮助：', andWord: '和' },
+  es: { intro: 'Algunos pasos prácticos que pueden ayudar son:', andWord: 'y' }
+};
+
+const localizeExactString = (language: string, text: string): string => {
+  const translations: Record<string, Record<string, string>> = {
+    ar: {
+      'I am really sorry you are dealing with this.': 'أنا آسف جدًا لأنك تمر بهذا.',
+      'I am sorry this is happening to you.': 'أنا آسف لأن هذا يحدث لك.',
+      'I am sorry you were treated that way.': 'أنا آسف لأنك عوملت بهذه الطريقة.',
+      'I am sorry this happened to you.': 'أنا آسف لأن هذا حدث لك.',
+      'I am sorry your health information was shared like that.':
+        'أنا آسف لأن معلوماتك الصحية تمت مشاركتها بهذه الطريقة.',
+      'Thank you for telling me about this.': 'شكرًا لإخبارك لي بهذا.',
+      'Your safety matters most right now, and it makes sense to focus on immediate support first.':
+        'سلامتك هي الأهم الآن، ومن الطبيعي أن نركز أولًا على الدعم الفوري.',
+      'What you described can be very serious, and your safety comes first.':
+        'ما وصفته قد يكون خطيرًا جدًا، وسلامتك تأتي أولًا.',
+      'No one should be spoken to or treated like that.':
+        'لا ينبغي أن يتم التحدث إلى أي شخص أو معاملته بهذه الطريقة.',
+      'Scams and identity risks can feel overwhelming, but there are practical steps we can take from here.':
+        'قد تبدو عمليات الاحتيال ومخاطر الهوية مرهقة، لكن هناك خطوات عملية يمكن اتخاذها من هنا.',
+      'It is understandable to feel unsettled when private information may have been exposed.':
+        'من الطبيعي أن تشعر بالانزعاج عندما تكون المعلومات الخاصة قد كُشفت.',
+      'Health information is sensitive, so it is understandable to be upset by that.':
+        'المعلومات الصحية حساسة، لذلك من المفهوم أن يكون هذا مزعجًا.',
+      'What you described sounds really distressing, and you do not have to sort it all out at once.':
+        'ما وصفته يبدو مؤلمًا جدًا، ولا يلزمك التعامل مع كل شيء دفعة واحدة.',
+      'You do not need to explain everything at once, and we can take it one step at a time.':
+        'لا تحتاج إلى شرح كل شيء دفعة واحدة، ويمكننا التعامل مع الأمر خطوة بخطوة.',
+      'We can focus on the scam, account, and identity-protection steps first.':
+        'يمكننا التركيز أولًا على خطوات الاحتيال والحساب وحماية الهوية.',
+      'Are you safe right now?': 'هل أنت بأمان الآن؟',
+      'Are they demanding money, contact, images, or something else?':
+        'هل يطالبونك بالمال أو التواصل أو الصور أو بشيء آخر؟',
+      'Did they take money, or do they only have your details so far?':
+        'هل أخذوا مالًا، أم لديهم بياناتك فقط حتى الآن؟',
+      'What kind of details were leaked?': 'ما نوع التفاصيل التي تم تسريبها؟',
+      'Who was it shared with?': 'مع من تمت مشاركتها؟',
+      'Did this happen in person, online, at work, school, or somewhere else?':
+        'هل حدث هذا شخصيًا أم عبر الإنترنت أم في العمل أم في المدرسة أم في مكان آخر؟',
+      'What feels most important for me to understand next?':
+        'ما الذي يبدو لك الأكثر أهمية أن أفهمه بعد ذلك؟',
+      'Can you tell me a bit more about what happened and what feels most urgent right now?':
+        'هل يمكنك أن تخبرني أكثر قليلًا عما حدث وما يبدو الأكثر إلحاحًا الآن؟',
+      'If you are in immediate danger, call 000 now or get urgent help from someone nearby':
+        'إذا كنت في خطر فوري، فاتصل بـ 000 الآن أو اطلب مساعدة عاجلة من شخص قريب.',
+      'Put safety first and avoid gathering evidence if that could increase the risk to you':
+        'اجعل السلامة أولًا وتجنب جمع الأدلة إذا كان ذلك قد يزيد الخطر عليك.',
+      'If it feels safe, contact 1800RESPECT or a local domestic violence service for confidential support':
+        'إذا كان ذلك آمنًا، يمكنك التواصل مع 1800RESPECT أو خدمة محلية للعنف الأسري للحصول على دعم سري.',
+      'If it feels safe, save screenshots, links, usernames, and dates before anything is deleted':
+        'إذا كان ذلك آمنًا، احتفظ بلقطات الشاشة والروابط وأسماء المستخدمين والتواريخ قبل حذف أي شيء.',
+      'Avoid replying or negotiating if engaging with them could make things less safe':
+        'تجنب الرد أو التفاوض إذا كان التواصل معهم قد يجعلك أقل أمانًا.',
+      'Report the account, post, or content to the platform if you want the material reviewed or removed':
+        'أبلغ المنصة عن الحساب أو المنشور أو المحتوى إذا أردت مراجعته أو إزالته.',
+      'Contact your bank or card provider as soon as you can to secure the account and watch for suspicious activity':
+        'تواصل مع البنك أو مزود البطاقة بأسرع ما يمكن لتأمين الحساب ومراقبة أي نشاط مشبوه.',
+      'Change important passwords and turn on two-factor authentication where possible':
+        'غيّر كلمات المرور المهمة وفعّل التحقق بخطوتين حيثما أمكن.',
+      TRIAGE_HANDOFF_MESSAGE: 'بالطبع — يمكنني نقلك الآن إلى ملخص الفرز الخاص بك.'
+    },
+    hi: {
+      'I am really sorry you are dealing with this.': 'मुझे अफ़सोस है कि आप यह झेल रहे हैं।',
+      'I am sorry this is happening to you.': 'मुझे अफ़सोस है कि यह आपके साथ हो रहा है।',
+      'I am sorry you were treated that way.': 'मुझे अफ़सोस है कि आपके साथ ऐसा व्यवहार किया गया।',
+      'I am sorry this happened to you.': 'मुझे अफ़सोस है कि यह आपके साथ हुआ।',
+      'I am sorry your health information was shared like that.':
+        'मुझे अफ़सोस है कि आपकी स्वास्थ्य जानकारी इस तरह साझा की गई।',
+      'Thank you for telling me about this.': 'यह बताने के लिए धन्यवाद।',
+      'Your safety matters most right now, and it makes sense to focus on immediate support first.':
+        'इस समय आपकी सुरक्षा सबसे महत्वपूर्ण है, इसलिए पहले तुरंत सहायता पर ध्यान देना ठीक है।',
+      'What you described can be very serious, and your safety comes first.':
+        'जो आपने बताया वह बहुत गंभीर हो सकता है, और आपकी सुरक्षा पहले आती है।',
+      'No one should be spoken to or treated like that.':
+        'किसी के साथ भी ऐसा व्यवहार नहीं होना चाहिए।',
+      'Scams and identity risks can feel overwhelming, but there are practical steps we can take from here.':
+        'धोखाधड़ी और पहचान से जुड़े जोखिम बहुत भारी लग सकते हैं, लेकिन यहाँ से कुछ व्यावहारिक कदम उठाए जा सकते हैं।',
+      'It is understandable to feel unsettled when private information may have been exposed.':
+        'जब निजी जानकारी उजागर हो सकती है, तो परेशान महसूस करना स्वाभाविक है।',
+      'Health information is sensitive, so it is understandable to be upset by that.':
+        'स्वास्थ्य जानकारी संवेदनशील होती है, इसलिए इससे परेशान होना स्वाभाविक है।',
+      'What you described sounds really distressing, and you do not have to sort it all out at once.':
+        'जो आपने बताया वह बहुत परेशान करने वाला लगता है, और आपको सब कुछ एक साथ संभालने की ज़रूरत नहीं है।',
+      'You do not need to explain everything at once, and we can take it one step at a time.':
+        'आपको सब कुछ एक साथ समझाने की ज़रूरत नहीं है, हम एक-एक कदम चल सकते हैं।',
+      'We can focus on the scam, account, and identity-protection steps first.':
+        'हम पहले धोखाधड़ी, खाते और पहचान-सुरक्षा के कदमों पर ध्यान दे सकते हैं।',
+      'Are you safe right now?': 'क्या आप अभी सुरक्षित हैं?',
+      'Are they demanding money, contact, images, or something else?':
+        'क्या वे पैसे, संपर्क, तस्वीरें या कुछ और माँग रहे हैं?',
+      'Did they take money, or do they only have your details so far?':
+        'क्या उन्होंने पैसे ले लिए, या अभी तक केवल आपकी जानकारी उनके पास है?',
+      'What kind of details were leaked?': 'किस तरह की जानकारी लीक हुई थी?',
+      'Who was it shared with?': 'यह किसके साथ साझा की गई थी?',
+      'Did this happen in person, online, at work, school, or somewhere else?':
+        'क्या यह आमने-सामने हुआ, ऑनलाइन हुआ, काम पर, स्कूल में, या कहीं और?',
+      'What feels most important for me to understand next?':
+        'आपके अनुसार मुझे अगला सबसे महत्वपूर्ण क्या समझना चाहिए?',
+      'Can you tell me a bit more about what happened and what feels most urgent right now?':
+        'क्या आप थोड़ा और बता सकते हैं कि क्या हुआ और अभी सबसे ज़्यादा ज़रूरी क्या लगता है?',
+      'If you are in immediate danger, call 000 now or get urgent help from someone nearby':
+        'यदि आप तत्काल खतरे में हैं, तो अभी 000 पर कॉल करें या पास के किसी व्यक्ति से तुरंत मदद लें।',
+      'Put safety first and avoid gathering evidence if that could increase the risk to you':
+        'सुरक्षा को पहले रखें और अगर सबूत जुटाने से खतरा बढ़ सकता है तो ऐसा न करें।',
+      'If it feels safe, contact 1800RESPECT or a local domestic violence service for confidential support':
+        'यदि सुरक्षित लगे, तो गोपनीय सहायता के लिए 1800RESPECT या स्थानीय घरेलू हिंसा सेवा से संपर्क करें।',
+      'If it feels safe, save screenshots, links, usernames, and dates before anything is deleted':
+        'यदि सुरक्षित लगे, तो कुछ हटाए जाने से पहले स्क्रीनशॉट, लिंक, यूज़रनेम और तारीखें सुरक्षित कर लें।',
+      'Avoid replying or negotiating if engaging with them could make things less safe':
+        'यदि जवाब देने या बातचीत करने से जोखिम बढ़ सकता है, तो ऐसा न करें।',
+      'Report the account, post, or content to the platform if you want the material reviewed or removed':
+        'यदि आप सामग्री की समीक्षा या हटाना चाहते हैं, तो प्लेटफ़ॉर्म पर अकाउंट, पोस्ट या सामग्री की रिपोर्ट करें।',
+      'Contact your bank or card provider as soon as you can to secure the account and watch for suspicious activity':
+        'अपने खाते को सुरक्षित करने और संदिग्ध गतिविधि देखने के लिए जल्द से जल्द बैंक या कार्ड प्रदाता से संपर्क करें।',
+      'Change important passwords and turn on two-factor authentication where possible':
+        'महत्वपूर्ण पासवर्ड बदलें और जहाँ संभव हो दो-स्तरीय प्रमाणीकरण चालू करें।',
+      TRIAGE_HANDOFF_MESSAGE: 'ज़रूर — मैं अभी आपको आपके ट्रायेज सारांश पर ले जा सकता हूँ।'
+    },
+    bn: {
+      'I am sorry this happened to you.': 'এটা আপনার সঙ্গে ঘটেছে জেনে আমি দুঃখিত।',
+      'Scams and identity risks can feel overwhelming, but there are practical steps we can take from here.':
+        'প্রতারণা ও পরিচয়-ঝুঁকি খুবই চাপের মনে হতে পারে, কিন্তু এখান থেকে কিছু বাস্তব পদক্ষেপ নেওয়া যায়।',
+      'Did they take money, or do they only have your details so far?':
+        'তারা কি টাকা নিয়েছে, নাকি এখন পর্যন্ত শুধু আপনার তথ্যই পেয়েছে?',
+      'Contact your bank or card provider as soon as you can to secure the account and watch for suspicious activity':
+        'আপনার অ্যাকাউন্ট সুরক্ষিত করতে এবং সন্দেহজনক কার্যকলাপ নজরে রাখতে যত দ্রুত সম্ভব ব্যাংক বা কার্ড প্রদানকারীর সঙ্গে যোগাযোগ করুন।',
+      'Change important passwords and turn on two-factor authentication where possible':
+        'গুরুত্বপূর্ণ পাসওয়ার্ড বদলান এবং যেখানে সম্ভব দুই-ধাপ যাচাই চালু করুন।',
+      TRIAGE_HANDOFF_MESSAGE: 'অবশ্যই — আমি এখন আপনাকে আপনার ট্রায়াজ সারাংশে নিয়ে যেতে পারি।'
+    },
+    zh: {
+      'I am sorry this happened to you.': '很抱歉这件事发生在你身上。',
+      'It is understandable to feel unsettled when private information may have been exposed.':
+        '当私人信息可能已经泄露时，感到不安是可以理解的。',
+      'Are they demanding money, contact, images, or something else?':
+        '对方是在要求金钱、联系、图片，还是别的东西？',
+      TRIAGE_HANDOFF_MESSAGE: '当然可以——我现在可以带你查看你的分流摘要。'
+    },
+    es: {
+      'I am sorry this happened to you.': 'Siento que esto te haya pasado.',
+      'What you described sounds really distressing, and you do not have to sort it all out at once.':
+        'Lo que describes suena muy angustiante, y no tienes que resolverlo todo de una vez.',
+      'Are they demanding money, contact, images, or something else?':
+        '¿Te están exigiendo dinero, contacto, imágenes o algo más?',
+      TRIAGE_HANDOFF_MESSAGE: 'Claro — ahora puedo llevarte a tu resumen de triaje.'
+    }
+  };
+
+  return translations[language]?.[text] ?? text;
+};
+
+const localizeStep = (language: string, step: string): string =>
+  localizeExactString(language, step);
+
+const localizeSupportReplyMessage = (language: string, message: string): string => {
+  if (language === 'en') {
+    return message;
+  }
+
+  const intro = localizedJoiners[language]?.intro ?? localizedJoiners.en.intro;
+
+  return message.replace('A few practical steps that may help are:', intro);
+};
+
+export const localizeKnownLegalLookupAnswer = (input: {
+  language: string;
+  message: string;
+  assistantPayload: Record<string, unknown>;
+}): Record<string, unknown> => {
+  if (input.language === 'en') {
+    return input.assistantPayload;
+  }
+
+  const citations = Array.isArray(input.assistantPayload.citations)
+    ? input.assistantPayload.citations
+    : [];
+  const hasPrivacyActSection6 = citations.some((citation) => {
+    if (!citation || typeof citation !== 'object') {
+      return false;
+    }
+
+    const safeCitation = citation as Record<string, unknown>;
+    return (
+      /privacy act 1988/i.test(toSafeString(safeCitation.title)) &&
+      /section 6/i.test(toSafeString(safeCitation.sectionRef))
+    );
+  });
+
+  if (!hasPrivacyActSection6) {
+    return input.assistantPayload;
+  }
+
+    const localizedAnswers: Record<string, string> = {
+      ar: 'بموجب Privacy Act 1988، يُعرَّف personal information في section 6.',
+      hi: 'Privacy Act 1988 के अनुसार, personal information की परिभाषा section 6 में दी गई है।',
+      bn: 'Privacy Act 1988 অনুযায়ী, personal information-এর সংজ্ঞা section 6-এ রয়েছে।',
+      'zh-Hans': '根据 Privacy Act 1988，personal information 的定义在 section 6。',
+      'zh-Hant': '根據 Privacy Act 1988，personal information 的定義在 section 6。',
+      es: 'Según Privacy Act 1988, la definición de personal information está en section 6.'
+    };
+
+  return {
+    ...input.assistantPayload,
+    assistantMessage:
+      localizedAnswers[input.language] ??
+      input.assistantPayload.assistantMessage
+  };
 };
 
 export const buildConversationAssistantResponseMeta = (input: {
@@ -516,7 +932,22 @@ export const buildConversationAssistantResponseMeta = (input: {
         : triageReady
           ? 'show_triage_button'
           : undefined,
+    assistantLanguage:
+      typeof input.assistantPayload.assistantLanguage === 'string'
+        ? input.assistantPayload.assistantLanguage
+        : 'en',
     conversationSessionId: input.conversationSessionId,
+    safetyOverride: Boolean(input.assistantPayload.safetyOverride),
+    safetyLevel:
+      typeof input.assistantPayload.safetyLevel === 'string'
+        ? input.assistantPayload.safetyLevel
+        : 'none',
+    safetyReasons: Array.isArray(input.assistantPayload.safetyReasons)
+      ? input.assistantPayload.safetyReasons
+      : [],
+    recommendedImmediateActions: Array.isArray(input.assistantPayload.recommendedImmediateActions)
+      ? input.assistantPayload.recommendedImmediateActions
+      : [],
     showSources:
       typeof input.assistantPayload.showSources === 'boolean'
         ? input.assistantPayload.showSources
@@ -572,10 +1003,95 @@ export const extractSupportFacts = (input: {
     elder_or_vulnerable_person: originalFacts.elderOrVulnerablePerson,
     evidence_available: originalFacts.evidenceAvailable,
     language_or_interpreter_need: originalFacts.languageOrInterpreterNeed,
+    child_safety_risk: originalFacts.childSafetyRisk,
+    sexual_violence_risk: originalFacts.sexualViolenceRisk,
     organisations: originalFacts.organisations,
     platforms: originalFacts.platforms,
     matched_facts: originalFacts.matchedFacts,
     originalFacts
+  };
+};
+
+export const evaluateSafetyOverride = (facts: SupportResponseFacts): SafetyOverrideRecord => {
+  const safetyReasons: string[] = [];
+  const recommendedImmediateActions: string[] = [];
+  let safetyLevel: SafetyOverrideLevel = 'none';
+  let hasHighPriorityOverride = false;
+
+  const upgradeLevel = (nextLevel: SafetyOverrideLevel) => {
+    const order: SafetyOverrideLevel[] = ['none', 'low', 'medium', 'high', 'urgent'];
+    if (order.indexOf(nextLevel) > order.indexOf(safetyLevel)) {
+      safetyLevel = nextLevel;
+    }
+  };
+
+  if (facts.immediate_danger || facts.originalFacts.selfHarmOrSuicidal) {
+    upgradeLevel('urgent');
+    hasHighPriorityOverride = true;
+    safetyReasons.push('immediate danger or crisis language detected');
+    recommendedImmediateActions.push('Call 000 now if there is immediate danger.');
+  }
+
+  if (facts.threat_present && facts.originalFacts.physicalViolence) {
+    upgradeLevel('urgent');
+    hasHighPriorityOverride = true;
+    safetyReasons.push('active physical threat detected');
+  } else if (facts.threat_present) {
+    upgradeLevel('high');
+    hasHighPriorityOverride = true;
+    safetyReasons.push('serious threat or intimidation detected');
+  }
+
+  if (facts.domestic_family_context || facts.coercive_control) {
+    upgradeLevel(facts.immediate_danger ? 'urgent' : 'high');
+    hasHighPriorityOverride = true;
+    safetyReasons.push('domestic or family violence indicators detected');
+    recommendedImmediateActions.push(
+      'If it feels safe, consider 1800RESPECT for confidential domestic, family, or sexual violence support.'
+    );
+  }
+
+  if (facts.migration_or_visa_threat && facts.domestic_family_context) {
+    upgradeLevel('high');
+    hasHighPriorityOverride = true;
+    safetyReasons.push('migration or visa threat in a relationship context detected');
+  }
+
+  if (facts.blackmail_or_extortion || facts.image_based_abuse || facts.private_photos_or_messages) {
+    upgradeLevel('high');
+    hasHighPriorityOverride = true;
+    safetyReasons.push('blackmail, extortion, or image-based abuse escalation detected');
+  }
+
+  if (facts.child_safety_risk) {
+    upgradeLevel('high');
+    hasHighPriorityOverride = true;
+    safetyReasons.push('child safety risk detected');
+  }
+
+  if (facts.sexual_violence_risk) {
+    upgradeLevel('high');
+    hasHighPriorityOverride = true;
+    safetyReasons.push('sexual violence context detected');
+  }
+
+  if (facts.elder_or_vulnerable_person && (facts.scam_or_fraud || facts.threat_present)) {
+    upgradeLevel('high');
+    hasHighPriorityOverride = true;
+    safetyReasons.push('elder or vulnerable-person exploitation risk detected');
+  }
+
+  if (recommendedImmediateActions.length === 0 && safetyLevel !== 'none') {
+    recommendedImmediateActions.push(
+      'Put safety first and avoid any step that could increase the risk to you right now.'
+    );
+  }
+
+  return {
+    safetyOverride: hasHighPriorityOverride,
+    safetyLevel,
+    safetyReasons: Array.from(new Set(safetyReasons)),
+    recommendedImmediateActions: Array.from(new Set(recommendedImmediateActions))
   };
 };
 
@@ -589,8 +1105,9 @@ const pushUniqueStep = (steps: string[], step: string) => {
 
 export const buildSafetySteps = (facts: SupportResponseFacts): string[] => {
   const steps: string[] = [];
+  const safetyOverride = evaluateSafetyOverride(facts);
 
-  if (facts.immediate_danger) {
+  if (safetyOverride.safetyLevel === 'urgent') {
     pushUniqueStep(
       steps,
       'If you are in immediate danger, call 000 now or get urgent help from someone nearby'
@@ -608,16 +1125,32 @@ export const buildSafetySteps = (facts: SupportResponseFacts): string[] => {
     );
   }
 
+  if (facts.child_safety_risk) {
+    pushUniqueStep(
+      steps,
+      'Keep the child safety concern central and avoid any step that could expose them to more risk'
+    );
+  }
+
+  if (facts.sexual_violence_risk) {
+    pushUniqueStep(
+      steps,
+      'If it feels safe, prioritise immediate safety and specialist sexual violence support before detailed evidence steps'
+    );
+  }
+
   if (
     facts.threat_present ||
     facts.blackmail_or_extortion ||
     facts.image_based_abuse ||
     facts.private_photos_or_messages
   ) {
-    pushUniqueStep(
-      steps,
-      'If it feels safe, save screenshots, links, usernames, and dates before anything is deleted'
-    );
+    if (!(facts.domestic_family_context && safetyOverride.safetyOverride)) {
+      pushUniqueStep(
+        steps,
+        'If it feels safe, save screenshots, links, usernames, and dates before anything is deleted'
+      );
+    }
     pushUniqueStep(
       steps,
       'Avoid replying or negotiating if engaging with them could make things less safe'
@@ -701,7 +1234,13 @@ export const buildSafetySteps = (facts: SupportResponseFacts): string[] => {
 };
 
 export const buildFollowUpQuestion = (facts: SupportResponseFacts): string => {
-  if (facts.immediate_danger || (facts.domestic_family_context && facts.coercive_control)) {
+  if (
+    facts.immediate_danger ||
+    facts.originalFacts.selfHarmOrSuicidal ||
+    facts.child_safety_risk ||
+    facts.sexual_violence_risk ||
+    (facts.domestic_family_context && facts.coercive_control)
+  ) {
     return 'Are you safe right now?';
   }
 
@@ -799,8 +1338,11 @@ export const buildSupportReply = (input: {
   responseMode: ConversationAssistantResponseMode;
   sessionContext?: {
     selectedTopic?: string;
+    language?: string;
   };
 }) => {
+  const language = getSupportedAssistantLanguage(input.sessionContext?.language);
+  const safetyOverride = evaluateSafetyOverride(input.facts);
   const steps = buildSafetySteps(input.facts);
   const empathySentence = buildEmpathySentence(input.responseMode, input.facts);
   const validationSentence = buildValidationSentence(input.responseMode, input.facts);
@@ -811,25 +1353,43 @@ export const buildSupportReply = (input: {
   const practicalSentence =
     steps.length > 0
       ? `A few practical steps that may help are: ${steps
-          .map((step, index) => `${index + 1}. ${step}`)
+          .map((step, index) => `${index + 1}. ${localizeStep(language, step)}`)
           .join(' ')}.`
       : '';
   const topicSentence =
     input.responseMode === 'scamshield_style' || input.sessionContext?.selectedTopic === 'scamshield'
       ? 'We can focus on the scam, account, and identity-protection steps first.'
       : '';
+  const safetySentence =
+    safetyOverride.safetyOverride
+      ? safetyOverride.recommendedImmediateActions.slice(0, 2).join('. ') + '.'
+      : '';
+  const localizedMessage = localizeSupportReplyMessage(
+    language,
+    [
+      localizeExactString(language, empathySentence),
+      localizeExactString(language, validationSentence),
+      localizeExactString(language, topicSentence),
+      localizeExactString(language, safetySentence),
+      practicalSentence
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
 
   return {
-    assistantMessage: [empathySentence, validationSentence, topicSentence, practicalSentence]
-      .filter(Boolean)
-      .join(' '),
-    nextQuestion,
+    assistantMessage: localizedMessage,
+    nextQuestion: localizeExactString(language, nextQuestion),
     readyForSubmission: false,
     confidence: input.responseMode === 'clarification_needed' ? 'low' : 'medium',
     disclaimer: 'This is information only, not legal advice.',
     citations: [],
     showSources: shouldShowSources(input.responseMode, '', []),
     sourceDisplayReason: 'hidden_support_reply',
+    safetyOverride: safetyOverride.safetyOverride,
+    safetyLevel: safetyOverride.safetyLevel,
+    safetyReasons: safetyOverride.safetyReasons,
+    recommendedImmediateActions: safetyOverride.recommendedImmediateActions,
     rag: {
       used: false,
       unavailable: false,
@@ -984,6 +1544,14 @@ const buildMatchedFactLabels = (
     matchedFacts.push('elder or vulnerable person involved');
   }
 
+  if (facts.childSafetyRisk) {
+    matchedFacts.push('child safety risk');
+  }
+
+  if (facts.sexualViolenceRisk) {
+    matchedFacts.push('sexual violence risk');
+  }
+
   if (facts.languageOrInterpreterNeed) {
     matchedFacts.push('language or interpreter support may help');
   }
@@ -1056,7 +1624,7 @@ export const extractStructuredTriageFacts = (input: {
     /\b(partner|husband|wife|boyfriend|girlfriend|spouse|ex partner|ex-partner|family|parent|child|kids|brother|sister|at home)\b/i
   ]);
   const coerciveControl = matchesAny(combinedText, [
-    /\b(coercive control|controls? me|monitor(?:s|ed)? me|tracks? me|won.t let me|won't let me|isolat(?:e|ed|es)|takes my pay|checks my phone|keeps me from leaving)\b/i
+    /\b(coercive control|controls? me|monitor(?:s|ed)? me|tracks? me|won.t let me|won't let me|isolat(?:e|ed|es)|takes my pay|checks my phone|keeps me from leaving|deport me if i leave|cancel my visa if i leave)\b/i
   ]);
   const healthInformation = matchesAny(combinedText, [
     /\b(health information|health info|medical information|medical info|medical details|health details|diagnosis|mental health history|condition)\b/i
@@ -1093,7 +1661,7 @@ export const extractStructuredTriageFacts = (input: {
     ]);
   const personalDataLeak =
     matchesAny(combinedText, [
-      /\b(data breach|privacy breach|personal details?.*(?:shared|leaked|exposed)|personal information.*(?:shared|leaked|exposed)|private information.*(?:shared|leaked|exposed)|details leaked|information leaked|doxx|doxed|doxxed)\b/i
+      /\b(data breach|privacy breach|personal details?.*(?:shared|leaked|exposed)|personal information.*(?:shared|leaked|exposed)|private information.*(?:shared|leaked|exposed)|details leaked|information leaked|exposed my personal details|doxx|doxed|doxxed)\b/i
     ]) || employerHealthPrivacy;
   const protectedAttributes = extractProtectedAttributes(combinedText);
   const protectedAttribute = protectedAttributes.length > 0;
@@ -1102,9 +1670,9 @@ export const extractStructuredTriageFacts = (input: {
   ]);
   const workplaceDiscrimination =
     workplaceContext &&
-    protectedAttribute &&
+    (protectedAttribute || racismOrHate) &&
     matchesAny(combinedText, [
-      /\b(because of|due to|treated me differently|refused|excluded|humiliat|underpaid|cut my shifts|fired|dismissed|wouldn.t hire|wouldn't hire)\b/i
+      /\b(because of|due to|treated me differently|refused|excluded|humiliat|underpaid|cut my shifts|fired|dismissed|wouldn.t hire|wouldn't hire|racist abuse|racial abuse|racial slur|hate speech)\b/i
     ]);
   const workplaceBullying =
     workplaceContext &&
@@ -1117,6 +1685,12 @@ export const extractStructuredTriageFacts = (input: {
   ]);
   const elderOrVulnerablePerson = matchesAny(combinedText, [
     /\b(elderly|older parent|older person|aged care|grandma|grandfather|grandmother|pensioner|vulnerable person)\b/i
+  ]);
+  const childSafetyRisk = matchesAny(combinedText, [
+    /\b(child|kid|minor|teen|teenager|daughter|son|underage|school student)\b/i
+  ]) && matchesAny(combinedText, [/\b(threat|unsafe|abuse|groom|exploit|sexual|image|photos?|messages?)\b/i]);
+  const sexualViolenceRisk = matchesAny(combinedText, [
+    /\b(sexual assault|rape|sexual violence|sexually assaulted|sexual abuse)\b/i
   ]);
   const physicalViolence = matchesAny(combinedText, [
     /\b(hit|hurt|assault|slap|punch|kick|strangle|choke|beat|grabbed me|pulled me)\b/i
@@ -1200,6 +1774,8 @@ export const extractStructuredTriageFacts = (input: {
     migrationOrVisaThreat,
     languageOrInterpreterNeed,
     selfHarmOrSuicidal,
+    childSafetyRisk,
+    sexualViolenceRisk,
     organisations,
     platforms,
     protectedAttributes,
@@ -1797,6 +2373,7 @@ const toSessionRecord = (session: ConversationFlowSessionDocument) => ({
   id: session._id.toString(),
   selectedTopic: session.selectedTopic,
   detectedCategory: session.detectedCategory,
+  detectedLanguage: session.detectedLanguage,
   status: session.status,
   safetyRiskLevel: session.safetyRiskLevel,
   jurisdiction: session.jurisdiction,
@@ -1901,7 +2478,8 @@ const buildFallbackAssistantResponse = (
   message: string,
   timeline: Record<string, string>,
   selectedTopic?: string,
-  jurisdiction?: string
+  jurisdiction?: string,
+  language?: string
 ) => {
   const supportFacts = extractSupportFacts({
     message,
@@ -1938,7 +2516,8 @@ const buildFallbackAssistantResponse = (
     facts: supportFacts,
     responseMode,
     sessionContext: {
-      selectedTopic
+      selectedTopic,
+      language
     }
   });
 };
@@ -2137,6 +2716,25 @@ const detectSafetyRiskLevel = (
   return 'low';
 };
 
+const toConversationSafetyRiskLevel = (
+  override: SafetyOverrideRecord,
+  fallback: ConversationFlowRiskLevel
+): ConversationFlowRiskLevel => {
+  if (override.safetyLevel === 'urgent') {
+    return 'immediate';
+  }
+
+  if (override.safetyLevel === 'high') {
+    return 'high';
+  }
+
+  if (override.safetyLevel === 'medium') {
+    return fallback === 'low' ? 'medium' : fallback;
+  }
+
+  return fallback;
+};
+
 const hasEnoughContextForTriageAssessment = (
   session: ConversationFlowSessionDocument,
   timeline: Record<string, string>
@@ -2156,6 +2754,308 @@ const shouldBlockTriage = (triage: {
   triage.likelyCategory === 'general_support' ||
   triage.confidenceScore < ACTIONABLE_TRIAGE_CONFIDENCE_THRESHOLD ||
   !triage.canProceedToRecommendations;
+
+const buildConsentGovernanceRecord = (): ConsentGovernanceRecord => ({
+  nothingSharedAutomatically: true,
+  userChoosesWhatToDoNext: true,
+  reviewWithoutSending: true,
+  consentRequiredBeforeSharing: true,
+  consentRequiredBeforeReferral: true,
+  consentRequiredBeforeExport: true,
+  consentRequiredBeforeEvidenceUpload: true,
+  consentRequiredBeforeCloudSync: true,
+  noAutomaticPoliceEscalation: true,
+  noBackgroundTracking: true,
+  messages: [...DEFAULT_CONSENT_GOVERNANCE_MESSAGES]
+});
+
+export const buildInternalPathways = (input: {
+  category: ConversationFlowCategory;
+  facts: ConversationFlowStructuredFacts;
+}): InternalPathwayRecord[] => {
+  const pathways: InternalPathwayRecord[] = [];
+  const addPathway = (
+    pathwayId: string,
+    title: string,
+    description: string,
+    relatedCategory: string
+  ) => {
+    if (!pathways.some((item) => item.pathwayId === pathwayId)) {
+      pathways.push({
+        pathwayId,
+        title,
+        description,
+        relatedCategory,
+        userFacingLabel: `This may relate to ${title.toLowerCase()}.`,
+        userFacingIntro: 'Possible support or reporting pathways you may wish to explore.'
+      });
+    }
+  };
+
+  if (input.facts.privacyDataBreach || input.facts.personalDataLeak || input.facts.employerHealthPrivacy) {
+    addPathway(
+      'oaic_privacy',
+      'privacy or data breach support',
+      'You may wish to explore privacy complaint, organisation response, and identity-protection steps.',
+      'privacy_data_breach'
+    );
+  }
+
+  if (input.category === 'online_abuse' || input.facts.imageBasedAbuse || input.facts.onlineThreatBlackmail) {
+    addPathway(
+      'esafety_online_abuse',
+      'online abuse or image-based abuse support',
+      'You may wish to explore platform reporting, eSafety options, and evidence-preservation steps.',
+      'online_abuse'
+    );
+  }
+
+  if (input.facts.scamFraud || input.facts.identityTheftRisk) {
+    addPathway(
+      'reportcyber_scam',
+      'scam, fraud, or cybercrime support',
+      'You may wish to explore ReportCyber, Scamwatch, bank, and identity-protection steps.',
+      'scam_fraud'
+    );
+  }
+
+  if (input.facts.racismDiscrimination) {
+    addPathway(
+      'anti_discrimination',
+      'racism, hate speech, or discrimination support',
+      'You may wish to explore anti-discrimination, police, community, or workplace pathways, depending on what happened.',
+      'racism_discrimination'
+    );
+  }
+
+  if (input.facts.workplaceDiscrimination) {
+    addPathway(
+      'workplace_discrimination',
+      'workplace discrimination support',
+      'You may wish to explore Fair Work, anti-discrimination, HR, or legal information pathways.',
+      'workplace_discrimination'
+    );
+  }
+
+  if (input.facts.workplaceBullying) {
+    addPathway(
+      'workplace_bullying',
+      'workplace bullying support',
+      'You may wish to explore workplace safety, Fair Work, and evidence-recording pathways.',
+      'workplace_bullying'
+    );
+  }
+
+  if (input.facts.schoolContext) {
+    addPathway(
+      'school_support',
+      'school or education harassment support',
+      'You may wish to explore school wellbeing, principal, education department, or anti-discrimination pathways.',
+      'school_context'
+    );
+  }
+
+  if (input.facts.domesticViolence) {
+    addPathway(
+      'dv_support',
+      'domestic or family violence support',
+      'You may wish to explore safety planning, 1800RESPECT, and specialist support pathways.',
+      'domestic_family_violence'
+    );
+  }
+
+  if (input.facts.migrationOrVisaThreat) {
+    addPathway(
+      'migration_support',
+      'migration or visa coercion support',
+      'You may wish to explore specialist migration support and safety-first legal information pathways.',
+      'migration_visa_coercion'
+    );
+  }
+
+  if (input.facts.elderOrVulnerablePerson) {
+    addPathway(
+      'elder_support',
+      'elder abuse or scam support',
+      'You may wish to explore elder support, scam, and identity-protection pathways.',
+      'elder_scam'
+    );
+  }
+
+  if (pathways.length === 0) {
+    addPathway(
+      'general_support',
+      'general support options',
+      'You may wish to explore support, safety, and evidence pathways at your own pace.',
+      'general_support'
+    );
+  }
+
+  return pathways;
+};
+
+export const buildIntakePlanner = (input: {
+  pathways: InternalPathwayRecord[];
+  facts: ConversationFlowStructuredFacts;
+  safetyOverride: SafetyOverrideRecord;
+}): IntakePlanRecord[] => {
+  const baseWarning = input.safetyOverride.safetyOverride
+    ? ['Put safety first and skip any step that could increase the risk to you right now.']
+    : [];
+  const plans = input.pathways.map((pathway) => {
+    switch (pathway.pathwayId) {
+      case 'esafety_online_abuse':
+        return {
+          pathwayId: pathway.pathwayId,
+          requiredFields: [
+            { key: 'platform', label: 'Platform' },
+            { key: 'url', label: 'URL or link' },
+            { key: 'username', label: 'Username or account' }
+          ],
+          optionalFields: [
+            { key: 'screenshots', label: 'Screenshots' },
+            { key: 'date_time', label: 'Date and time' },
+            { key: 'content_still_online', label: 'Whether content is still online' }
+          ],
+          safetyWarnings: baseWarning,
+          consentRequiredBeforeSharing: true,
+          userFriendlyExplanation:
+            'What we may ask next for this pathway: platform details, links, accounts, and whether the content is still online.'
+        } satisfies IntakePlanRecord;
+      case 'reportcyber_scam':
+        return {
+          pathwayId: pathway.pathwayId,
+          requiredFields: [
+            { key: 'scam_type', label: 'Scam type' },
+            { key: 'contact_details', label: 'Sender or contact details' }
+          ],
+          optionalFields: [
+            { key: 'urls_emails_numbers', label: 'URLs, emails, or phone numbers' },
+            { key: 'money_lost', label: 'Money lost' },
+            { key: 'bank_contacted', label: 'Whether the bank was contacted' }
+          ],
+          safetyWarnings: baseWarning,
+          consentRequiredBeforeSharing: true,
+          userFriendlyExplanation:
+            'Prepare for this pathway by gathering the scam type, contact details, and any payment or account information you already have.'
+        } satisfies IntakePlanRecord;
+      case 'oaic_privacy':
+        return {
+          pathwayId: pathway.pathwayId,
+          requiredFields: [
+            { key: 'organisation_name', label: 'Organisation name' },
+            { key: 'personal_information_type', label: 'Type of personal information' }
+          ],
+          optionalFields: [
+            { key: 'breach_date', label: 'Date of breach' },
+            { key: 'organisation_contacted', label: 'Whether the organisation was contacted' }
+          ],
+          safetyWarnings: baseWarning,
+          consentRequiredBeforeSharing: true,
+          userFriendlyExplanation:
+            'What we may ask next: the organisation involved, what data was affected, and whether you already contacted them.'
+        } satisfies IntakePlanRecord;
+      case 'workplace_bullying':
+      case 'workplace_discrimination':
+        return {
+          pathwayId: pathway.pathwayId,
+          requiredFields: [
+            { key: 'employer', label: 'Employer' },
+            { key: 'role', label: 'Role or team' },
+            { key: 'dates', label: 'Dates' }
+          ],
+          optionalFields: [
+            { key: 'hr_response', label: 'HR response' },
+            { key: 'witnesses', label: 'Witnesses' }
+          ],
+          safetyWarnings: baseWarning,
+          consentRequiredBeforeSharing: true,
+          userFriendlyExplanation:
+            'Prepare for this pathway by noting the workplace, dates, who was involved, and any HR or manager response.'
+        } satisfies IntakePlanRecord;
+      case 'anti_discrimination':
+        return {
+          pathwayId: pathway.pathwayId,
+          requiredFields: [
+            { key: 'protected_attribute', label: 'Protected attribute' },
+            { key: 'exact_words_actions', label: 'Exact words or actions' },
+            { key: 'location_context', label: 'Location or context' }
+          ],
+          optionalFields: [
+            { key: 'witnesses', label: 'Witnesses' },
+            { key: 'repeated_pattern', label: 'Repeated pattern' }
+          ],
+          safetyWarnings: baseWarning,
+          consentRequiredBeforeSharing: true,
+          userFriendlyExplanation:
+            'What we may ask next: what was said or done, where it happened, and whether there were witnesses or a repeated pattern.'
+        } satisfies IntakePlanRecord;
+      case 'dv_support':
+        return {
+          pathwayId: pathway.pathwayId,
+          requiredFields: [
+            { key: 'current_safety', label: 'Current safety' },
+            { key: 'safe_contact_method', label: 'Safe contact method' }
+          ],
+          optionalFields: [
+            { key: 'children_pets_documents_money', label: 'Children, pets, documents, or money risks' }
+          ],
+          safetyWarnings: [
+            ...baseWarning,
+            'Avoid evidence-gathering steps if they could increase the danger.'
+          ],
+          consentRequiredBeforeSharing: true,
+          userFriendlyExplanation:
+            'Prepare for this pathway by focusing on safety, safe contact options, and any immediate risks involving children, pets, documents, or money.'
+        } satisfies IntakePlanRecord;
+      default:
+        return {
+          pathwayId: pathway.pathwayId,
+          requiredFields: [{ key: 'summary', label: 'Short summary' }],
+          optionalFields: [{ key: 'dates', label: 'Dates or timing' }],
+          safetyWarnings: baseWarning,
+          consentRequiredBeforeSharing: true,
+          userFriendlyExplanation:
+            'SafeSpeak can prepare the next questions for this pathway without sending anything anywhere.'
+        } satisfies IntakePlanRecord;
+    }
+  });
+
+  return plans;
+};
+
+export const buildStructuredReportPreparation = (input: {
+  facts: Partial<ConversationFlowFactsDocument>;
+  structuredFacts: ConversationFlowStructuredFacts;
+  intakePlans: IntakePlanRecord[];
+  triageCategory: ConversationFlowCategory;
+}): StructuredReportPreparation => {
+  const timeline = [
+    input.facts.whenHappened ? { label: 'When', value: input.facts.whenHappened } : null,
+    input.facts.whereHappened ? { label: 'Where', value: input.facts.whereHappened } : null,
+    input.facts.peopleInvolved ? { label: 'Who', value: input.facts.peopleInvolved } : null
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+
+  const evidenceList = collapseWhitespace(input.facts.evidenceMentioned ?? '')
+    .split(/,|;|\band\b/i)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return {
+    status: input.facts.whatHappened ? 'ready_to_review' : 'draft',
+    informationOnlyDisclaimer: 'This draft is information only and has not been sent anywhere.',
+    consentState: 'not_granted',
+    notSentYet: true,
+    userNarrativeSummary:
+      input.facts.whatHappened ??
+      `The user described a possible ${input.triageCategory.replace(/_/g, ' ')} concern and is reviewing options.`,
+    structuredFactsSummary: input.structuredFacts.matchedFacts.slice(0, 8),
+    timeline,
+    evidenceList,
+    selectedPathwayId: input.intakePlans[0]?.pathwayId,
+    missingFields: input.facts.missingInformation ?? []
+  };
+};
 
 const buildReasoningSummary = (input: {
   category: ConversationFlowCategory;
@@ -2331,6 +3231,8 @@ const toStructuredFactsRecord = (
     migrationOrVisaThreat: Boolean(record.migrationOrVisaThreat),
     languageOrInterpreterNeed: Boolean(record.languageOrInterpreterNeed),
     selfHarmOrSuicidal: Boolean(record.selfHarmOrSuicidal),
+    childSafetyRisk: Boolean(record.childSafetyRisk),
+    sexualViolenceRisk: Boolean(record.sexualViolenceRisk),
     matchedFacts: Array.isArray(record.matchedFacts)
       ? record.matchedFacts
           .map((item) => (typeof item === 'string' ? item.trim() : ''))
@@ -2391,6 +3293,37 @@ const decorateConversationFlowTriage = (
     label: likelyCategoryLabel
   });
   const relatedIssueTypes = toRelatedIssueTypes(triage.relatedIssueTypes);
+  const effectiveSafetyOverride = {
+    safetyOverride: triage.safetyRiskLevel === 'high' || triage.safetyRiskLevel === 'immediate',
+    safetyLevel:
+      triage.safetyRiskLevel === 'immediate'
+        ? 'urgent'
+        : triage.safetyRiskLevel === 'high'
+          ? 'high'
+          : triage.safetyRiskLevel,
+    safetyReasons:
+      structuredFacts.matchedFacts.filter((fact) =>
+        /danger|threat|violence|coercive|child safety|sexual violence|blackmail/i.test(fact)
+      ) || [],
+    recommendedImmediateActions:
+      triage.safetyRiskLevel === 'immediate'
+        ? ['Call 000 now if there is immediate danger.']
+        : structuredFacts.domesticViolence
+          ? [
+              'Put safety first and choose only steps that feel safe right now.',
+              'If it feels safe, consider 1800RESPECT for confidential support.'
+            ]
+          : []
+  } as SafetyOverrideRecord;
+  const pathways = buildInternalPathways({
+    category: triage.likelyCategory,
+    facts: structuredFacts
+  });
+  const intakePlans = buildIntakePlanner({
+    pathways,
+    facts: structuredFacts,
+    safetyOverride: effectiveSafetyOverride
+  });
 
   return {
     ...triage,
@@ -2400,6 +3333,13 @@ const decorateConversationFlowTriage = (
     structuredFacts,
     relatedIssueTypes,
     presentation,
+    safetyOverride: effectiveSafetyOverride,
+    possiblePathways: pathways,
+    intakePlan: intakePlans[0] ?? null,
+    intakePlans,
+    consentGovernance: buildConsentGovernanceRecord(),
+    pathwayExplanation:
+      'This may relate to one or more support or reporting pathways. You may wish to explore the options below without sending anything automatically.',
     disclaimer: 'This is information only, not legal advice.'
   };
 };
@@ -2524,6 +3464,12 @@ type TriageSupportActionRecord = {
   websiteUrl?: string;
   actionKind: 'call' | 'external_link';
   consentNote: string;
+  issueTypes?: string[];
+  jurisdiction?: string;
+  urgency?: 'low' | 'medium' | 'high' | 'urgent';
+  contactType?: 'phone' | 'web';
+  sourceUrl?: string;
+  enabled?: boolean;
 };
 
 type TriageSupportResourceTemplate = Omit<
@@ -2691,6 +3637,17 @@ const TRIAGE_SUPPORT_RESOURCE_LIBRARY: Record<string, TriageSupportResourceTempl
     actionKind: 'external_link',
     consentNote: 'SafeSpeak does not contact the elder support line for you.'
   },
+  idcare: {
+    id: 'idcare',
+    resourceType: 'government',
+    title: 'IDCARE',
+    description: 'Identity and cyber support guidance if your documents, identity, or accounts may have been exposed.',
+    ctaLabel: 'Open IDCARE',
+    href: 'https://www.idcare.org/',
+    websiteUrl: 'https://www.idcare.org/',
+    actionKind: 'external_link',
+    consentNote: 'Opening the link does not send your SafeSpeak details to IDCARE.'
+  },
   tis_national: {
     id: 'tis_national',
     resourceType: 'government',
@@ -2724,7 +3681,13 @@ const createSupportAction = (
   phone: recommendation?.phone || template.phone,
   websiteUrl: recommendation?.websiteUrl || template.websiteUrl,
   actionKind: recommendation?.phone ? 'call' : template.actionKind,
-  consentNote: template.consentNote
+  consentNote: template.consentNote,
+  issueTypes: recommendation?.category ? [recommendation.category] : undefined,
+  jurisdiction: recommendation?.jurisdiction,
+  urgency: slot === 'immediateDanger' ? 'urgent' : slot === 'primarySupport' ? 'high' : 'medium',
+  contactType: recommendation?.phone ? 'phone' : 'web',
+  sourceUrl: recommendation?.websiteUrl || template.websiteUrl,
+  enabled: recommendation?.active ?? true
 });
 
 const recommendationMatches = (
@@ -2820,6 +3783,11 @@ export const buildSupportResourceSuggestions = (input: {
       'Suggested because the triage picked up a scam or fraud pattern.',
       (recommendation) =>
         recommendationMatches(recommendation, /scamwatch/i, ['scam_support'])
+    );
+    addSuggestion(
+      'additional',
+      'idcare',
+      'Suggested because identity documents, accounts, or personal details may have been exposed.'
     );
   }
 
@@ -3056,7 +4024,17 @@ const buildTriageForSession = async (
     selectedTopic: session.selectedTopic,
     structuredFacts
   });
-  const riskLevel = detectSafetyRiskLevel(combinedText, facts ?? {});
+  const safetyOverride = evaluateSafetyOverride(
+    extractSupportFacts({
+      message: combinedText,
+      facts: facts ?? {},
+      jurisdiction: session.jurisdiction ?? undefined
+    })
+  );
+  const riskLevel = toConversationSafetyRiskLevel(
+    safetyOverride,
+    detectSafetyRiskLevel(combinedText, facts ?? {})
+  );
   const missingInformation = facts?.missingInformation ?? [
     'what_details',
     'when_details',
@@ -3214,6 +4192,9 @@ export const appendConversationFlowMessage = async (
     facts: existingFacts ?? undefined,
     jurisdiction: session.jurisdiction ?? undefined
   });
+  const assistantLanguage = detectAssistantLanguage(input.content, input.language);
+  session.detectedLanguage = assistantLanguage;
+  const safetyOverride = evaluateSafetyOverride(supportFacts);
   const detectedCategory = detectCategory({
     text: `${input.content}\n${JSON.stringify(existingTimeline)}`,
     selectedTopic: session.selectedTopic
@@ -3228,13 +4209,17 @@ export const appendConversationFlowMessage = async (
   let assistantPayload: Record<string, unknown>;
 
   if (triageHandoffIntent) {
-    assistantPayload = buildTriageHandoffAssistantPayload();
+    assistantPayload = {
+      ...buildTriageHandoffAssistantPayload(),
+      assistantMessage: localizeExactString(assistantLanguage, TRIAGE_HANDOFF_MESSAGE)
+    };
   } else if (responseMode !== 'legal_lookup') {
     assistantPayload = buildSupportReply({
       facts: supportFacts,
       responseMode,
       sessionContext: {
-        selectedTopic: session.selectedTopic
+        selectedTopic: session.selectedTopic,
+        language: assistantLanguage
       }
     });
   } else {
@@ -3250,7 +4235,7 @@ export const appendConversationFlowMessage = async (
           topK: 4,
           conversation: conversationForAssistant,
           timeline: existingTimeline,
-          language: input.language,
+          language: assistantLanguage,
           incidentCategory: categoryToRagIncidentCategory(detectedCategory),
           jurisdiction: session.jurisdiction as
             | 'Cth'
@@ -3268,15 +4253,38 @@ export const appendConversationFlowMessage = async (
             | undefined
         }
       );
+      assistantPayload = localizeKnownLegalLookupAnswer({
+        language: assistantLanguage,
+        message: input.content,
+        assistantPayload
+      });
     } catch {
       assistantPayload = buildFallbackAssistantResponse(
         input.content,
         existingTimeline,
         session.selectedTopic,
-        session.jurisdiction ?? undefined
+        session.jurisdiction ?? undefined,
+        assistantLanguage
       );
     }
   }
+
+  assistantPayload = {
+    ...assistantPayload,
+    assistantLanguage,
+    safetyOverride: safetyOverride.safetyOverride || Boolean(assistantPayload.safetyOverride),
+    safetyLevel:
+      assistantPayload.safetyLevel ??
+      safetyOverride.safetyLevel,
+    safetyReasons:
+      assistantPayload.safetyReasons ?? safetyOverride.safetyReasons,
+    recommendedImmediateActions:
+      assistantPayload.recommendedImmediateActions ?? safetyOverride.recommendedImmediateActions,
+    showSources:
+      responseMode === 'legal_lookup'
+        ? assistantPayload.showSources
+        : false
+  };
 
   const assistantMessageContent = [
     typeof assistantPayload.assistantMessage === 'string'
@@ -3380,6 +4388,9 @@ export const getConversationFlowSupport = async (
 ) => {
   const session = await getOwnedConversationSession(context, conversationSessionId);
   const triage = await buildTriageForSession(session, { finalizeSession: true });
+  const facts = await ConversationFlowFactsModel.findOne({
+    conversationSessionId: session._id
+  }).lean();
   const relatedIssueTypes = toRelatedIssueTypes(triage.relatedIssueTypes);
   const supportIssueTypes = toSupportIssueTypes(relatedIssueTypes, triage.likelyCategory);
   const structuredFacts = toStructuredFactsRecord(triage.structuredFacts);
@@ -3415,6 +4426,32 @@ export const getConversationFlowSupport = async (
     jurisdiction: session.jurisdiction,
     recommendations
   });
+  const possiblePathways = buildInternalPathways({
+    category: triage.likelyCategory,
+    facts: structuredFacts
+  });
+  const supportSafetyOverride: SafetyOverrideRecord = {
+    safetyOverride: triage.safetyRiskLevel === 'high' || triage.safetyRiskLevel === 'immediate',
+    safetyLevel:
+      triage.safetyRiskLevel === 'immediate'
+        ? 'urgent'
+        : triage.safetyRiskLevel === 'high'
+          ? 'high'
+          : triage.safetyRiskLevel,
+    safetyReasons: structuredFacts.matchedFacts.filter((fact) =>
+      /danger|threat|violence|coercive|child safety|sexual violence|blackmail/i.test(fact)
+    ),
+    recommendedImmediateActions:
+      triage.safetyRiskLevel === 'immediate'
+        ? ['Call 000 now if there is immediate danger.']
+        : []
+  };
+  const intakePlans = buildIntakePlanner({
+    pathways: possiblePathways,
+    facts: structuredFacts,
+    safetyOverride: supportSafetyOverride
+  });
+  const decoratedTriage = decorateConversationFlowTriage(triage);
   const suggestedMicroCardIds = await getSuggestedMicroCardIds({
     likelyCategory: triage.likelyCategory,
     safetyRiskLevel: triage.safetyRiskLevel,
@@ -3433,13 +4470,23 @@ export const getConversationFlowSupport = async (
 
   return {
     session: toSessionRecord(session),
-    triage: decorateConversationFlowTriage(triage),
+    triage: decoratedTriage,
     support: {
       suggestedMicroCardIds,
       recommendedActions: supportSuggestions.filter((item) => item.slot !== 'additional').slice(0, 3),
       additionalResources: supportSuggestions.filter((item) => item.slot === 'additional').slice(0, 6),
       matchedSupportServices: recommendations,
-      fallbackUsed
+      fallbackUsed,
+      possiblePathways,
+      intakePlan: intakePlans[0] ?? null,
+      intakePlans,
+      consentGovernance: buildConsentGovernanceRecord(),
+      reportPreparation: buildStructuredReportPreparation({
+        facts: facts ?? {},
+        structuredFacts,
+        intakePlans,
+        triageCategory: triage.likelyCategory
+      })
     }
   };
 };

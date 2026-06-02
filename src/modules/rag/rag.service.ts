@@ -21,6 +21,7 @@ import {
   enforceAiOutputGuardrails,
   shouldRequireHumanReview
 } from '@modules/ai/ai-guardrails';
+import { resolveAssistantLanguage } from '@modules/ai/assistant-language';
 import {
   answerWithContext,
   createEmbedding,
@@ -4364,13 +4365,17 @@ export const runTimelineAssistant = async (
   input: RagTimelineAssistantInput
 ): Promise<Record<string, unknown>> => {
   await assertAiConsent(context.owner);
+  const resolvedLanguage = resolveAssistantLanguage({
+    message: input.message,
+    requestedLanguage: input.language
+  });
 
   if (looksLikeSourceBackedQuestion(input.message)) {
     const groundedAnswer = await answerRag(context, {
       query: input.message,
       question: input.message,
       topK: input.topK,
-      language: input.language,
+      language: resolvedLanguage,
       jurisdiction: input.jurisdiction
     });
 
@@ -4423,7 +4428,7 @@ export const runTimelineAssistant = async (
     message: input.message,
     conversation: input.conversation,
     timeline: input.timeline,
-    language: input.language,
+    language: resolvedLanguage,
     incidentCategory: input.incidentCategory,
     contextText,
     citations,

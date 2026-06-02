@@ -10,7 +10,8 @@ import type {
   ConversationFlowCategory,
   ConversationFlowMessageRole,
   ConversationFlowRiskLevel,
-  ConversationFlowStatus
+  ConversationFlowStatus,
+  SupportedConversationLanguage
 } from './conversation-flow.types';
 
 const ownerFields = {
@@ -34,6 +35,7 @@ export interface ConversationFlowSessionDocument {
   sessionId?: Types.ObjectId;
   selectedTopic?: string;
   detectedCategory?: ConversationFlowCategory;
+  detectedLanguage?: SupportedConversationLanguage;
   status: ConversationFlowStatus;
   safetyRiskLevel: ConversationFlowRiskLevel;
   jurisdiction?: string;
@@ -105,6 +107,12 @@ const conversationFlowSessionSchema = new Schema<ConversationFlowSessionDocument
       type: String,
       enum: CONVERSATION_FLOW_CATEGORIES,
       required: false,
+      index: true
+    },
+    detectedLanguage: {
+      type: String,
+      required: false,
+      trim: true,
       index: true
     },
     status: {
