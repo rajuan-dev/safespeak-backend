@@ -9,6 +9,7 @@ import {
   classifySafeSpeakIntentDetails
 } from '@modules/ai/intent-classifier';
 import {
+  buildSafeSpeakFallbackResponse,
   generateSafeSpeakModelResponse,
   normalizeAssistantContent
 } from '@modules/ai/model-response.service';
@@ -440,7 +441,7 @@ type ConversationFlowTriagePresentationRecord = {
 
 const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
 
-const TRIAGE_HANDOFF_MESSAGE = 'Of course — I can take you to your triage summary now.';
+const TRIAGE_HANDOFF_LABEL = 'Continue to Triage';
 const DEFAULT_CONSENT_GOVERNANCE_MESSAGES = [
   'Nothing is shared automatically.',
   'You choose what to do next.',
@@ -639,7 +640,7 @@ export const detectEvidenceUploadIntent = (message: string): boolean => {
 };
 
 const buildTriageHandoffAssistantPayload = () => ({
-  assistantMessage: TRIAGE_HANDOFF_MESSAGE,
+  assistantMessage: TRIAGE_HANDOFF_LABEL,
   nextQuestion: '',
   readyForSubmission: false,
   confidence: 'medium' as const,
@@ -753,177 +754,6 @@ export const classifyResponseMode = (input: {
   }
 
   return 'support_victim_style';
-};
-
-const localizedJoiners: Record<string, { intro: string; andWord: string }> = {
-  en: { intro: 'A few practical steps that may help are:', andWord: 'and' },
-  ar: { intro: 'قد تساعدك هذه الخطوات العملية:', andWord: 'و' },
-  hi: { intro: 'ये व्यावहारिक कदम मदद कर सकते हैं:', andWord: 'और' },
-  bn: { intro: 'এই ব্যবহারিক পদক্ষেপগুলো সাহায্য করতে পারে:', andWord: 'এবং' },
-  zh: { intro: '这些实际步骤可能会有帮助：', andWord: '和' },
-  es: { intro: 'Algunos pasos prácticos que pueden ayudar son:', andWord: 'y' }
-};
-
-const localizeExactString = (language: string, text: string): string => {
-  const translations: Record<string, Record<string, string>> = {
-    ar: {
-      'I am really sorry you are dealing with this.': 'أنا آسف جدًا لأنك تمر بهذا.',
-      'I am sorry this is happening to you.': 'أنا آسف لأن هذا يحدث لك.',
-      'I am sorry you were treated that way.': 'أنا آسف لأنك عوملت بهذه الطريقة.',
-      'I am sorry this happened to you.': 'أنا آسف لأن هذا حدث لك.',
-      'I am sorry your health information was shared like that.':
-        'أنا آسف لأن معلوماتك الصحية تمت مشاركتها بهذه الطريقة.',
-      'Thank you for telling me about this.': 'شكرًا لإخبارك لي بهذا.',
-      'Your safety matters most right now, and it makes sense to focus on immediate support first.':
-        'سلامتك هي الأهم الآن، ومن الطبيعي أن نركز أولًا على الدعم الفوري.',
-      'What you described can be very serious, and your safety comes first.':
-        'ما وصفته قد يكون خطيرًا جدًا، وسلامتك تأتي أولًا.',
-      'No one should be spoken to or treated like that.':
-        'لا ينبغي أن يتم التحدث إلى أي شخص أو معاملته بهذه الطريقة.',
-      'Scams and identity risks can feel overwhelming, but there are practical steps we can take from here.':
-        'قد تبدو عمليات الاحتيال ومخاطر الهوية مرهقة، لكن هناك خطوات عملية يمكن اتخاذها من هنا.',
-      'It is understandable to feel unsettled when private information may have been exposed.':
-        'من الطبيعي أن تشعر بالانزعاج عندما تكون المعلومات الخاصة قد كُشفت.',
-      'Health information is sensitive, so it is understandable to be upset by that.':
-        'المعلومات الصحية حساسة، لذلك من المفهوم أن يكون هذا مزعجًا.',
-      'What you described sounds really distressing, and you do not have to sort it all out at once.':
-        'ما وصفته يبدو مؤلمًا جدًا، ولا يلزمك التعامل مع كل شيء دفعة واحدة.',
-      'You do not need to explain everything at once, and we can take it one step at a time.':
-        'لا تحتاج إلى شرح كل شيء دفعة واحدة، ويمكننا التعامل مع الأمر خطوة بخطوة.',
-      'We can focus on the scam, account, and identity-protection steps first.':
-        'يمكننا التركيز أولًا على خطوات الاحتيال والحساب وحماية الهوية.',
-      'Are you safe right now?': 'هل أنت بأمان الآن؟',
-      'Are they demanding money, contact, images, or something else?':
-        'هل يطالبونك بالمال أو التواصل أو الصور أو بشيء آخر؟',
-      'Did they take money, or do they only have your details so far?':
-        'هل أخذوا مالًا، أم لديهم بياناتك فقط حتى الآن؟',
-      'What kind of details were leaked?': 'ما نوع التفاصيل التي تم تسريبها؟',
-      'Who was it shared with?': 'مع من تمت مشاركتها؟',
-      'Did this happen in person, online, at work, school, or somewhere else?':
-        'هل حدث هذا شخصيًا أم عبر الإنترنت أم في العمل أم في المدرسة أم في مكان آخر؟',
-      'What feels most important for me to understand next?':
-        'ما الذي يبدو لك الأكثر أهمية أن أفهمه بعد ذلك؟',
-      'Can you tell me a bit more about what happened and what feels most urgent right now?':
-        'هل يمكنك أن تخبرني أكثر قليلًا عما حدث وما يبدو الأكثر إلحاحًا الآن؟',
-      'If you are in immediate danger, call 000 now or get urgent help from someone nearby':
-        'إذا كنت في خطر فوري، فاتصل بـ 000 الآن أو اطلب مساعدة عاجلة من شخص قريب.',
-      'Put safety first and avoid gathering evidence if that could increase the risk to you':
-        'اجعل السلامة أولًا وتجنب جمع الأدلة إذا كان ذلك قد يزيد الخطر عليك.',
-      'If it feels safe, contact 1800RESPECT or a local domestic violence service for confidential support':
-        'إذا كان ذلك آمنًا، يمكنك التواصل مع 1800RESPECT أو خدمة محلية للعنف الأسري للحصول على دعم سري.',
-      'If it feels safe, save screenshots, links, usernames, and dates before anything is deleted':
-        'إذا كان ذلك آمنًا، احتفظ بلقطات الشاشة والروابط وأسماء المستخدمين والتواريخ قبل حذف أي شيء.',
-      'Avoid replying or negotiating if engaging with them could make things less safe':
-        'تجنب الرد أو التفاوض إذا كان التواصل معهم قد يجعلك أقل أمانًا.',
-      'Report the account, post, or content to the platform if you want the material reviewed or removed':
-        'أبلغ المنصة عن الحساب أو المنشور أو المحتوى إذا أردت مراجعته أو إزالته.',
-      'Contact your bank or card provider as soon as you can to secure the account and watch for suspicious activity':
-        'تواصل مع البنك أو مزود البطاقة بأسرع ما يمكن لتأمين الحساب ومراقبة أي نشاط مشبوه.',
-      'Change important passwords and turn on two-factor authentication where possible':
-        'غيّر كلمات المرور المهمة وفعّل التحقق بخطوتين حيثما أمكن.',
-      TRIAGE_HANDOFF_MESSAGE: 'بالطبع — يمكنني نقلك الآن إلى ملخص الفرز الخاص بك.'
-    },
-    hi: {
-      'I am really sorry you are dealing with this.': 'मुझे अफ़सोस है कि आप यह झेल रहे हैं।',
-      'I am sorry this is happening to you.': 'मुझे अफ़सोस है कि यह आपके साथ हो रहा है।',
-      'I am sorry you were treated that way.': 'मुझे अफ़सोस है कि आपके साथ ऐसा व्यवहार किया गया।',
-      'I am sorry this happened to you.': 'मुझे अफ़सोस है कि यह आपके साथ हुआ।',
-      'I am sorry your health information was shared like that.':
-        'मुझे अफ़सोस है कि आपकी स्वास्थ्य जानकारी इस तरह साझा की गई।',
-      'Thank you for telling me about this.': 'यह बताने के लिए धन्यवाद।',
-      'Your safety matters most right now, and it makes sense to focus on immediate support first.':
-        'इस समय आपकी सुरक्षा सबसे महत्वपूर्ण है, इसलिए पहले तुरंत सहायता पर ध्यान देना ठीक है।',
-      'What you described can be very serious, and your safety comes first.':
-        'जो आपने बताया वह बहुत गंभीर हो सकता है, और आपकी सुरक्षा पहले आती है।',
-      'No one should be spoken to or treated like that.':
-        'किसी के साथ भी ऐसा व्यवहार नहीं होना चाहिए।',
-      'Scams and identity risks can feel overwhelming, but there are practical steps we can take from here.':
-        'धोखाधड़ी और पहचान से जुड़े जोखिम बहुत भारी लग सकते हैं, लेकिन यहाँ से कुछ व्यावहारिक कदम उठाए जा सकते हैं।',
-      'It is understandable to feel unsettled when private information may have been exposed.':
-        'जब निजी जानकारी उजागर हो सकती है, तो परेशान महसूस करना स्वाभाविक है।',
-      'Health information is sensitive, so it is understandable to be upset by that.':
-        'स्वास्थ्य जानकारी संवेदनशील होती है, इसलिए इससे परेशान होना स्वाभाविक है।',
-      'What you described sounds really distressing, and you do not have to sort it all out at once.':
-        'जो आपने बताया वह बहुत परेशान करने वाला लगता है, और आपको सब कुछ एक साथ संभालने की ज़रूरत नहीं है।',
-      'You do not need to explain everything at once, and we can take it one step at a time.':
-        'आपको सब कुछ एक साथ समझाने की ज़रूरत नहीं है, हम एक-एक कदम चल सकते हैं।',
-      'We can focus on the scam, account, and identity-protection steps first.':
-        'हम पहले धोखाधड़ी, खाते और पहचान-सुरक्षा के कदमों पर ध्यान दे सकते हैं।',
-      'Are you safe right now?': 'क्या आप अभी सुरक्षित हैं?',
-      'Are they demanding money, contact, images, or something else?':
-        'क्या वे पैसे, संपर्क, तस्वीरें या कुछ और माँग रहे हैं?',
-      'Did they take money, or do they only have your details so far?':
-        'क्या उन्होंने पैसे ले लिए, या अभी तक केवल आपकी जानकारी उनके पास है?',
-      'What kind of details were leaked?': 'किस तरह की जानकारी लीक हुई थी?',
-      'Who was it shared with?': 'यह किसके साथ साझा की गई थी?',
-      'Did this happen in person, online, at work, school, or somewhere else?':
-        'क्या यह आमने-सामने हुआ, ऑनलाइन हुआ, काम पर, स्कूल में, या कहीं और?',
-      'What feels most important for me to understand next?':
-        'आपके अनुसार मुझे अगला सबसे महत्वपूर्ण क्या समझना चाहिए?',
-      'Can you tell me a bit more about what happened and what feels most urgent right now?':
-        'क्या आप थोड़ा और बता सकते हैं कि क्या हुआ और अभी सबसे ज़्यादा ज़रूरी क्या लगता है?',
-      'If you are in immediate danger, call 000 now or get urgent help from someone nearby':
-        'यदि आप तत्काल खतरे में हैं, तो अभी 000 पर कॉल करें या पास के किसी व्यक्ति से तुरंत मदद लें।',
-      'Put safety first and avoid gathering evidence if that could increase the risk to you':
-        'सुरक्षा को पहले रखें और अगर सबूत जुटाने से खतरा बढ़ सकता है तो ऐसा न करें।',
-      'If it feels safe, contact 1800RESPECT or a local domestic violence service for confidential support':
-        'यदि सुरक्षित लगे, तो गोपनीय सहायता के लिए 1800RESPECT या स्थानीय घरेलू हिंसा सेवा से संपर्क करें।',
-      'If it feels safe, save screenshots, links, usernames, and dates before anything is deleted':
-        'यदि सुरक्षित लगे, तो कुछ हटाए जाने से पहले स्क्रीनशॉट, लिंक, यूज़रनेम और तारीखें सुरक्षित कर लें।',
-      'Avoid replying or negotiating if engaging with them could make things less safe':
-        'यदि जवाब देने या बातचीत करने से जोखिम बढ़ सकता है, तो ऐसा न करें।',
-      'Report the account, post, or content to the platform if you want the material reviewed or removed':
-        'यदि आप सामग्री की समीक्षा या हटाना चाहते हैं, तो प्लेटफ़ॉर्म पर अकाउंट, पोस्ट या सामग्री की रिपोर्ट करें।',
-      'Contact your bank or card provider as soon as you can to secure the account and watch for suspicious activity':
-        'अपने खाते को सुरक्षित करने और संदिग्ध गतिविधि देखने के लिए जल्द से जल्द बैंक या कार्ड प्रदाता से संपर्क करें।',
-      'Change important passwords and turn on two-factor authentication where possible':
-        'महत्वपूर्ण पासवर्ड बदलें और जहाँ संभव हो दो-स्तरीय प्रमाणीकरण चालू करें।',
-      TRIAGE_HANDOFF_MESSAGE: 'ज़रूर — मैं अभी आपको आपके ट्रायेज सारांश पर ले जा सकता हूँ।'
-    },
-    bn: {
-      'I am sorry this happened to you.': 'এটা আপনার সঙ্গে ঘটেছে জেনে আমি দুঃখিত।',
-      'Scams and identity risks can feel overwhelming, but there are practical steps we can take from here.':
-        'প্রতারণা ও পরিচয়-ঝুঁকি খুবই চাপের মনে হতে পারে, কিন্তু এখান থেকে কিছু বাস্তব পদক্ষেপ নেওয়া যায়।',
-      'Did they take money, or do they only have your details so far?':
-        'তারা কি টাকা নিয়েছে, নাকি এখন পর্যন্ত শুধু আপনার তথ্যই পেয়েছে?',
-      'Contact your bank or card provider as soon as you can to secure the account and watch for suspicious activity':
-        'আপনার অ্যাকাউন্ট সুরক্ষিত করতে এবং সন্দেহজনক কার্যকলাপ নজরে রাখতে যত দ্রুত সম্ভব ব্যাংক বা কার্ড প্রদানকারীর সঙ্গে যোগাযোগ করুন।',
-      'Change important passwords and turn on two-factor authentication where possible':
-        'গুরুত্বপূর্ণ পাসওয়ার্ড বদলান এবং যেখানে সম্ভব দুই-ধাপ যাচাই চালু করুন।',
-      TRIAGE_HANDOFF_MESSAGE: 'অবশ্যই — আমি এখন আপনাকে আপনার ট্রায়াজ সারাংশে নিয়ে যেতে পারি।'
-    },
-    zh: {
-      'I am sorry this happened to you.': '很抱歉这件事发生在你身上。',
-      'It is understandable to feel unsettled when private information may have been exposed.':
-        '当私人信息可能已经泄露时，感到不安是可以理解的。',
-      'Are they demanding money, contact, images, or something else?':
-        '对方是在要求金钱、联系、图片，还是别的东西？',
-      TRIAGE_HANDOFF_MESSAGE: '当然可以——我现在可以带你查看你的分流摘要。'
-    },
-    es: {
-      'I am sorry this happened to you.': 'Siento que esto te haya pasado.',
-      'What you described sounds really distressing, and you do not have to sort it all out at once.':
-        'Lo que describes suena muy angustiante, y no tienes que resolverlo todo de una vez.',
-      'Are they demanding money, contact, images, or something else?':
-        '¿Te están exigiendo dinero, contacto, imágenes o algo más?',
-      TRIAGE_HANDOFF_MESSAGE: 'Claro — ahora puedo llevarte a tu resumen de triaje.'
-    }
-  };
-
-  return translations[language]?.[text] ?? text;
-};
-
-const localizeStep = (language: string, step: string): string =>
-  localizeExactString(language, step);
-
-const localizeSupportReplyMessage = (language: string, message: string): string => {
-  if (language === 'en') {
-    return message;
-  }
-
-  const intro = localizedJoiners[language]?.intro ?? localizedJoiners.en.intro;
-
-  return message.replace('A few practical steps that may help are:', intro);
 };
 
 export const localizeKnownLegalLookupAnswer = (input: {
@@ -1085,6 +915,7 @@ export const buildConversationAssistantResponseMeta = (input: {
       typeof input.assistantPayload.assistantFormatPreference === 'string'
         ? input.assistantPayload.assistantFormatPreference
         : 'paragraphs',
+    formatPreferenceUpdated: Boolean(input.assistantPayload.formatPreferenceUpdated),
     encodingWarning: Boolean(input.assistantPayload.encodingWarning),
     selectedResponseSource:
       typeof input.assistantPayload.selectedResponseSource === 'string'
@@ -1367,172 +1198,6 @@ export const buildSafetySteps = (facts: SupportResponseFacts): string[] => {
   return steps.slice(0, 3);
 };
 
-export const buildFollowUpQuestion = (facts: SupportResponseFacts): string => {
-  if (
-    facts.immediate_danger ||
-    facts.originalFacts.selfHarmOrSuicidal ||
-    facts.child_safety_risk ||
-    facts.sexual_violence_risk ||
-    (facts.domestic_family_context && facts.coercive_control)
-  ) {
-    return 'Are you safe right now?';
-  }
-
-  if (facts.threat_present || facts.blackmail_or_extortion) {
-    return 'Are they demanding money, contact, images, or something else?';
-  }
-
-  if (facts.scam_or_fraud || facts.bank_details_exposed) {
-    return 'Did they take money, or do they only have your details so far?';
-  }
-
-  if (facts.personal_data_leak || facts.company_or_organisation_involved) {
-    return 'What kind of details were leaked?';
-  }
-
-  if (facts.employer_involved && facts.health_information) {
-    return 'Who was it shared with?';
-  }
-
-  if (facts.racism_or_hate) {
-    return 'Did this happen in person, online, at work, school, or somewhere else?';
-  }
-
-  return 'What feels most important for me to understand next?';
-};
-
-const buildEmpathySentence = (
-  responseMode: ConversationAssistantResponseMode,
-  facts: SupportResponseFacts
-): string => {
-  if (responseMode === 'emergency_safety') {
-    return 'I am really sorry you are dealing with this.';
-  }
-
-  if (facts.domestic_family_context || facts.coercive_control) {
-    return 'I am sorry this is happening to you.';
-  }
-
-  if (facts.racism_or_hate) {
-    return 'I am sorry you were treated that way.';
-  }
-
-  if (facts.scam_or_fraud || facts.bank_details_exposed || facts.identity_documents_exposed) {
-    return 'I am sorry this happened to you.';
-  }
-
-  if (facts.employer_involved && facts.health_information) {
-    return 'I am sorry your health information was shared like that.';
-  }
-
-  if (facts.image_based_abuse || facts.private_photos_or_messages) {
-    return 'I am sorry this happened to you.';
-  }
-
-  return 'Thank you for telling me about this.';
-};
-
-const buildValidationSentence = (
-  responseMode: ConversationAssistantResponseMode,
-  facts: SupportResponseFacts
-): string => {
-  if (responseMode === 'emergency_safety') {
-    return 'Your safety matters most right now, and it makes sense to focus on immediate support first.';
-  }
-
-  if (facts.domestic_family_context || facts.coercive_control) {
-    return 'What you described can be very serious, and your safety comes first.';
-  }
-
-  if (facts.racism_or_hate) {
-    return 'No one should be spoken to or treated like that.';
-  }
-
-  if (facts.scam_or_fraud || facts.bank_details_exposed || facts.identity_documents_exposed) {
-    return 'Scams and identity risks can feel overwhelming, but there are practical steps we can take from here.';
-  }
-
-  if (facts.personal_data_leak || facts.company_or_organisation_involved) {
-    return 'It is understandable to feel unsettled when private information may have been exposed.';
-  }
-
-  if (facts.employer_involved && facts.health_information) {
-    return 'Health information is sensitive, so it is understandable to be upset by that.';
-  }
-
-  if (facts.image_based_abuse || facts.private_photos_or_messages || facts.threat_present) {
-    return 'What you described sounds really distressing, and you do not have to sort it all out at once.';
-  }
-
-  return 'You do not need to explain everything at once, and we can take it one step at a time.';
-};
-
-export const buildSupportReply = (input: {
-  facts: SupportResponseFacts;
-  responseMode: ConversationAssistantResponseMode;
-  sessionContext?: {
-    selectedTopic?: string;
-    language?: string;
-  };
-}) => {
-  const language = getSupportedAssistantLanguage(input.sessionContext?.language);
-  const safetyOverride = evaluateSafetyOverride(input.facts);
-  const steps = buildSafetySteps(input.facts);
-  const empathySentence = buildEmpathySentence(input.responseMode, input.facts);
-  const validationSentence = buildValidationSentence(input.responseMode, input.facts);
-  const nextQuestion =
-    input.responseMode === 'clarification_needed'
-      ? 'Can you tell me a bit more about what happened and what feels most urgent right now?'
-      : buildFollowUpQuestion(input.facts);
-  const practicalSentence =
-    steps.length > 0
-      ? `A few practical steps that may help are: ${steps
-          .map((step, index) => `${index + 1}. ${localizeStep(language, step)}`)
-          .join(' ')}.`
-      : '';
-  const topicSentence =
-    input.responseMode === 'scamshield_style' || input.sessionContext?.selectedTopic === 'scamshield'
-      ? 'We can focus on the scam, account, and identity-protection steps first.'
-      : '';
-  const safetySentence =
-    safetyOverride.safetyOverride
-      ? safetyOverride.recommendedImmediateActions.slice(0, 2).join('. ') + '.'
-      : '';
-  const localizedMessage = localizeSupportReplyMessage(
-    language,
-    [
-      localizeExactString(language, empathySentence),
-      localizeExactString(language, validationSentence),
-      localizeExactString(language, topicSentence),
-      localizeExactString(language, safetySentence),
-      practicalSentence
-    ]
-      .filter(Boolean)
-      .join(' ')
-  );
-
-  return {
-    assistantMessage: localizedMessage,
-    nextQuestion: localizeExactString(language, nextQuestion),
-    readyForSubmission: false,
-    confidence: input.responseMode === 'clarification_needed' ? 'low' : 'medium',
-    disclaimer: 'This is information only, not legal advice.',
-    citations: [],
-    showSources: shouldShowSources(input.responseMode, '', []),
-    sourceDisplayReason: 'hidden_support_reply',
-    safetyOverride: safetyOverride.safetyOverride,
-    safetyLevel: safetyOverride.safetyLevel,
-    safetyReasons: safetyOverride.safetyReasons,
-    recommendedImmediateActions: safetyOverride.recommendedImmediateActions,
-    rag: {
-      used: false,
-      unavailable: false,
-      resultCount: 0
-    },
-    reviewStatus: input.responseMode
-  };
-};
-
 export const buildAssistantMessageMetadata = (assistantPayload: Record<string, unknown>) => {
   const metadata: Record<string, unknown> = {
     confidence: assistantPayload.confidence,
@@ -1621,6 +1286,10 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
 
   if (typeof assistantPayload.assistantFormatPreference === 'string') {
     metadata.assistantFormatPreference = assistantPayload.assistantFormatPreference;
+  }
+
+  if (typeof assistantPayload.formatPreferenceUpdated === 'boolean') {
+    metadata.formatPreferenceUpdated = assistantPayload.formatPreferenceUpdated;
   }
 
   if (typeof assistantPayload.encodingWarning === 'boolean') {
@@ -1715,9 +1384,9 @@ const logAssistantTurn = (input: {
       sessionId: input.conversationSessionId,
       turnNumber: input.assistantTurnNumber ?? input.userTurnNumber,
       userMessageId: input.userMessageId,
-      latestUserMessageContent: input.latestUserMessageContent,
+      latestUserMessageContent: escapeUnicodeForLog(input.latestUserMessageContent),
       latestUserMessageUnicodeEscaped: escapeUnicodeForLog(input.latestUserMessageContent),
-      latestUserMessageFirst120: input.latestUserMessageContent.slice(0, 120),
+      latestUserMessageFirst120: escapeUnicodeForLog(input.latestUserMessageContent.slice(0, 120)),
       detectedIntent: input.detectedIntent,
       intentConfidence: input.intentConfidence,
       aiResponseMode: input.aiResponseMode,
@@ -1736,7 +1405,7 @@ const logAssistantTurn = (input: {
       selectedResponseSource: input.selectedResponseSource,
       assistantMessageId: input.assistantMessageId,
       assistantResponseUnicodeEscaped: escapeUnicodeForLog(input.assistantMessageContent),
-      assistantResponseFirst120: input.assistantMessageContent.slice(0, 120)
+      assistantResponseFirst120: escapeUnicodeForLog(input.assistantMessageContent.slice(0, 120))
     },
     'Conversation assistant turn'
   );
@@ -2870,85 +2539,6 @@ const buildFactsFromTimeline = (
   };
 };
 
-export const buildFallbackAssistantResponse = (
-  message: string,
-  timeline: Record<string, string>,
-  selectedTopic?: string,
-  jurisdiction?: string,
-  language?: string
-) => {
-  const supportFacts = extractSupportFacts({
-    message,
-    sessionHistory: timeline,
-    jurisdiction
-  });
-  const responseMode = classifyResponseMode({
-    message,
-    sessionFacts: supportFacts.originalFacts,
-    selectedTopic
-  });
-
-  if (responseMode === 'legal_lookup') {
-    return {
-      assistantMessage:
-        'I could not reliably retrieve the legal source just now, but I can still help you think through the issue in plain language.',
-      nextQuestion: 'Would you like to try the legal question again, or would you prefer practical support steps first?',
-      readyForSubmission: false,
-      confidence: 'low' as const,
-      disclaimer: 'This is information only, not legal advice.',
-      citations: [],
-      showSources: false,
-      sourceDisplayReason: 'not_directly_grounded',
-      rag: {
-        used: false,
-        unavailable: true,
-        resultCount: 0
-      },
-      reviewStatus: 'fallback_local',
-      selectedResponseSource: 'legal_lookup_fallback'
-    };
-  }
-
-  if (responseMode === 'meta_feedback') {
-    return {
-      assistantMessage:
-        'That reply did not match your question well enough. Ask again and I will answer it more directly.',
-      nextQuestion: '',
-      readyForSubmission: false,
-      confidence: 'medium' as const,
-      disclaimer: 'This is information only, not legal advice.',
-      citations: [],
-      showSources: false,
-      sourceDisplayReason: 'hidden_support_reply',
-      rag: {
-        used: false,
-        unavailable: false,
-        resultCount: 0
-      },
-      reviewStatus: 'meta_feedback_or_capability_question',
-      intent: 'meta_feedback_or_capability_question',
-      responseMode: 'meta_feedback',
-      usedModelGeneration: false,
-      guardrailStatus: 'fallback',
-      fallbackReason: 'model_generation_unavailable',
-      staticTemplateUsed: false,
-      selectedResponseSource: 'dynamic_fallback'
-    };
-  }
-
-  return {
-    ...buildSupportReply({
-      facts: supportFacts,
-      responseMode,
-      sessionContext: {
-        selectedTopic,
-        language
-      }
-    }),
-    selectedResponseSource: 'support_reply_builder'
-  };
-};
-
 export const detectCategory = (input: {
   text: string;
   selectedTopic?: string;
@@ -3200,33 +2790,70 @@ const maxConversationRiskLevel = (
 
 const hasNonEmptyValue = (value?: string): boolean => Boolean(value?.trim());
 
-const resolveAssistantFormatPreference = (
+export const resolveAssistantFormatPreferenceUpdate = (
   message: string,
   currentPreference?: 'paragraphs' | 'bullets' | 'mix'
-): 'paragraphs' | 'bullets' | 'mix' => {
+): {
+  assistantFormatPreference: 'paragraphs' | 'bullets' | 'mix';
+  formatPreferenceUpdated: boolean;
+  subIntent?: 'format_preference_question' | 'format_preference_set';
+} => {
   const normalized = message.toLowerCase();
+  const current = currentPreference ?? 'paragraphs';
 
   if (
-    /\b(paragraph|paragraphs|natural reply|natural paragraph|no bullet|without bullet|not bullets)\b/.test(
+    /\b(are you (answering|using)|why are you using|do you always answer with|every time)\b/.test(
+      normalized
+    ) &&
+    /\b(bullet point|bullet points|bullets)\b/.test(normalized)
+  ) {
+    return {
+      assistantFormatPreference: current,
+      formatPreferenceUpdated: false,
+      subIntent: 'format_preference_question'
+    };
+  }
+
+  if (
+    /\b(please answer in paragraphs|answer in paragraphs|please use paragraphs|use paragraphs|not bullet points|don't use bullets|do not use bullets|stop using bullet points|without bullet points|not bullets)\b/.test(
+      normalized
+    ) ||
+    (/\b(paragraph|paragraphs)\b/.test(normalized) &&
+      /\b(not|don't|do not|stop|without)\b.*\b(bullet point|bullet points|bullets)\b/.test(
+        normalized
+      ))
+  ) {
+    return {
+      assistantFormatPreference: 'paragraphs',
+      formatPreferenceUpdated: current !== 'paragraphs',
+      subIntent: 'format_preference_set'
+    };
+  }
+
+  if (
+    /\b(please use bullet points|use bullet points|answer in bullet points|give me bullet points|please use bullets)\b/.test(
       normalized
     )
   ) {
-    return 'paragraphs';
-  }
-
-  if (/\b(bullet point|bullet points|bullets|list format|use a list)\b/.test(normalized)) {
-    return 'bullets';
+    return {
+      assistantFormatPreference: 'bullets',
+      formatPreferenceUpdated: current !== 'bullets',
+      subIntent: 'format_preference_set'
+    };
   }
 
   if (/\b(mix|mixed format|some bullets|both paragraphs and bullets)\b/.test(normalized)) {
-    return 'mix';
+    return {
+      assistantFormatPreference: 'mix',
+      formatPreferenceUpdated: current !== 'mix',
+      subIntent: 'format_preference_set'
+    };
   }
 
-  if (/are you answering with bullet points every time/.test(normalized)) {
-    return 'paragraphs';
-  }
-
-  return currentPreference ?? 'paragraphs';
+  return {
+    assistantFormatPreference: current,
+    formatPreferenceUpdated: false
+  };
 };
 
 const hasActiveIncidentContext = (input: {
@@ -4801,10 +4428,11 @@ export const appendConversationFlowMessage = async (
 
   session.messageCount += 1;
   session.userTurnCount += 1;
-  session.assistantFormatPreference = resolveAssistantFormatPreference(
+  const formatPreference = resolveAssistantFormatPreferenceUpdate(
     input.content,
     session.assistantFormatPreference
   );
+  session.assistantFormatPreference = formatPreference.assistantFormatPreference;
 
   const conversationForAssistant = [
     ...existingMessages.map((message) => ({
@@ -4846,11 +4474,13 @@ export const appendConversationFlowMessage = async (
       nonIncidentTurn: true,
       triageUpdated: false,
       encodingWarning: true,
+      formatPreferenceUpdated: false,
       latestTurnRiskLevel: 'none',
       activeIncidentRiskLevel: session.activeIncidentRiskLevel ?? 'none',
       sessionHistoricalMaxRiskLevel: session.sessionHistoricalMaxRiskLevel ?? 'none',
       assistantLanguage: input.language ?? 'en',
-      assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs'
+      assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs',
+      subIntent: formatPreference.subIntent
     };
     const assistantMessage = await ConversationFlowMessageModel.create({
       conversationSessionId: session._id,
@@ -4959,11 +4589,19 @@ export const appendConversationFlowMessage = async (
   const triageHandoffIntent = responseMode === 'triage_handoff';
 
   let assistantPayload: Record<string, unknown>;
+  let currentConsentSnapshot = {
+    store_local: false,
+    cloud_sync: false,
+    share_with_agencies: false,
+    retain_evidence: false,
+    process_with_ai: false,
+    translate_content: false,
+    warm_referral: false
+  };
 
   if (triageHandoffIntent) {
     assistantPayload = {
       ...buildTriageHandoffAssistantPayload(),
-      assistantMessage: localizeExactString(assistantLanguage, TRIAGE_HANDOFF_MESSAGE),
       intent: selectedIntent,
       responseMode,
       usedModelGeneration: false,
@@ -4973,6 +4611,7 @@ export const appendConversationFlowMessage = async (
     };
   } else {
     const consent = await getCurrentConsent(context.owner);
+    currentConsentSnapshot = consent;
     const ragRequired = shouldUseRagForIntent({
       intent: selectedIntent,
       message: input.content,
@@ -5083,14 +4722,16 @@ export const appendConversationFlowMessage = async (
     selectedResponseSource:
       typeof assistantPayload.selectedResponseSource === 'string'
         ? assistantPayload.selectedResponseSource
-        : 'support_reply_builder',
+        : 'unknown',
     nonIncidentTurn: turnHandlingPlan.nonIncidentTurn,
     triageUpdated: turnHandlingPlan.triageUpdated,
+    formatPreferenceUpdated: formatPreference.formatPreferenceUpdated,
     latestTurnRiskLevel: turnHandlingPlan.latestTurnRiskLevel,
     activeIncidentRiskLevel: turnHandlingPlan.activeIncidentRiskLevel,
     sessionHistoricalMaxRiskLevel: turnHandlingPlan.sessionHistoricalMaxRiskLevel,
     activeIssueId: turnHandlingPlan.activeIssueId,
     assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs',
+    subIntent: formatPreference.subIntent,
     assistantLanguage,
     safetyOverride:
       latestTurnSafetyOverride.safetyOverride || Boolean(assistantPayload.safetyOverride),
@@ -5118,12 +4759,37 @@ export const appendConversationFlowMessage = async (
   ]
     .filter(Boolean)
     .join(' ');
+  const resolvedFallbackRagStatus: SafeSpeakRagStatus =
+    assistantPayload.ragStatus === 'not_required' ||
+    assistantPayload.ragStatus === 'retrieved' ||
+    assistantPayload.ragStatus === 'required_but_no_sources_found'
+      ? assistantPayload.ragStatus
+      : 'not_required';
+  const resolvedAssistantPayload =
+    assistantMessageContent.length > 0
+      ? assistantPayload
+      : {
+          ...assistantPayload,
+          ...buildSafeSpeakFallbackResponse({
+            intent:
+              typeof assistantPayload.intent === 'string' ? assistantPayload.intent : selectedIntent,
+            reason:
+              typeof assistantPayload.fallbackReason === 'string'
+                ? assistantPayload.fallbackReason
+                : 'empty_assistant_payload',
+            responseSource: 'model_empty_fallback',
+            ragStatus: resolvedFallbackRagStatus,
+            consentSnapshot: currentConsentSnapshot,
+            intentConfidence: intentClassification.confidence,
+            classifierSource: intentClassification.classifierSource
+          })
+        };
   const assistantMessage = await ConversationFlowMessageModel.create({
     conversationSessionId: session._id,
     role: 'assistant',
-    content: assistantMessageContent || 'Thank you. What would feel helpful to share next?',
+    content: assistantMessageContent || resolvedAssistantPayload.assistantMessage,
     turnNumber: existingMessages.length + 2,
-    metadata: buildAssistantMessageMetadata(assistantPayload)
+    metadata: buildAssistantMessageMetadata(resolvedAssistantPayload)
   });
 
   logAssistantTurn({
@@ -5133,43 +4799,48 @@ export const appendConversationFlowMessage = async (
     latestUserMessageContent: input.content,
     detectedIntent: typeof assistantPayload.intent === 'string' ? assistantPayload.intent : selectedIntent,
     intentConfidence:
-      typeof assistantPayload.intentConfidence === 'string'
-        ? assistantPayload.intentConfidence
+      typeof resolvedAssistantPayload.intentConfidence === 'string'
+        ? resolvedAssistantPayload.intentConfidence
         : intentClassification.confidence,
     aiResponseMode:
-      typeof assistantPayload.responseMode === 'string'
-        ? assistantPayload.responseMode
+      typeof resolvedAssistantPayload.responseMode === 'string'
+        ? resolvedAssistantPayload.responseMode
         : env.AI_RESPONSE_MODE,
-    usedModelGeneration: Boolean(assistantPayload.usedModelGeneration),
-    staticTemplateUsed: Boolean(assistantPayload.staticTemplateUsed),
+    usedModelGeneration: Boolean(resolvedAssistantPayload.usedModelGeneration),
+    staticTemplateUsed: Boolean(resolvedAssistantPayload.staticTemplateUsed),
     responseSource:
-      typeof assistantPayload.responseSource === 'string'
-        ? assistantPayload.responseSource
+      typeof resolvedAssistantPayload.responseSource === 'string'
+        ? resolvedAssistantPayload.responseSource
         : 'guardrail_fallback',
-    model: typeof assistantPayload.model === 'string' ? assistantPayload.model : env.OPENAI_MODEL,
+    model:
+      typeof resolvedAssistantPayload.model === 'string'
+        ? resolvedAssistantPayload.model
+        : env.OPENAI_MODEL,
     ragStatus:
-      typeof assistantPayload.ragStatus === 'string' ? assistantPayload.ragStatus : 'not_required',
+      typeof resolvedAssistantPayload.ragStatus === 'string'
+        ? resolvedAssistantPayload.ragStatus
+        : 'not_required',
     guardrailStatus:
-      typeof assistantPayload.guardrailStatus === 'string'
-        ? assistantPayload.guardrailStatus
+      typeof resolvedAssistantPayload.guardrailStatus === 'string'
+        ? resolvedAssistantPayload.guardrailStatus
         : 'passed',
-    nonIncidentTurn: Boolean(assistantPayload.nonIncidentTurn),
-    triageUpdated: Boolean(assistantPayload.triageUpdated),
+    nonIncidentTurn: Boolean(resolvedAssistantPayload.nonIncidentTurn),
+    triageUpdated: Boolean(resolvedAssistantPayload.triageUpdated),
     latestTurnRiskLevel:
-      typeof assistantPayload.latestTurnRiskLevel === 'string'
-        ? assistantPayload.latestTurnRiskLevel
+      typeof resolvedAssistantPayload.latestTurnRiskLevel === 'string'
+        ? resolvedAssistantPayload.latestTurnRiskLevel
         : 'none',
     activeIncidentRiskLevel:
-      typeof assistantPayload.activeIncidentRiskLevel === 'string'
-        ? assistantPayload.activeIncidentRiskLevel
+      typeof resolvedAssistantPayload.activeIncidentRiskLevel === 'string'
+        ? resolvedAssistantPayload.activeIncidentRiskLevel
         : 'none',
     sessionHistoricalMaxRiskLevel:
-      typeof assistantPayload.sessionHistoricalMaxRiskLevel === 'string'
-        ? assistantPayload.sessionHistoricalMaxRiskLevel
+      typeof resolvedAssistantPayload.sessionHistoricalMaxRiskLevel === 'string'
+        ? resolvedAssistantPayload.sessionHistoricalMaxRiskLevel
         : 'none',
     selectedResponseSource:
-      typeof assistantPayload.selectedResponseSource === 'string'
-        ? assistantPayload.selectedResponseSource
+      typeof resolvedAssistantPayload.selectedResponseSource === 'string'
+        ? resolvedAssistantPayload.selectedResponseSource
         : 'unknown',
     assistantMessageId: assistantMessage._id.toString(),
     assistantTurnNumber: assistantMessage.turnNumber,
@@ -5244,18 +4915,12 @@ export const appendConversationFlowMessage = async (
     triage: decorateConversationFlowTriage(triage),
     transition: {
       offerTriage,
-      prompt: triageHandoffIntent
-        ? null
-        : offerTriage
-        ? 'I am sorry this happened to you. You are safe to explore your options here. Would you like help understanding reporting options, support services, evidence, or your rights?'
-        : enoughContextForTriageAssessment
-          ? 'Based on what you shared so far, this does not appear to fit the harm, safety, scam, violence, harassment, or discrimination categories that move to triage here. You can keep chatting if there is more context.'
-          : null,
+      prompt: null,
       primaryCta: offerTriage ? 'Continue to Triage' : null,
-      secondaryCta: offerTriage ? 'Review my options' : null
+      secondaryCta: offerTriage ? 'Review options' : null
     },
     responseMeta: buildConversationAssistantResponseMeta({
-      assistantPayload,
+      assistantPayload: resolvedAssistantPayload,
       conversationSessionId,
       offerTriage
     })

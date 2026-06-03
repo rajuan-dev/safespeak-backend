@@ -6,6 +6,8 @@ import {
 const INFORMATION_ONLY_DISCLAIMER = 'This is information only, not legal advice.';
 
 const LEGAL_ADVICE_RISK_PATTERNS = [
+  /\bsuing is an option\b/i,
+  /\byou can sue\b/i,
   /\byou should sue\b/i,
   /\byou must sue\b/i,
   /\byou have a case\b/i,
@@ -13,7 +15,9 @@ const LEGAL_ADVICE_RISK_PATTERNS = [
   /\bthat is illegal\b/i,
   /\bthey broke the law\b/i,
   /\byou will win\b/i,
-  /\byou are entitled to compensation\b/i
+  /\byou are entitled to compensation\b/i,
+  /\bcriminal matter\b/i,
+  /\bpolice handle this\b/i
 ];
 
 const CLINICAL_ADVICE_RISK_PATTERNS = [
@@ -66,11 +70,15 @@ const SAFESPEAK_PRODUCT_PATTERNS = [
 const AU_WRONG_EMERGENCY_PATTERNS = [/\b911\b/, /\b999\b/, /\b112\b/];
 const FALSE_ACTION_CLAIM_PATTERNS = [
   /\bi uploaded\b/i,
+  /\bwe uploaded\b/i,
+  /\bsafespeak uploaded\b/i,
   /\bi shared this\b/i,
   /\bi sent this to police\b/i,
   /\bi contacted an agency\b/i,
   /\byour evidence has been saved\b/i,
-  /\byour evidence has been synced\b/i
+  /\byour evidence has been synced\b/i,
+  /\byour (?:photo|photos|file|files|evidence) (?:has|have) been (?:uploaded|saved|shared|sent|synced)\b/i,
+  /\b(?:this|it|the file|the evidence) (?:has|have) been (?:uploaded|saved|shared|sent|synced)\b/i
 ];
 const ROLE_VIOLATION_PATTERNS = [
   /\bi am your lawyer\b/i,
@@ -92,17 +100,41 @@ const BULLET_LINE_PATTERN = /^\s*(?:[-*•]|\d+\.)\s+/gm;
 export type SafeSpeakGuardrailViolationCode =
   | 'wrong_au_emergency_number'
   | 'legal_conclusion'
+  | 'missing_legal_boundary_disclaimer'
   | 'false_action_claim'
   | 'role_violation'
   | 'safety_promise'
   | 'evidence_legal_strategy'
   | 'bullet_heavy_non_actionable'
-  | 'too_many_questions';
+  | 'too_many_questions'
+  | 'too_long_for_intent'
+  | 'too_many_paragraphs_for_intent';
 
 export type SafeSpeakGuardrailResult = {
   passed: boolean;
   violations: SafeSpeakGuardrailViolationCode[];
 };
+
+export type SafeSpeakGuardrailSeverity = 'hard' | 'soft';
+
+const HARD_GUARDRAIL_VIOLATIONS = new Set<SafeSpeakGuardrailViolationCode>([
+  'wrong_au_emergency_number',
+  'legal_conclusion',
+  'missing_legal_boundary_disclaimer',
+  'false_action_claim',
+  'role_violation',
+  'safety_promise',
+  'evidence_legal_strategy'
+]);
+
+export const getSafeSpeakGuardrailSeverity = (
+  violation: SafeSpeakGuardrailViolationCode
+): SafeSpeakGuardrailSeverity => (HARD_GUARDRAIL_VIOLATIONS.has(violation) ? 'hard' : 'soft');
+
+export const splitGuardrailViolations = (violations: SafeSpeakGuardrailViolationCode[]) => ({
+  hard: violations.filter((violation) => getSafeSpeakGuardrailSeverity(violation) === 'hard'),
+  soft: violations.filter((violation) => getSafeSpeakGuardrailSeverity(violation) === 'soft')
+});
 
 export const buildInformationOnlyDisclaimer = (): string => INFORMATION_ONLY_DISCLAIMER;
 
@@ -120,10 +152,15 @@ export const getSafeSpeakSystemPrompt = (language: string): string =>
     'For legal or reporting questions, provide information only, not legal advice.',
     'Do not decide whether something is illegal. Do not say the user has a case. Do not tell the user to sue.',
     'Use words like may, possible, option, and pathway.',
+    'For general conversation, reply briefly and naturally. Do not force triage or use trauma-informed language unless the user described harm.',
+    'For meta-feedback, acknowledge the feedback naturally, answer briefly, and do not turn it into a triage or safety exchange.',
+    'For physical harm, keep the response short. Mention 000 only when immediate danger, serious injury, or urgent risk is relevant. Ask only one safety question. Do not give a long checklist unless the user asks.',
     'For evidence upload questions, explain consent, storage, cloud sync, retention, and agency sharing only as relevant.',
     'Do not claim evidence has been uploaded, shared, synced, retained, or analysed unless a confirmed user action says that happened.',
     'Keep evidence guidance short, low-pressure, consent-aware, and documentation-focused.',
+    'For evidence or photo messages, ask only one question and avoid legal-strategy framing.',
     'Avoid legal-strategy phrasing like hard to dispute, strong evidence, prove your case, build your case, or use this against them.',
+    'For legal boundary questions, do not answer legality directly. Do not say you can sue, suing is an option, or that something is a criminal matter as a conclusion. State the information-only, not-legal-advice boundary and, if needed, ask one minimal jurisdiction or context question.',
     'Do not push the user toward a complaint unless they asked about reporting or complaints.',
     'For AI-analysis questions, clearly separate upload from AI processing.',
     'Uploading a file does not automatically mean it is analysed unless the user chooses that AI step and consent allows it.',
@@ -141,7 +178,10 @@ export const buildRawDevSystemPrompt = (): string =>
   'You are a helpful assistant. Reply naturally and directly in plain text.';
 
 export const buildGuardrailRevisionInstruction = (): string =>
-  'Revise the answer to comply with SafeSpeak rules. Remove prohibited legal conclusions, wrong emergency numbers, false action claims, legal-strategy evidence language, and extra questions. Make this lower-pressure, information-only, and documentation-focused.';
+  'Revise the answer to comply with SafeSpeak rules. Remove prohibited legal conclusions, wrong emergency numbers, false action claims, legal-strategy evidence language, extra questions, and unnecessary length. Keep it brief, lower-pressure, information-only, and documentation-focused. For legal-boundary answers, clearly avoid deciding legality or telling the user to sue.';
+
+export const buildCompactRetryInstruction = (): string =>
+  'Rewrite your previous answer more briefly. Keep the same meaning. Use short paragraphs. Ask at most one question. Do not add new advice. Follow SafeSpeak rules.';
 
 export const detectLegalAdviceRisk = (text: string): boolean =>
   LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(text));
@@ -176,6 +216,7 @@ export const shouldRequireHumanReview = (flags: {
 
 export const validateSafeSpeakResponse = (input: {
   text: string;
+  intent?: string;
   jurisdiction?: string;
   allowMultipleQuestions?: boolean;
   latestUserMessage?: string;
@@ -184,6 +225,10 @@ export const validateSafeSpeakResponse = (input: {
   const violations = new Set<SafeSpeakGuardrailViolationCode>();
   const normalizedJurisdiction = (input.jurisdiction ?? 'AU').toUpperCase();
   const latestUserMessage = input.latestUserMessage ?? '';
+  const paragraphCount = input.text
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean).length;
 
   if (
     normalizedJurisdiction === 'AU' &&
@@ -192,7 +237,28 @@ export const validateSafeSpeakResponse = (input: {
     violations.add('wrong_au_emergency_number');
   }
 
-  if (LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(input.text))) {
+  const hasDefinitiveIllegalConclusion =
+    /\b(?:it|this|that) is illegal\b/i.test(input.text) &&
+    !/\b(?:cannot|can’t|can't)\s+decide whether it is illegal\b/i.test(input.text) &&
+    !/\bwhether it(?:'|’)s illegal depends\b/i.test(input.text);
+
+  if (LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(input.text)) || hasDefinitiveIllegalConclusion) {
+    violations.add('legal_conclusion');
+  }
+
+  if (
+    input.intent === 'legal_boundary' &&
+    !/\b(not legal advice|information only)\b/i.test(input.text)
+  ) {
+    violations.add('missing_legal_boundary_disclaimer');
+  }
+
+  if (
+    /\bwhether it(?:'|’)s illegal depends\b/i.test(input.text) &&
+    !/\b(i cannot|i can’t|safespeak cannot|safespeak can’t|not legal advice|information only)\b/i.test(
+      input.text
+    )
+  ) {
     violations.add('legal_conclusion');
   }
 
@@ -224,6 +290,40 @@ export const validateSafeSpeakResponse = (input: {
 
   if (input.preferParagraphs && (input.text.match(BULLET_LINE_PATTERN) ?? []).length > 1) {
     violations.add('bullet_heavy_non_actionable');
+  }
+
+  const wordCount = input.text.trim().split(/\s+/).filter(Boolean).length;
+  const maxWordsByIntent: Partial<Record<string, number>> = {
+    general_conversation: 45,
+    meta_feedback: 50,
+    physical_harm: 65,
+    evidence_upload: 60,
+    legal_boundary: 70
+  };
+  const maxParagraphsByIntent: Partial<Record<string, number>> = {
+    general_conversation: 3,
+    meta_feedback: 3,
+    physical_harm: 3,
+    evidence_upload: 3,
+    legal_boundary: 3
+  };
+  const softWordGraceByIntent: Partial<Record<string, number>> = {
+    general_conversation: 8,
+    meta_feedback: 8,
+    physical_harm: 10,
+    evidence_upload: 10,
+    legal_boundary: 10
+  };
+  const maxWords = input.intent ? maxWordsByIntent[input.intent] : undefined;
+  const maxParagraphs = input.intent ? maxParagraphsByIntent[input.intent] : undefined;
+  const softWordGrace = input.intent ? softWordGraceByIntent[input.intent] : undefined;
+
+  if (maxWords && wordCount > maxWords + (softWordGrace ?? 0)) {
+    violations.add('too_long_for_intent');
+  }
+
+  if (maxParagraphs && paragraphCount > maxParagraphs) {
+    violations.add('too_many_paragraphs_for_intent');
   }
 
   return {

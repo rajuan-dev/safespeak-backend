@@ -22,6 +22,7 @@ import {
   shouldRequireHumanReview
 } from '@modules/ai/ai-guardrails';
 import { resolveAssistantLanguage } from '@modules/ai/assistant-language';
+import { escapeUnicodeForLog, hasBrokenTextEncoding } from '@modules/ai/text-encoding';
 import {
   answerWithContext,
   createEmbedding,
@@ -3313,12 +3314,8 @@ const buildFallbackAnswer = (
 
   if (flags.crisisRisk) {
     return {
-      answer: [
-        'If you are in immediate danger, call 000 now.',
-        'If it is safe, contact 1800RESPECT.',
-        'SafeSpeak is not a crisis service and cannot provide emergency response.',
-        'SafeSpeak can only offer general information and triage support.'
-      ].join(' '),
+      answer:
+        'If you are in immediate danger in Australia, call 000 now. If it is safe, you can contact 1800RESPECT.',
       disclaimer,
       citations: [],
       sourceCategoriesUsed: [],
@@ -4360,23 +4357,107 @@ const buildTimelineFallback = (
   return fallback;
 };
 
+export const sanitizeTimelineAssistantModelInput = (
+  input: RagTimelineAssistantInput
+): {
+  sanitizedInput: RagTimelineAssistantInput;
+  encodingWarning: boolean;
+  excludedConversationCount: number;
+  excludedTimelineKeys: string[];
+} => {
+  const sanitizedConversation = input.conversation.filter(
+    (entry) => !hasBrokenTextEncoding(entry.content)
+  );
+  const excludedConversationCount = input.conversation.length - sanitizedConversation.length;
+  const excludedTimelineKeys: string[] = [];
+  const sanitizedTimeline = Object.fromEntries(
+    Object.entries(input.timeline).filter(([key, value]) => {
+      const normalizedValue = typeof value === 'string' ? value : '';
+
+      if (normalizedValue && hasBrokenTextEncoding(normalizedValue)) {
+        excludedTimelineKeys.push(key);
+        return false;
+      }
+
+      return true;
+    })
+  );
+
+  return {
+    sanitizedInput: {
+      ...input,
+      conversation: sanitizedConversation,
+      timeline: sanitizedTimeline
+    },
+    encodingWarning: excludedConversationCount > 0 || excludedTimelineKeys.length > 0,
+    excludedConversationCount,
+    excludedTimelineKeys
+  };
+};
+
 export const runTimelineAssistant = async (
   context: RagServiceContext,
   input: RagTimelineAssistantInput
 ): Promise<Record<string, unknown>> => {
   await assertAiConsent(context.owner);
+  if (hasBrokenTextEncoding(input.message)) {
+    logger.info(
+      {
+        mode: 'timeline_assistant',
+        latestUserMessageUnicodeEscaped: escapeUnicodeForLog(input.message),
+        encodingWarning: true
+      },
+      'Timeline assistant encoding guard triggered'
+    );
+
+    return {
+      assistantMessage: 'The message looks like it was received with broken text encoding. Please resend it.',
+      nextQuestion: '',
+      timeline: normalizeTimelineObject(input.timeline),
+      readyForSubmission: false,
+      confidence: 'low',
+      disclaimer: buildInformationOnlyDisclaimer(),
+      citations: [],
+      showSources: false,
+      sourceDisplayReason: 'hidden_support_reply',
+      rag: {
+        used: false,
+        unavailable: false,
+        resultCount: 0
+      },
+      reviewStatus: 'encoding_error',
+      encodingWarning: true
+    };
+  }
+
+  const timelineAssistantInput = sanitizeTimelineAssistantModelInput(input);
+  const sanitizedInput = timelineAssistantInput.sanitizedInput;
   const resolvedLanguage = resolveAssistantLanguage({
-    message: input.message,
-    requestedLanguage: input.language
+    message: sanitizedInput.message,
+    requestedLanguage: sanitizedInput.language
   });
 
-  if (looksLikeSourceBackedQuestion(input.message)) {
+  logger.info(
+    {
+      mode: 'timeline_assistant',
+      latestUserMessageUnicodeEscaped: escapeUnicodeForLog(sanitizedInput.message),
+      conversationPreviewUnicodeEscaped: sanitizedInput.conversation
+        .slice(-3)
+        .map((entry) => `${entry.role}:${escapeUnicodeForLog(entry.content.slice(0, 120))}`),
+      excludedConversationCount: timelineAssistantInput.excludedConversationCount,
+      excludedTimelineKeys: timelineAssistantInput.excludedTimelineKeys,
+      encodingWarning: timelineAssistantInput.encodingWarning
+    },
+    'Timeline assistant request'
+  );
+
+  if (looksLikeSourceBackedQuestion(sanitizedInput.message)) {
     const groundedAnswer = await answerRag(context, {
-      query: input.message,
-      question: input.message,
-      topK: input.topK,
+      query: sanitizedInput.message,
+      question: sanitizedInput.message,
+      topK: sanitizedInput.topK,
       language: resolvedLanguage,
-      jurisdiction: input.jurisdiction
+      jurisdiction: sanitizedInput.jurisdiction
     });
 
     return {
@@ -4385,7 +4466,7 @@ export const runTimelineAssistant = async (
           ? enforceAiOutputGuardrails(groundedAnswer.answer)
           : 'I could not find that in the retrieved approved sources.',
       nextQuestion: '',
-      timeline: normalizeTimelineObject(input.timeline),
+      timeline: normalizeTimelineObject(sanitizedInput.timeline),
       readyForSubmission: false,
       confidence: groundedAnswer.confidence ?? 'low',
       disclaimer: groundedAnswer.disclaimer ?? buildInformationOnlyDisclaimer(),
@@ -4403,7 +4484,8 @@ export const runTimelineAssistant = async (
       },
       reviewStatus: groundedAnswer.pendingHumanReview
         ? 'pending_human_review'
-        : 'grounded_source_answer'
+        : 'grounded_source_answer',
+      encodingWarning: timelineAssistantInput.encodingWarning
     };
   }
 
@@ -4411,7 +4493,7 @@ export const runTimelineAssistant = async (
   let ragUnavailable = false;
 
   try {
-    results = await searchTimelineRag(context, input);
+    results = await searchTimelineRag(context, sanitizedInput);
   } catch {
     ragUnavailable = true;
   }
@@ -4424,57 +4506,80 @@ export const runTimelineAssistant = async (
     excerpt: result.text.slice(0, 500)
   }));
 
-  const modelResponse = await generateTimelineAssistantTurn(context, {
-    message: input.message,
-    conversation: input.conversation,
-    timeline: input.timeline,
+  let modelResponse = await generateTimelineAssistantTurn(context, {
+    message: sanitizedInput.message,
+    conversation: sanitizedInput.conversation,
+    timeline: sanitizedInput.timeline,
     language: resolvedLanguage,
-    incidentCategory: input.incidentCategory,
+    incidentCategory: sanitizedInput.incidentCategory,
     contextText,
     citations,
     ragUnavailable
   });
-  const output = (modelResponse.output ?? {}) as Record<string, unknown>;
+  let output = (modelResponse.output ?? {}) as Record<string, unknown>;
+  if (!(typeof output.assistantMessage === 'string' && output.assistantMessage.trim())) {
+    modelResponse = await generateTimelineAssistantTurn(context, {
+      message: sanitizedInput.message,
+      conversation: sanitizedInput.conversation,
+      timeline: sanitizedInput.timeline,
+      language: resolvedLanguage,
+      incidentCategory: sanitizedInput.incidentCategory,
+      contextText,
+      citations,
+      ragUnavailable
+    });
+    output = (modelResponse.output ?? {}) as Record<string, unknown>;
+  }
   const timelineCandidate = (output.timeline ?? {}) as Record<string, unknown>;
-  const timelineFallback = buildTimelineFallback(input, timelineCandidate);
+  const timelineFallback = buildTimelineFallback(sanitizedInput, timelineCandidate);
   const resolvedTimeline = compactTimelineObject(
-    normalizeTimelineObject(input.timeline, timelineCandidate, timelineFallback),
-    input.message
+    normalizeTimelineObject(sanitizedInput.timeline, timelineCandidate, timelineFallback),
+    sanitizedInput.message
   );
   const assistantMessage =
     typeof output.assistantMessage === 'string' && output.assistantMessage.trim()
       ? enforceAiOutputGuardrails(output.assistantMessage)
-      : enforceAiOutputGuardrails(
-          'Thank you. Can you share one more detail that feels safe to add?'
-        );
+      : "I couldn't generate the next timeline step reliably. Please try again.";
   const legalAwareness = shouldAttachNswLegalAwareness({
-    text: input.message,
-    jurisdiction: input.jurisdiction,
-    incidentCategory: input.incidentCategory,
-    category: classifySourceCategory({ query: input.message } as RagSearchInput)
+    text: sanitizedInput.message,
+    jurisdiction: sanitizedInput.jurisdiction,
+    incidentCategory: sanitizedInput.incidentCategory,
+    category: classifySourceCategory({ query: sanitizedInput.message } as RagSearchInput)
   })
     ? buildNswLegalAwareness({
         sourceStatus:
           results.length > 0 ? 'approved_sources_used' : 'insufficient_approved_sources',
         topic:
-          input.incidentCategory === 'migrant_challenges' ? 'migrant_challenges' : 'racial_abuse'
+          sanitizedInput.incidentCategory === 'migrant_challenges' ? 'migrant_challenges' : 'racial_abuse'
       })
     : undefined;
 
   await auditRagAction(context, RAG_ACTIONS.answer, undefined, {
     mode: 'timeline_assistant',
     citationCount: results.length,
-    ragUnavailable
+    ragUnavailable,
+    encodingWarning: timelineAssistantInput.encodingWarning
   });
 
   const sourceDisplayMeta = buildAssistantSourceDisplayMeta({
-    message: input.message,
+    message: sanitizedInput.message,
     citations: results.map((result) => ({
       title: result.title,
       sectionRef: result.sectionRef,
       url: result.citationUrl
     }))
   });
+
+  logger.info(
+    {
+      mode: 'timeline_assistant',
+      assistantResponseUnicodeEscaped: escapeUnicodeForLog(assistantMessage),
+      assistantResponseFirst120: escapeUnicodeForLog(assistantMessage.slice(0, 120)),
+      reviewStatus: modelResponse.reviewStatus,
+      encodingWarning: timelineAssistantInput.encodingWarning
+    },
+    'Timeline assistant response'
+  );
 
   return {
     assistantMessage,
@@ -4509,6 +4614,7 @@ export const runTimelineAssistant = async (
       resultCount: results.length
     },
     reviewStatus: modelResponse.reviewStatus,
-    interactionId: modelResponse.interactionId
+    interactionId: modelResponse.interactionId,
+    encodingWarning: timelineAssistantInput.encodingWarning
   };
 };

@@ -1,3 +1,4 @@
+// Legacy test-only helper. SafeSpeak runtime responses should use the model path instead.
 import type { ConsentFlags } from '@modules/consent/consent.types';
 
 export type EvidenceConsentSnapshot = Pick<

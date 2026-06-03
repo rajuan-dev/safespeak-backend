@@ -94,41 +94,94 @@ const toConsentContext = (
   warm_referral: Boolean(input?.warm_referral)
 });
 
+const buildIntentSpecificConstraints = (
+  intent: SafeSpeakIntent,
+  input: SafeSpeakContextBuilderInput
+): string[] => {
+  switch (intent) {
+    case 'general_conversation':
+      return [
+        'General conversation: answer naturally and briefly.',
+        'Do not force triage.',
+        'Do not use trauma-informed harm language unless the user described harm.'
+      ];
+    case 'meta_feedback':
+      return [
+        'Meta-feedback: acknowledge the feedback naturally and briefly.',
+        'Do not trigger triage.',
+        'Do not sound defensive or technical.'
+      ];
+    case 'physical_harm':
+      return [
+        'Physical harm: keep the response short.',
+        'Mention 000 only if immediate danger, serious injury, or urgent risk is relevant in the context.',
+        'Ask only one safety question.',
+        'Do not give a long checklist unless the user asked for steps.'
+      ];
+    case 'evidence_upload':
+      return [
+        'Evidence upload: keep the response short.',
+        'Do not imply anything was automatically uploaded, saved, shared, sent, retained, or synced.',
+        'Mention consent only when relevant to the user question or current consent state.',
+        'Avoid legal-strategy wording.',
+        'Ask only one question.'
+      ];
+    case 'legal_boundary':
+      return [
+        'Legal boundary: do not answer legality directly.',
+        'Do not decide criminality, liability, or whether the user can sue.',
+        'Do not say "you can sue", "suing is an option", or "criminal matter" as a conclusion.',
+        'Include the concept that SafeSpeak provides information only, not legal advice.',
+        input.ragContext?.length
+          ? 'Use the available RAG context to explain information pathways cautiously.'
+          : 'If jurisdiction or legal context is missing, ask one minimal jurisdiction or context question.'
+      ];
+    default:
+      return [];
+  }
+};
+
 export const buildSafeSpeakContext = (
   input: SafeSpeakContextBuilderInput
-): SafeSpeakModelContext => ({
-  app: 'SafeSpeak',
-  jurisdiction: 'AU',
-  latestUserMessage: input.latestUserMessage,
-  detectedLanguage: input.detectedLanguage,
-  intent: input.intentClassification.intent,
-  assistantFormatPreference: input.assistantFormatPreference,
-  conversationSummary: summarize(input.conversationSummary),
-  activeIncidentSummary: summarize(input.activeIncidentSummary),
-  consentSnapshot: toConsentContext(input.consentSnapshot),
-  safetyContext: {
-    ...input.safetyContext,
-    recommendedEmergencyNumber: '000',
-    relevantSupport:
-      input.safetyContext.relevantSupport?.length
-        ? input.safetyContext.relevantSupport
-        : input.safetyContext.domesticFamilyViolence
-          ? ['1800RESPECT']
-          : []
-  },
-  ragContext: input.ragContext ?? [],
-  userSelectedTopic: input.userSelectedTopic,
-  constraints: [
-    'Respond naturally to the latest user message.',
-    'Use short natural paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
-    'Use bullet points only when there are multiple concrete safety steps, evidence steps, or comparison options. Do not default to bullets.',
-    'Do not claim any upload, sharing, saving, syncing, or agency contact already happened unless confirmed by backend action.',
-    'Use Australian emergency guidance only: 000.',
-    'Ask at most one user-facing question.',
-    'For evidence messages, keep the answer short, low-pressure, consent-aware, and documentation-focused.',
-    'Avoid legal-strategy phrases like hard to dispute, prove your case, build your case, strong evidence, or use this against them.'
-  ]
-});
+): SafeSpeakModelContext => {
+  const ragContext = input.ragContext ?? [];
+  const intent = input.intentClassification.intent;
+
+  return {
+    app: 'SafeSpeak',
+    jurisdiction: 'AU',
+    latestUserMessage: input.latestUserMessage,
+    detectedLanguage: input.detectedLanguage,
+    intent,
+    assistantFormatPreference: input.assistantFormatPreference,
+    conversationSummary: summarize(input.conversationSummary),
+    activeIncidentSummary: summarize(input.activeIncidentSummary),
+    consentSnapshot: toConsentContext(input.consentSnapshot),
+    safetyContext: {
+      ...input.safetyContext,
+      recommendedEmergencyNumber: '000',
+      relevantSupport:
+        input.safetyContext.relevantSupport?.length
+          ? input.safetyContext.relevantSupport
+          : input.safetyContext.domesticFamilyViolence
+            ? ['1800RESPECT']
+            : []
+    },
+    ragContext,
+    userSelectedTopic: input.userSelectedTopic,
+    constraints: [
+      'Respond naturally to the latest user message.',
+      'Use short natural paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
+      'Use bullet points only when there are multiple concrete safety steps, evidence steps, or comparison options. Do not default to bullets.',
+      'Do not claim any upload, sharing, saving, syncing, or agency contact already happened unless confirmed by backend action.',
+      'Use Australian emergency guidance only: 000.',
+      'Ask at most one user-facing question.',
+      'For evidence messages, keep the answer short, low-pressure, consent-aware, and documentation-focused.',
+      'Avoid legal-strategy phrases like hard to dispute, prove your case, build your case, strong evidence, or use this against them.',
+      ...buildIntentSpecificConstraints(intent, { ...input, ragContext })
+    ]
+  };
+};
 
 export const buildActiveIncidentSummary = (facts: Record<string, unknown>): string => {
   const summaryParts = [

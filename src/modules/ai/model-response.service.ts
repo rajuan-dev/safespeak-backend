@@ -4,10 +4,12 @@ import { ApiError } from '@common/errors/ApiError';
 import { env } from '@config/env';
 
 import {
+  buildCompactRetryInstruction,
   buildGuardrailRevisionInstruction,
   buildInformationOnlyDisclaimer,
   buildRawDevSystemPrompt,
   getSafeSpeakSystemPrompt,
+  splitGuardrailViolations,
   validateSafeSpeakResponse
 } from './ai-guardrails';
 import type {
@@ -17,6 +19,14 @@ import type {
 } from './safespeak-context-builder';
 
 type GuardrailStatus = 'passed' | 'regenerated' | 'fallback';
+type OpenAiResponseSource =
+  | 'openai_model'
+  | 'openai_model_with_rag'
+  | 'openai_model_regenerated'
+  | 'raw_openai_model'
+  | 'emergency_override'
+  | 'guardrail_fallback'
+  | 'model_empty_fallback';
 
 export type GenerateSafeSpeakResponseInput = {
   mode?: 'safespeak_model' | 'raw_dev';
@@ -60,7 +70,8 @@ export type GenerateSafeSpeakResponseOutput = {
     | 'safespeak_model'
     | 'raw_dev'
     | 'emergency_minimum_fallback'
-    | 'guardrail_fallback';
+    | 'guardrail_fallback'
+    | 'model_empty_fallback';
   intent: string;
   usedModelGeneration: boolean;
   guardrailStatus: GuardrailStatus;
@@ -69,21 +80,11 @@ export type GenerateSafeSpeakResponseOutput = {
   consentSnapshot: SafeSpeakModelContext['consentSnapshot'];
   intentConfidence?: 'high' | 'medium' | 'low';
   classifierSource?: 'rule' | 'model' | 'hybrid';
-  responseSource:
-    | 'openai_model'
-    | 'openai_model_with_rag'
-    | 'raw_openai_model'
-    | 'emergency_override'
-    | 'guardrail_fallback';
+  responseSource: OpenAiResponseSource;
   model: string;
   jurisdiction: 'AU';
   ragStatus: SafeSpeakRagStatus;
-  selectedResponseSource:
-    | 'openai_model'
-    | 'openai_model_with_rag'
-    | 'raw_openai_model'
-    | 'emergency_override'
-    | 'guardrail_fallback';
+  selectedResponseSource: OpenAiResponseSource;
 };
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -138,45 +139,162 @@ const buildRagPromptSection = (ragContext: SafeSpeakRagSnippet[]): string =>
         )
       ].join('\n');
 
-const buildUserPrompt = (input: GenerateSafeSpeakResponseInput, strictRetry = false): string =>
+type PromptStyle = 'default' | 'strict' | 'compact';
+
+const buildBasePromptSections = (
+  input: GenerateSafeSpeakResponseInput,
+  promptStyle: PromptStyle = 'default'
+): string[] => {
+  const basePrompt =
+    promptStyle === 'compact'
+      ? [
+          `Intent: ${input.intent}`,
+          `Latest user message: ${input.latestUserMessage}`,
+          `Detected language: ${input.context.detectedLanguage}`,
+          `Format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
+          `Key constraints: ${(input.context.constraints ?? []).join(' | ')}`,
+          `RAG status: ${input.ragStatus ?? 'not_required'}`,
+          buildRagPromptSection(input.ragContext ?? input.context.ragContext)
+        ]
+      : [
+          `Intent: ${input.intent}`,
+          `Latest user message: ${input.latestUserMessage}`,
+          `Assistant format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
+          `SafeSpeak context JSON: ${JSON.stringify(input.context)}`,
+          `RAG status: ${input.ragStatus ?? 'not_required'}`,
+          buildRagPromptSection(input.ragContext ?? input.context.ragContext)
+        ];
+
+  return basePrompt;
+};
+
+const buildUserPrompt = (
+  input: GenerateSafeSpeakResponseInput,
+  promptStyle: PromptStyle = 'default'
+): string =>
   [
-    `Intent: ${input.intent}`,
-    `Latest user message: ${input.latestUserMessage}`,
-    `Assistant format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
-    `SafeSpeak context JSON: ${JSON.stringify(input.context)}`,
-    `RAG status: ${input.ragStatus ?? 'not_required'}`,
-    buildRagPromptSection(input.ragContext ?? input.context.ragContext),
-    strictRetry
+    ...buildBasePromptSections(input, promptStyle),
+    promptStyle === 'strict'
       ? buildGuardrailRevisionInstruction()
-      : 'Write the final assistant reply naturally. Do not output JSON.'
+      : promptStyle === 'compact'
+        ? 'Write one brief, natural SafeSpeak reply in plain text. Do not output JSON.'
+        : 'Write the final assistant reply naturally. Do not output JSON.'
   ].join('\n');
 
-const minimalFallback = (intent: string): { assistantMessage: string; responseMode: 'emergency_minimum_fallback' | 'guardrail_fallback'; responseSource: 'emergency_override' | 'guardrail_fallback' } => {
+const buildCompactRewritePrompt = (
+  input: GenerateSafeSpeakResponseInput,
+  previousAnswer: string
+): string =>
+  [
+    ...buildBasePromptSections(input, 'compact'),
+    `Previous answer: ${previousAnswer}`,
+    buildCompactRetryInstruction()
+  ].join('\n');
+
+const getResponseSystemPrompt = (
+  input: GenerateSafeSpeakResponseInput,
+  mode: GenerateSafeSpeakResponseInput['mode']
+): string =>
+  mode === 'raw_dev'
+    ? buildRawDevSystemPrompt()
+    : getSafeSpeakSystemPrompt(input.context.detectedLanguage);
+
+const callOpenAiPrompt = async (options: {
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  temperature: number;
+}): Promise<string> => {
+  const response = await fetch(OPENAI_RESPONSES_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: options.model,
+      input: [
+        {
+          role: 'system',
+          content: options.systemPrompt
+        },
+        {
+          role: 'user',
+          content: options.userPrompt
+        }
+      ],
+      temperature: options.temperature
+    })
+  });
+
+  if (!response.ok) {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI response request failed');
+  }
+
+  return normalizeAssistantContent(extractOutputText(await response.json()).trim());
+};
+
+const TECHNICAL_FALLBACK_MESSAGE =
+  "I'm sorry, I couldn't generate a reliable response just now. Please try again.";
+
+const buildIntentSpecificFallbackMessage = (intent: string): string => {
+  switch (intent) {
+    case 'general_conversation':
+      return 'I had trouble replying clearly just now. Please send that again.';
+    case 'meta_feedback':
+      return 'That reply did not come through clearly. Please ask again and I will keep it brief.';
+    case 'physical_harm':
+      return 'I had trouble replying clearly just now. If you are in immediate danger in Australia, call 000. If you want, tell me whether you are hurt right now.';
+    case 'evidence_upload':
+      return 'You can keep the files unchanged as part of your record. Nothing is automatically shared here. If you want, I can help you note what each file shows.';
+    case 'legal_boundary':
+      return 'SafeSpeak cannot decide whether it was illegal. This is information only, not legal advice. If you want, tell me your state or territory.';
+    case 'language_or_translation':
+      return 'I can try that again. Tell me which language you want to use, or paste the text again.';
+    case 'encoding_error':
+      return 'Some of that text may not have come through clearly. Please send it again, or paste a shorter part.';
+    case 'incident_disclosure':
+      return 'I am sorry this happened. If you want, send one short part of what happened and we can take it step by step.';
+    default:
+      return TECHNICAL_FALLBACK_MESSAGE;
+  }
+};
+
+const minimalFallback = (
+  intent: string,
+  responseSource: 'guardrail_fallback' | 'model_empty_fallback' = 'guardrail_fallback'
+): {
+  assistantMessage: string;
+  responseMode: 'emergency_minimum_fallback' | 'guardrail_fallback' | 'model_empty_fallback';
+  responseSource: 'emergency_override' | 'guardrail_fallback' | 'model_empty_fallback';
+} => {
   if (intent === 'safety_crisis') {
     return {
-      assistantMessage: 'If you are in immediate danger in Australia, call 000 now.',
+      assistantMessage:
+        'If you are in immediate danger in Australia, call 000 now. If it is safe, you can contact 1800RESPECT.',
       responseMode: 'emergency_minimum_fallback',
       responseSource: 'emergency_override'
     };
   }
 
   return {
-    assistantMessage:
-      'I can help, but I need to keep this safety-focused and information-only. Could you rephrase what you want help with?',
-    responseMode: 'guardrail_fallback',
-    responseSource: 'guardrail_fallback'
+    assistantMessage: buildIntentSpecificFallbackMessage(intent),
+    responseMode:
+      responseSource === 'model_empty_fallback' ? 'model_empty_fallback' : 'guardrail_fallback',
+    responseSource
   };
 };
 
 export const buildSafeSpeakFallbackResponse = (input: {
   intent: string;
   reason?: string;
+  responseSource?: 'guardrail_fallback' | 'model_empty_fallback';
   ragStatus?: SafeSpeakRagStatus;
   consentSnapshot?: SafeSpeakModelContext['consentSnapshot'];
   intentConfidence?: 'high' | 'medium' | 'low';
   classifierSource?: 'rule' | 'model' | 'hybrid';
 }): GenerateSafeSpeakResponseOutput => {
-  const fallback = minimalFallback(input.intent);
+  const fallback = minimalFallback(input.intent, input.responseSource ?? 'guardrail_fallback');
 
   return {
     assistantMessage: fallback.assistantMessage,
@@ -220,38 +338,108 @@ export const buildSafeSpeakFallbackResponse = (input: {
   };
 };
 
-const callOpenAI = async (input: GenerateSafeSpeakResponseInput, strictRetry = false): Promise<string> => {
+const callOpenAI = async (
+  input: GenerateSafeSpeakResponseInput,
+  promptStyle: PromptStyle = 'default'
+): Promise<string> => {
   const mode = input.mode ?? env.AI_RESPONSE_MODE;
-  const response = await fetch(OPENAI_RESPONSES_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: input.model ?? env.OPENAI_MODEL,
-      input: [
-        {
-          role: 'system',
-          content:
-            mode === 'raw_dev'
-              ? buildRawDevSystemPrompt()
-              : getSafeSpeakSystemPrompt(input.context.detectedLanguage)
-        },
-        {
-          role: 'user',
-          content: buildUserPrompt(input, strictRetry)
-        }
-      ],
-      temperature: mode === 'raw_dev' ? 0.7 : 0.4
-    })
+  return callOpenAiPrompt({
+    model: input.model ?? env.OPENAI_MODEL,
+    systemPrompt: getResponseSystemPrompt(input, mode),
+    userPrompt: buildUserPrompt(input, promptStyle),
+    temperature: mode === 'raw_dev' ? 0.7 : 0.4
   });
+};
 
-  if (!response.ok) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI response request failed');
+const rewriteCompactOpenAI = async (
+  input: GenerateSafeSpeakResponseInput,
+  previousAnswer: string
+): Promise<string> => {
+  const mode = input.mode ?? env.AI_RESPONSE_MODE;
+
+  return callOpenAiPrompt({
+    model: input.model ?? env.OPENAI_MODEL,
+    systemPrompt: getResponseSystemPrompt(input, mode),
+    userPrompt: buildCompactRewritePrompt(input, previousAnswer),
+    temperature: mode === 'raw_dev' ? 0.7 : 0.4
+  });
+};
+
+const attemptModelCallTwice = async (operation: () => Promise<string>): Promise<string> => {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  return normalizeAssistantContent(extractOutputText(await response.json()).trim());
+  throw lastError instanceof Error ? lastError : new Error('model_generation_failed');
+};
+
+const buildLengthTargets = (intent: string): { maxWords?: number; maxParagraphs?: number } => {
+  const maxWordsByIntent: Partial<Record<string, number>> = {
+    general_conversation: 45,
+    meta_feedback: 50,
+    physical_harm: 65,
+    evidence_upload: 60,
+    legal_boundary: 70
+  };
+  const maxParagraphsByIntent: Partial<Record<string, number>> = {
+    general_conversation: 3,
+    meta_feedback: 3,
+    physical_harm: 3,
+    evidence_upload: 3,
+    legal_boundary: 3
+  };
+
+  return {
+    maxWords: maxWordsByIntent[intent],
+    maxParagraphs: maxParagraphsByIntent[intent]
+  };
+};
+
+const trimResponseToSentenceBoundaries = (
+  text: string,
+  intent: string
+): string => {
+  const { maxWords, maxParagraphs } = buildLengthTargets(intent);
+  if (!maxWords && !maxParagraphs) {
+    return text.trim();
+  }
+
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  const limitedParagraphs =
+    maxParagraphs && paragraphs.length > maxParagraphs ? paragraphs.slice(0, maxParagraphs) : paragraphs;
+  const sentences = limitedParagraphs
+    .join('\n\n')
+    .match(/[^.!?\n]+(?:[.!?]+|$)/g)
+    ?.map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  if (!sentences?.length) {
+    return limitedParagraphs.join('\n\n').trim();
+  }
+
+  const selected: string[] = [];
+  let wordCount = 0;
+  for (const sentence of sentences) {
+    const sentenceWords = sentence.split(/\s+/).filter(Boolean).length;
+    if (selected.length > 0 && maxWords && wordCount + sentenceWords > maxWords) {
+      break;
+    }
+    selected.push(sentence);
+    wordCount += sentenceWords;
+    if (maxWords && wordCount >= maxWords) {
+      break;
+    }
+  }
+
+  return (selected.length > 0 ? selected.join(' ') : sentences[0]).trim();
 };
 
 export const generateSafeSpeakResponse = async (
@@ -274,6 +462,16 @@ export const generateSafeSpeakResponse = async (
     input.intent === 'general_conversation' ||
     input.intent === 'language_or_translation' ||
     input.intent === 'encoding_error';
+  const retryPromptStyle: PromptStyle =
+    input.intent === 'meta_feedback' || input.intent === 'general_conversation'
+      ? 'compact'
+      : 'strict';
+  const responseSourceBase: OpenAiResponseSource =
+    mode === 'raw_dev'
+      ? 'raw_openai_model'
+      : ragStatus === 'retrieved'
+        ? 'openai_model_with_rag'
+        : 'openai_model';
 
   if (!env.OPENAI_API_KEY) {
     const fallback = minimalFallback(input.intent);
@@ -311,72 +509,142 @@ export const generateSafeSpeakResponse = async (
   }
 
   try {
-    let assistantMessage = await callOpenAI({ ...input, mode, model, ragContext, ragStatus });
+    let assistantMessage = await attemptModelCallTwice(() =>
+      callOpenAI({ ...input, mode, model, ragContext, ragStatus })
+    );
+    if (!assistantMessage.trim()) {
+      assistantMessage = await attemptModelCallTwice(() =>
+        callOpenAI({ ...input, mode, model, ragContext, ragStatus }, retryPromptStyle)
+      );
+    }
+
+    if (!assistantMessage.trim()) {
+      return buildSafeSpeakFallbackResponse({
+        intent: input.intent,
+        reason: 'empty_model_output',
+        responseSource: 'model_empty_fallback',
+        ragStatus,
+        consentSnapshot: input.context.consentSnapshot,
+        intentConfidence: input.intentConfidence,
+        classifierSource: input.classifierSource
+      });
+    }
+
     let guardrailStatus: GuardrailStatus = 'passed';
+    let fallbackReason: string | undefined;
     let validation = validateSafeSpeakResponse({
       text: assistantMessage,
+      intent: input.intent,
       jurisdiction: 'AU',
       allowMultipleQuestions: input.intent === 'safety_crisis',
       latestUserMessage: input.latestUserMessage,
       preferParagraphs
     });
+    let { hard: hardViolations, soft: softViolations } = splitGuardrailViolations(
+      validation.violations
+    );
 
-    if (!validation.passed) {
-      assistantMessage = await callOpenAI(
-        { ...input, mode, model, ragContext, ragStatus },
-        true
+    if (hardViolations.length > 0) {
+      assistantMessage = await attemptModelCallTwice(() =>
+        callOpenAI({ ...input, mode, model, ragContext, ragStatus }, retryPromptStyle)
       );
       guardrailStatus = 'regenerated';
       validation = validateSafeSpeakResponse({
         text: assistantMessage,
+        intent: input.intent,
         jurisdiction: 'AU',
         allowMultipleQuestions: input.intent === 'safety_crisis',
         latestUserMessage: input.latestUserMessage,
         preferParagraphs
       });
+      ({ hard: hardViolations, soft: softViolations } = splitGuardrailViolations(validation.violations));
+      if (hardViolations.length > 0) {
+        return buildSafeSpeakFallbackResponse({
+          intent: input.intent,
+          reason: hardViolations.join(','),
+          ragStatus,
+          consentSnapshot: input.context.consentSnapshot,
+          intentConfidence: input.intentConfidence,
+          classifierSource: input.classifierSource
+        });
+      }
     }
 
-    if (!validation.passed) {
-      const fallback = minimalFallback(input.intent);
+    if (softViolations.length > 0) {
+      const requiresCompactRetry =
+        softViolations.includes('too_long_for_intent') ||
+        softViolations.includes('too_many_paragraphs_for_intent') ||
+        softViolations.includes('too_many_questions') ||
+        softViolations.includes('bullet_heavy_non_actionable');
 
-      return {
-        assistantMessage: fallback.assistantMessage,
-        nextQuestion: '',
-        readyForSubmission: false,
-        confidence: 'medium',
-        disclaimer: buildInformationOnlyDisclaimer(),
-        citations: [],
-        showSources: false,
-        sourceDisplayReason: 'hidden_support_reply',
-        rag: {
-          used: ragContext.length > 0,
-          unavailable: ragStatus === 'required_but_no_sources_found',
-          resultCount: ragContext.length
-        },
-        reviewStatus: input.intent,
-        responseMode: fallback.responseMode,
-        intent: input.intent,
-        usedModelGeneration: false,
-        guardrailStatus: 'fallback',
-        fallbackReason: validation.violations.join(','),
-        staticTemplateUsed: false,
-        consentSnapshot: input.context.consentSnapshot,
-        intentConfidence: input.intentConfidence,
-        classifierSource: input.classifierSource,
-        responseSource: fallback.responseSource,
-        model,
-        jurisdiction: 'AU',
-        ragStatus,
-        selectedResponseSource: fallback.responseSource
-      };
+      if (requiresCompactRetry) {
+        const rewrittenMessage = await attemptModelCallTwice(() =>
+          rewriteCompactOpenAI({ ...input, mode, model, ragContext, ragStatus }, assistantMessage)
+        );
+        if (rewrittenMessage.trim()) {
+          assistantMessage = rewrittenMessage;
+          guardrailStatus = 'regenerated';
+          fallbackReason = softViolations.includes('too_long_for_intent')
+            ? 'too_long_for_intent'
+            : softViolations[0];
+          validation = validateSafeSpeakResponse({
+            text: assistantMessage,
+            intent: input.intent,
+            jurisdiction: 'AU',
+            allowMultipleQuestions: input.intent === 'safety_crisis',
+            latestUserMessage: input.latestUserMessage,
+            preferParagraphs
+          });
+          ({ hard: hardViolations, soft: softViolations } = splitGuardrailViolations(validation.violations));
+        }
+      }
+
+      if (hardViolations.length > 0) {
+        return buildSafeSpeakFallbackResponse({
+          intent: input.intent,
+          reason: hardViolations.join(','),
+          ragStatus,
+          consentSnapshot: input.context.consentSnapshot,
+          intentConfidence: input.intentConfidence,
+          classifierSource: input.classifierSource
+        });
+      }
+
+      if (softViolations.includes('too_long_for_intent') || softViolations.includes('too_many_paragraphs_for_intent')) {
+        assistantMessage = trimResponseToSentenceBoundaries(assistantMessage, input.intent);
+        guardrailStatus = 'regenerated';
+        fallbackReason = 'too_long_for_intent';
+        validation = validateSafeSpeakResponse({
+          text: assistantMessage,
+          intent: input.intent,
+          jurisdiction: 'AU',
+          allowMultipleQuestions: input.intent === 'safety_crisis',
+          latestUserMessage: input.latestUserMessage,
+          preferParagraphs
+        });
+        ({ hard: hardViolations, soft: softViolations } = splitGuardrailViolations(validation.violations));
+      }
+
+      if (hardViolations.length > 0) {
+        return buildSafeSpeakFallbackResponse({
+          intent: input.intent,
+          reason: hardViolations.join(','),
+          ragStatus,
+          consentSnapshot: input.context.consentSnapshot,
+          intentConfidence: input.intentConfidence,
+          classifierSource: input.classifierSource
+        });
+      }
+
+      if (softViolations.length > 0 && !fallbackReason) {
+        fallbackReason = softViolations[0];
+      }
     }
 
-    const responseSource =
-      mode === 'raw_dev'
-        ? 'raw_openai_model'
-        : ragStatus === 'retrieved'
-          ? 'openai_model_with_rag'
-          : 'openai_model';
+    const responseSource: OpenAiResponseSource =
+      guardrailStatus === 'regenerated' && mode !== 'raw_dev'
+        ? 'openai_model_regenerated'
+        : responseSourceBase;
 
     return {
       assistantMessage: normalizeAssistantContent(assistantMessage),
@@ -397,6 +665,7 @@ export const generateSafeSpeakResponse = async (
       intent: input.intent,
       usedModelGeneration: true,
       guardrailStatus,
+      fallbackReason,
       staticTemplateUsed: false,
       consentSnapshot: input.context.consentSnapshot,
       intentConfidence: input.intentConfidence,
@@ -408,38 +677,14 @@ export const generateSafeSpeakResponse = async (
       selectedResponseSource: responseSource
     };
   } catch (error) {
-    const fallback = minimalFallback(input.intent);
-
-    return {
-      assistantMessage: fallback.assistantMessage,
-      nextQuestion: '',
-      readyForSubmission: false,
-      confidence: 'medium',
-      disclaimer: buildInformationOnlyDisclaimer(),
-      citations: [],
-      showSources: false,
-      sourceDisplayReason: 'hidden_support_reply',
-      rag: {
-        used: ragContext.length > 0,
-        unavailable: ragStatus === 'required_but_no_sources_found',
-        resultCount: ragContext.length
-      },
-      reviewStatus: input.intent,
-      responseMode: fallback.responseMode,
+    return buildSafeSpeakFallbackResponse({
       intent: input.intent,
-      usedModelGeneration: false,
-      guardrailStatus: 'fallback',
-      fallbackReason: error instanceof Error ? error.message : 'model_generation_failed',
-      staticTemplateUsed: false,
+      reason: error instanceof Error ? error.message : 'model_generation_failed',
+      ragStatus,
       consentSnapshot: input.context.consentSnapshot,
       intentConfidence: input.intentConfidence,
-      classifierSource: input.classifierSource,
-      responseSource: fallback.responseSource,
-      model,
-      jurisdiction: 'AU',
-      ragStatus,
-      selectedResponseSource: fallback.responseSource
-    };
+      classifierSource: input.classifierSource
+    });
   }
 };
 

@@ -12,8 +12,8 @@ const {
   buildSupportResourceSuggestions,
   buildRelatedIssueTypes,
   buildSafetySteps,
-  buildSupportReply,
   buildTurnHandlingPlan,
+  resolveAssistantFormatPreferenceUpdate,
   buildAssistantMessageMetadata,
   classifyResponseMode,
   detectAssistantLanguage,
@@ -27,8 +27,11 @@ const {
   shouldShowSources,
 } = require('../src/modules/conversation-flow/conversation-flow.service.ts');
 const {
+  buildSupportReply,
+} = require('../src/modules/conversation-flow/legacy-support-replies.ts');
+const {
   composeEvidenceUploadResponse,
-} = require('../src/modules/ai/response-composer.ts');
+} = require('../src/modules/ai/legacy/response-composer.ts');
 const {
   classifySafeSpeakIntent,
   classifySafeSpeakIntentDetails,
@@ -43,9 +46,73 @@ const {
   hasBrokenTextEncoding,
 } = require('../src/modules/ai/text-encoding.ts');
 const {
+  sanitizeTimelineAssistantModelInput,
+} = require('../src/modules/rag/rag.service.ts');
+const {
   ASSISTANT_LANGUAGE_REGISTRY,
   resolveAssistantLanguage,
 } = require('../src/modules/ai/assistant-language.ts');
+
+const LEGACY_RUNTIME_REPLY_PATTERNS = [
+  /Thank you for telling me about this/i,
+  /You do not need to explain everything at once/i,
+  /What feels most important for me to understand next/i,
+  /A few practical steps that may help are/i,
+  /Can you tell me a bit more about what happened/i,
+  /Thank you\. What would feel helpful to share next/i,
+  /I am sorry this happened to you\. You are safe to explore your options here/i,
+  /I could not reliably retrieve the legal source just now/i
+];
+
+const createModelContext = ({
+  latestUserMessage,
+  intent,
+  detectedLanguage = 'en',
+  assistantFormatPreference = 'paragraphs',
+  ragContext = []
+}) => ({
+  app: 'SafeSpeak',
+  jurisdiction: 'AU',
+  latestUserMessage,
+  detectedLanguage,
+  intent,
+  assistantFormatPreference,
+  conversationSummary: `user: ${latestUserMessage}`,
+  activeIncidentSummary: 'None recorded.',
+  consentSnapshot: {
+    store_local: false,
+    cloud_sync: false,
+    share_with_agencies: false,
+    retain_evidence: false,
+    process_with_ai: true,
+    translate_content: false,
+    warm_referral: false
+  },
+  safetyContext: {
+    latestTurnRiskLevel: 'low',
+    activeIncidentRiskLevel: 'low',
+    sessionHistoricalMaxRiskLevel: 'low',
+    immediateDanger: false,
+    threatsPresent: false,
+    physicalHarm: false,
+    domesticFamilyViolence: false,
+    selfHarm: false,
+    childSafety: false,
+    recommendedEmergencyNumber: '000',
+    relevantSupport: []
+  },
+  ragContext,
+  constraints: []
+});
+
+const assertNoLegacyRuntimePhrases = (text) => {
+  LEGACY_RUNTIME_REPLY_PATTERNS.forEach((pattern) => {
+    assert.doesNotMatch(text, pattern);
+  });
+};
+
+const countQuestions = (text) => (text.match(/\?/g) ?? []).length;
+const countWords = (text) => text.trim().split(/\s+/).filter(Boolean).length;
 
 test('explicit triage handoff phrases trigger the triage button intent', () => {
   [
@@ -65,7 +132,7 @@ test('explicit triage handoff phrases trigger the triage button intent', () => {
 test('triage handoff response meta preserves the same session and hides sources', () => {
   const responseMeta = buildConversationAssistantResponseMeta({
     assistantPayload: {
-      assistantMessage: 'Of course — I can take you to your triage summary now.',
+      assistantMessage: 'Continue to Triage',
       nextQuestion: '',
       triageReady: true,
       nextAction: 'show_triage_button',
@@ -124,7 +191,10 @@ test('meta feedback fallback stays minimal and avoids old scripted copy', () => 
   const metadata = buildAssistantMessageMetadata(reply);
   const combined = `${reply.assistantMessage} ${reply.nextQuestion}`.trim();
 
-  assert.match(reply.assistantMessage, /safety-focused and information-only|rephrase/i);
+  assert.equal(
+    reply.assistantMessage,
+    'That reply did not come through clearly. Please ask again and I will keep it brief.'
+  );
   assert.doesNotMatch(combined, /too scripted|continue testing the chat behavior|Thank you for telling me about this|what happened/i);
   assert.equal(metadata.responseMode, 'guardrail_fallback');
   assert.equal(metadata.usedModelGeneration, false);
@@ -158,7 +228,10 @@ test('physical harm fallback never reuses the old meta feedback text', () => {
   });
   const combined = `${reply.assistantMessage} ${reply.nextQuestion}`.trim();
 
-  assert.match(combined, /safety-focused and information-only|rephrase/i);
+  assert.equal(
+    combined,
+    'I had trouble replying clearly just now. If you are in immediate danger in Australia, call 000. If you want, tell me whether you are hurt right now.'
+  );
   assert.doesNotMatch(combined, /too scripted|continue testing the chat behavior/i);
 });
 
@@ -248,6 +321,39 @@ test('language request turn plan does not mutate triage', () => {
   assert.equal(plan.activeIncidentRiskLevel, 'none');
 });
 
+test('bullet question does not set bullet preference and is treated as a format question', () => {
+  const resolution = resolveAssistantFormatPreferenceUpdate(
+    'are you answering with bullet points every time?',
+    'mix'
+  );
+
+  assert.equal(resolution.assistantFormatPreference, 'mix');
+  assert.equal(resolution.formatPreferenceUpdated, false);
+  assert.equal(resolution.subIntent, 'format_preference_question');
+});
+
+test('paragraph preference sets paragraphs explicitly', () => {
+  const resolution = resolveAssistantFormatPreferenceUpdate(
+    'please answer in paragraphs, not bullet points',
+    'bullets'
+  );
+
+  assert.equal(resolution.assistantFormatPreference, 'paragraphs');
+  assert.equal(resolution.formatPreferenceUpdated, true);
+  assert.equal(resolution.subIntent, 'format_preference_set');
+});
+
+test('bullet preference sets bullets explicitly', () => {
+  const resolution = resolveAssistantFormatPreferenceUpdate(
+    'please use bullet points',
+    'paragraphs'
+  );
+
+  assert.equal(resolution.assistantFormatPreference, 'bullets');
+  assert.equal(resolution.formatPreferenceUpdated, true);
+  assert.equal(resolution.subIntent, 'format_preference_set');
+});
+
 test('evidence upload without an active incident stays non-incident and does not create new triage facts', () => {
   const plan = buildTurnHandlingPlan({
     selectedIntent: 'evidence_upload',
@@ -300,7 +406,7 @@ test('model response path uses generation metadata for general conversation', as
   global.fetch = async () => ({
     ok: true,
     json: async () => ({
-      output_text: 'Hello. I can help explain options, evidence, or support pathways in Australia.'
+      output_text: 'Hi. I can help with a question or with something specific that happened.'
     })
   });
 
@@ -349,9 +455,51 @@ test('model response path uses generation metadata for general conversation', as
     assert.equal(reply.staticTemplateUsed, false);
     assert.equal(reply.responseMode, 'safespeak_model');
     assert.equal(reply.responseSource, 'openai_model');
+    assert.ok(countWords(reply.assistantMessage) <= 20);
+    assert.doesNotMatch(reply.assistantMessage, /sorry this happened|safe to explore your options/i);
     assert.doesNotMatch(
       reply.assistantMessage,
       /Thank you for telling me|You do not need to explain everything at once/i
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('empty model output falls back to a technical retry message', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text: '   '
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'general_conversation',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'hi',
+      context: createModelContext({
+        latestUserMessage: 'hi',
+        intent: 'general_conversation'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.usedModelGeneration, false);
+    assert.equal(reply.staticTemplateUsed, false);
+    assert.equal(reply.responseSource, 'model_empty_fallback');
+    assert.equal(reply.responseMode, 'model_empty_fallback');
+    assert.equal(
+      reply.assistantMessage,
+      'I had trouble replying clearly just now. Please send that again.'
     );
   } finally {
     global.fetch = originalFetch;
@@ -564,6 +712,29 @@ test('mojibake input guard detects broken bengali transport patterns', () => {
   );
 });
 
+test('timeline assistant sanitizer excludes corrupted history and timeline values', () => {
+  const sanitized = sanitizeTimelineAssistantModelInput({
+    message: 'I have screenshots from Facebook.',
+    conversation: [
+      { role: 'user', content: 'Someone threatened me on Facebook.' },
+      { role: 'assistant', content: 'αªåαª«αª╛' }
+    ],
+    timeline: {
+      what: 'Someone threatened me',
+      evidence: 'à¦à¦®à¦¾à¦°'
+    },
+    language: 'en',
+    topK: 4
+  });
+
+  assert.equal(sanitized.encodingWarning, true);
+  assert.equal(sanitized.excludedConversationCount, 1);
+  assert.deepEqual(sanitized.excludedTimelineKeys, ['evidence']);
+  assert.equal(sanitized.sanitizedInput.conversation.length, 1);
+  assert.equal(sanitized.sanitizedInput.timeline.what, 'Someone threatened me');
+  assert.equal('evidence' in sanitized.sanitizedInput.timeline, false);
+});
+
 test('bengali response normalization preserves unicode and avoids mojibake', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({
@@ -693,13 +864,87 @@ test('meta feedback replies regenerate away from bullet-heavy formatting', async
   }
 });
 
+test('meta feedback stays model-generated and avoids technical fallback when regeneration succeeds', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text:
+        'You are right to call that out. I can keep replies more natural and less repetitive from here.'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'meta_feedback',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'why are you replying the same thing every time?',
+      context: createModelContext({
+        latestUserMessage: 'why are you replying the same thing every time?',
+        intent: 'meta_feedback'
+      })
+    });
+
+    assert.equal(reply.intent, 'meta_feedback');
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.staticTemplateUsed, false);
+    assert.notEqual(reply.responseMode, 'model_empty_fallback');
+    assert.notEqual(reply.responseMode, 'guardrail_fallback');
+    assert.ok(countWords(reply.assistantMessage) <= 25);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('meta feedback does not technical fallback when the reply is long but repairable', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'You are hearing repetition because I have been leaning too hard on the same phrasing, and that makes the chat feel static instead of responsive. I can answer your actual point more directly, keep the wording shorter, and stop recycling the same structure in every turn so it feels more natural. If you want, ask the same question again and I will answer it in a simpler way.'
+            : 'You are right. I have been too repetitive. Ask again and I will answer more directly.'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'meta_feedback',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'why are you replying the same thing every time?',
+      context: createModelContext({
+        latestUserMessage: 'why are you replying the same thing every time?',
+        intent: 'meta_feedback'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.equal(reply.fallbackReason, 'too_long_for_intent');
+    assert.equal(reply.responseSource, 'openai_model_regenerated');
+    assert.notEqual(reply.responseMode, 'guardrail_fallback');
+    assert.notEqual(reply.responseSource, 'guardrail_fallback');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('legal boundary model response stays information-only and uses rag metadata when retrieved', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({
     ok: true,
     json: async () => ({
       output_text:
-        'I cannot decide whether it is illegal, but possible options may include getting legal information and checking the reporting pathway that fits your situation in NSW.'
+        'SafeSpeak cannot decide whether it is illegal. This is information only, not legal advice. Possible options may include checking the reporting pathway that fits your situation in NSW.'
     })
   });
 
@@ -759,7 +1004,318 @@ test('legal boundary model response stays information-only and uses rag metadata
     assert.equal(reply.ragStatus, 'retrieved');
     assert.equal(reply.responseSource, 'openai_model_with_rag');
     assert.match(reply.disclaimer, /information only, not legal advice/i);
-    assert.doesNotMatch(reply.assistantMessage, /you should sue|you have a case|this is illegal/i);
+    assert.doesNotMatch(reply.assistantMessage, /you should sue|you have a case|this is illegal|you can sue|suing is an option|criminal matter/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('physical harm replies stay short and ask one question max', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text:
+        'I’m sorry that happened. If you feel safe to answer, are you hurt or in any immediate danger right now?'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'physical_harm',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'i was walking and someone hit me',
+      context: createModelContext({
+        latestUserMessage: 'i was walking and someone hit me',
+        intent: 'physical_harm'
+      })
+    });
+
+    assert.equal(reply.usedModelGeneration, true);
+    assert.ok(countWords(reply.assistantMessage) <= 30);
+    assert.ok(countQuestions(reply.assistantMessage) <= 1);
+    assert.doesNotMatch(reply.assistantMessage, /\b911|999|112\b/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('physical harm long reply regenerates instead of using technical fallback', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'I’m sorry that happened. What you described sounds serious, and it can help to pause, check your surroundings, think about whether you are hurt, notice whether the person is still nearby, and consider whether you want to document the location, the time, and any witnesses before deciding what to do next. If you are injured you may want medical help, and if the person is still there you may want urgent support. Are you hurt right now?'
+            : 'I’m sorry that happened. Are you hurt or in any immediate danger right now?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'physical_harm',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'i was walking and someone hit me',
+      context: createModelContext({
+        latestUserMessage: 'i was walking and someone hit me',
+        intent: 'physical_harm'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.responseSource, 'openai_model_regenerated');
+    assert.notEqual(reply.responseSource, 'guardrail_fallback');
+    assert.doesNotMatch(reply.assistantMessage, /\b911|999|112\b/);
+    assert.ok(countQuestions(reply.assistantMessage) <= 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('evidence replies stay short and avoid false upload or legal-strategy claims', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text:
+        'You can keep the photos unchanged as part of your record. Nothing is automatically shared here. Would you like help noting what each photo shows?'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'evidence_upload',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'I have photos of what happened.',
+      context: createModelContext({
+        latestUserMessage: 'I have photos of what happened.',
+        intent: 'evidence_upload'
+      })
+    });
+
+    assert.equal(reply.usedModelGeneration, true);
+    assert.ok(countWords(reply.assistantMessage) <= 30);
+    assert.ok(countQuestions(reply.assistantMessage) <= 1);
+    assert.doesNotMatch(reply.assistantMessage, /hard to dispute|prove your case|strong evidence|build your case/i);
+    assert.doesNotMatch(reply.assistantMessage, /uploaded for you|saved for you|shared for you|sent for you|synced for you/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('evidence upload long reply regenerates and stays consent-aware', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'Photos can be useful for your own record, and it may help to keep the original files, note when each image was taken, and think about whether location data, cloud sync, retention, or future sharing settings match what you want before doing anything else here. Nothing should be assumed about sharing unless you choose it, and uploading is separate from any later AI step or agency step. Would you like help writing a short note for each photo so the context stays clear?'
+            : 'You can keep the photos as part of your record. Nothing is automatically shared here. Would you like help noting what each photo shows?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'evidence_upload',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'I have photos of what happened.',
+      context: createModelContext({
+        latestUserMessage: 'I have photos of what happened.',
+        intent: 'evidence_upload'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.responseSource, 'openai_model_regenerated');
+    assert.notEqual(reply.responseSource, 'guardrail_fallback');
+    assert.match(reply.assistantMessage, /nothing is automatically shared/i);
+    assert.doesNotMatch(reply.assistantMessage, /uploaded for you|saved for you|shared for you|sent for you|synced for you/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('too-long model output uses compact retry prompt and returns regenerated model output', async () => {
+  const originalFetch = global.fetch;
+  const requestBodies = [];
+  let callCount = 0;
+  global.fetch = async (_url, options) => {
+    callCount += 1;
+    requestBodies.push(JSON.parse(options.body));
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'You can keep the photos unchanged as part of your own record, and it may help to note what each image shows, where it was taken, whether metadata matters to you, and whether any storage or sharing settings fit what you want before you do anything else. Uploading is separate from any later AI processing step, and nothing should be assumed about sharing or retention unless you choose that. If you want, I can help you organise the photos into a short timeline and explain the difference between local storage, cloud sync, retention, and sharing choices.'
+            : 'You can keep the photos as part of your record. Nothing is automatically shared here. Would you like help noting what each photo shows?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'evidence_upload',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'I have photos of what happened.',
+      context: createModelContext({
+        latestUserMessage: 'I have photos of what happened.',
+        intent: 'evidence_upload'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.match(
+      requestBodies[1].input[1].content,
+      /Rewrite your previous answer more briefly\. Keep the same meaning\. Use short paragraphs\. Ask at most one question\. Do not add new advice\. Follow SafeSpeak rules\./
+    );
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.equal(reply.fallbackReason, 'too_long_for_intent');
+    assert.equal(reply.responseSource, 'openai_model_regenerated');
+    assert.equal(reply.staticTemplateUsed, false);
+    assert.notEqual(reply.responseMode, 'guardrail_fallback');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('legal boundary outputs regenerate away from direct legal conclusions', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'Whether it’s illegal depends, but you can sue and this sounds like a criminal matter.'
+            : 'SafeSpeak can’t decide whether it was illegal. This is information only, not legal advice. If you want, what state or territory did this happen in?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'legal_boundary',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'Is this illegal? Can I sue them?',
+      context: createModelContext({
+        latestUserMessage: 'Is this illegal? Can I sue them?',
+        intent: 'legal_boundary'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.match(reply.assistantMessage, /information only|not legal advice/i);
+    assert.ok(countQuestions(reply.assistantMessage) <= 1);
+    assert.doesNotMatch(reply.assistantMessage, /you can sue|suing is an option|criminal matter|this is illegal/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('model-path replies do not reuse removed static assistant phrases', async () => {
+  const originalFetch = global.fetch;
+  const outputs = [
+    'I’m sorry that happened. Are you hurt or in any immediate danger right now?',
+    'You can keep the photos unchanged if you want them as part of your record. Would you like help organising them?',
+    'You are right to question the format. I can answer more naturally and keep future replies in short paragraphs.',
+    'SafeSpeak can’t decide whether it was illegal. This is information only, not legal advice. If you want, what state or territory did this happen in?'
+  ];
+  let callIndex = 0;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text: outputs[Math.min(callIndex++, outputs.length - 1)]
+    })
+  });
+
+  const cases = [
+    {
+      latestUserMessage: 'i was walking and someone hit me',
+      intent: 'physical_harm'
+    },
+    {
+      latestUserMessage: 'I have photos of what happened',
+      intent: 'evidence_upload'
+    },
+    {
+      latestUserMessage: 'why are you replying the same thing every time?',
+      intent: 'meta_feedback'
+    },
+    {
+      latestUserMessage: 'Is this illegal? Can I sue them?',
+      intent: 'legal_boundary',
+      ragStatus: 'retrieved',
+      ragContext: [
+        {
+          sourceTitle: 'Anti-Discrimination NSW guidance',
+          jurisdiction: 'NSW',
+          sourceType: 'Webpage',
+          url: 'https://example.test/nsw-guidance',
+          lastUpdated: '2026-01-01',
+          relevantSnippet: 'This source explains complaint pathways and information-only guidance.'
+        }
+      ]
+    }
+  ];
+
+  try {
+    for (const testCase of cases) {
+      const reply = await generateSafeSpeakResponse({
+        intent: testCase.intent,
+        intentConfidence: 'high',
+        classifierSource: 'rule',
+        latestUserMessage: testCase.latestUserMessage,
+        ragStatus: testCase.ragStatus,
+        ragContext: testCase.ragContext,
+        context: createModelContext({
+          latestUserMessage: testCase.latestUserMessage,
+          intent: testCase.intent,
+          ragContext: testCase.ragContext ?? []
+        })
+      });
+
+      assert.equal(reply.usedModelGeneration, true);
+      assert.equal(reply.staticTemplateUsed, false);
+      assert.ok(
+        reply.responseSource === 'openai_model' || reply.responseSource === 'openai_model_with_rag'
+      );
+      assertNoLegacyRuntimePhrases(reply.assistantMessage);
+      if (testCase.intent === 'physical_harm' || testCase.intent === 'evidence_upload') {
+        assert.ok(countQuestions(reply.assistantMessage) <= 1);
+        assert.ok(countWords(reply.assistantMessage) <= 30);
+      }
+      if (testCase.intent === 'legal_boundary') {
+        assert.match(reply.assistantMessage, /information only|not legal advice/i);
+        assert.doesNotMatch(reply.assistantMessage, /you can sue|suing is an option|criminal matter|this is illegal/i);
+      }
+    }
   } finally {
     global.fetch = originalFetch;
   }
