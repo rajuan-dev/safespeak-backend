@@ -2,7 +2,9 @@ import { StatusCodes } from 'http-status-codes';
 import { Types, type HydratedDocument } from 'mongoose';
 
 import { ApiError } from '@common/errors/ApiError';
+import { composeEvidenceUploadResponse } from '@modules/ai/response-composer';
 import { createAuditLog } from '@modules/audit/audit.service';
+import { getCurrentConsent } from '@modules/consent/consent.service';
 import { MicroEducationModel } from '@modules/microeducation/microeducation.model';
 import { RagKnowledgeSourceModel } from '@modules/rag/rag.model';
 import {
@@ -257,6 +259,7 @@ type ConversationFlowStructuredFacts = {
 type ConversationAssistantResponseMode =
   | 'legal_lookup'
   | 'triage_handoff'
+  | 'evidence_upload_intent'
   | 'support_victim_style'
   | 'scamshield_style'
   | 'emergency_safety'
@@ -559,6 +562,28 @@ export const detectTriageHandoffIntent = (message: string): boolean => {
   );
 };
 
+export const detectEvidenceUploadIntent = (message: string): boolean => {
+  const normalizedMessage = normalizeConversationIntentText(message);
+
+  if (!normalizedMessage) {
+    return false;
+  }
+
+  const evidenceTerms =
+    /\b(screenshot|screenshots|screen shot|screen shots|photo|photos|image|images|file|files|document|documents|evidence|proof|recording|recordings)\b/i;
+  const uploadTerms = /\b(upload|attach|attached|attachment|send|share|add)\b/i;
+  const possessionTerms = /\b(i have|ive got|i got|i want to upload|can i upload|can i attach)\b/i;
+  const aiAnalysisTerms =
+    /\b(ai|artificial intelligence|analyse|analyze|analysis|process|review|scan|read|look at)\b/i;
+
+  return (
+    (evidenceTerms.test(normalizedMessage) && uploadTerms.test(normalizedMessage)) ||
+    (evidenceTerms.test(normalizedMessage) && aiAnalysisTerms.test(normalizedMessage)) ||
+    (possessionTerms.test(normalizedMessage) && evidenceTerms.test(normalizedMessage)) ||
+    /\bcan i upload evidence\b/i.test(normalizedMessage)
+  );
+};
+
 const buildTriageHandoffAssistantPayload = () => ({
   assistantMessage: TRIAGE_HANDOFF_MESSAGE,
   nextQuestion: '',
@@ -636,6 +661,10 @@ export const classifyResponseMode = (input: {
     input.sessionFacts.sexualViolenceRisk
   ) {
     return 'emergency_safety';
+  }
+
+  if (detectEvidenceUploadIntent(input.message)) {
+    return 'evidence_upload_intent';
   }
 
   if (
@@ -1397,6 +1426,39 @@ export const buildSupportReply = (input: {
     },
     reviewStatus: input.responseMode
   };
+};
+
+export const buildAssistantMessageMetadata = (assistantPayload: Record<string, unknown>) => {
+  const metadata: Record<string, unknown> = {
+    confidence: assistantPayload.confidence,
+    reviewStatus: assistantPayload.reviewStatus
+  };
+
+  if (typeof assistantPayload.intent === 'string') {
+    metadata.intent = assistantPayload.intent;
+  }
+
+  if (typeof assistantPayload.responseMode === 'string') {
+    metadata.responseMode = assistantPayload.responseMode;
+  }
+
+  if (typeof assistantPayload.intentConfidence === 'string') {
+    metadata.intentConfidence = assistantPayload.intentConfidence;
+  }
+
+  if (typeof assistantPayload.responseVariant === 'string') {
+    metadata.responseVariant = assistantPayload.responseVariant;
+  }
+
+  if (
+    assistantPayload.consentSnapshot &&
+    typeof assistantPayload.consentSnapshot === 'object' &&
+    !Array.isArray(assistantPayload.consentSnapshot)
+  ) {
+    metadata.consentSnapshot = assistantPayload.consentSnapshot;
+  }
+
+  return metadata;
 };
 
 const joinNaturalLanguageList = (items: string[]): string => {
@@ -4205,6 +4267,10 @@ export const appendConversationFlowMessage = async (
     selectedTopic: session.selectedTopic
   });
   const triageHandoffIntent = responseMode === 'triage_handoff';
+  const evidenceUploadIntent = responseMode === 'evidence_upload_intent';
+  const priorEvidenceUploadTurns = conversationForAssistant.filter(
+    (message) => message.role === 'user' && detectEvidenceUploadIntent(message.content)
+  ).length - (evidenceUploadIntent ? 1 : 0);
 
   let assistantPayload: Record<string, unknown>;
 
@@ -4213,6 +4279,31 @@ export const appendConversationFlowMessage = async (
       ...buildTriageHandoffAssistantPayload(),
       assistantMessage: localizeExactString(assistantLanguage, TRIAGE_HANDOFF_MESSAGE)
     };
+  } else if (evidenceUploadIntent) {
+    const consent = await getCurrentConsent(context.owner);
+    assistantPayload = composeEvidenceUploadResponse({
+      userMessage: input.content,
+      consent,
+      activeIncident: {
+        matchedFacts: supportFacts.originalFacts.matchedFacts,
+        platforms: supportFacts.platforms,
+        domesticViolence: supportFacts.domestic_family_context,
+        coerciveControl: supportFacts.coercive_control,
+        threatPresent: supportFacts.threat_present,
+        immediateDanger: supportFacts.immediate_danger
+      },
+      latestTurnRiskLevel: safetyOverride.safetyLevel,
+      activeIncidentRiskLevel: session.safetyRiskLevel,
+      detectedLanguage: assistantLanguage,
+      conversationState: {
+        priorEvidenceUploadTurns,
+        latestAssistantMessage:
+          existingMessages
+            .slice()
+            .reverse()
+            .find((message) => message.role === 'assistant')?.content ?? undefined
+      }
+    });
   } else if (responseMode !== 'legal_lookup') {
     assistantPayload = buildSupportReply({
       facts: supportFacts,
@@ -4299,10 +4390,7 @@ export const appendConversationFlowMessage = async (
     role: 'assistant',
     content: assistantMessageContent || 'Thank you. What would feel helpful to share next?',
     turnNumber: existingMessages.length + 2,
-    metadata: {
-      confidence: assistantPayload.confidence,
-      reviewStatus: assistantPayload.reviewStatus
-    }
+    metadata: buildAssistantMessageMetadata(assistantPayload)
   });
 
   session.messageCount += 1;

@@ -13,8 +13,10 @@ const {
   buildRelatedIssueTypes,
   buildSafetySteps,
   buildSupportReply,
+  buildAssistantMessageMetadata,
   classifyResponseMode,
   detectAssistantLanguage,
+  detectEvidenceUploadIntent,
   detectTriageHandoffIntent,
   detectCategory,
   evaluateSafetyOverride,
@@ -23,6 +25,9 @@ const {
   localizeKnownLegalLookupAnswer,
   shouldShowSources,
 } = require('../src/modules/conversation-flow/conversation-flow.service.ts');
+const {
+  composeEvidenceUploadResponse,
+} = require('../src/modules/ai/response-composer.ts');
 const {
   ASSISTANT_LANGUAGE_REGISTRY,
   resolveAssistantLanguage,
@@ -70,6 +75,237 @@ test('triage handoff response meta preserves the same session and hides sources'
   assert.equal(responseMeta.showSources, false);
   assert.equal(responseMeta.sourceDisplayReason, 'triage_handoff');
   assert.equal(responseMeta.citations.length, 0);
+});
+
+test('evidence upload intent is detected for screenshot upload questions', () => {
+  const message = 'I have screenshots. Can I upload them?';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(detectEvidenceUploadIntent(message), true);
+  assert.equal(responseMode, 'evidence_upload_intent');
+});
+
+test('evidence upload consent reply is direct, privacy-first, and metadata-ready', () => {
+  const reply = composeEvidenceUploadResponse({
+    userMessage: 'I have screenshots. Can I upload them?',
+    consent: {
+      store_local: true,
+      cloud_sync: false,
+      share_with_agencies: false,
+      use_anonymised_analytics: false,
+      process_with_ai: false,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    conversationState: {
+      priorEvidenceUploadTurns: 0,
+    }
+  });
+  const combined = `${reply.assistantMessage} ${reply.nextQuestion}`.trim();
+  const metadata = buildAssistantMessageMetadata(reply);
+
+  assert.match(reply.assistantMessage, /^(Yes|You can)/);
+  assert.match(combined, /won.t be sent to any agency automatically|nothing should be shared automatically|does not submit a report/i);
+  assert.match(combined, /cloud sync is off/i);
+  assert.match(combined, /local/i);
+  assert.match(combined, /retention is off|should not keep/i);
+  assert.equal((combined.match(/\?/g) ?? []).length, 1);
+  assert.doesNotMatch(combined, /what happened/i);
+  assert.equal(metadata.intent, 'evidence_upload_intent');
+  assert.equal(metadata.responseMode, 'evidence_consent');
+  assert.equal(metadata.intentConfidence, 'high');
+  assert.equal(metadata.responseVariant, 'local_only');
+  assert.deepEqual(metadata.consentSnapshot, {
+    store_local: true,
+    cloud_sync: false,
+    share_with_agencies: false,
+    retain_evidence: false,
+    process_with_ai: false
+  });
+});
+
+test('repeated evidence upload follow-up changes wording and stays concise', () => {
+  const firstReply = composeEvidenceUploadResponse({
+    userMessage: 'I have screenshots. Can I upload them?',
+    consent: {
+      store_local: true,
+      cloud_sync: false,
+      share_with_agencies: false,
+      use_anonymised_analytics: false,
+      process_with_ai: false,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    conversationState: {
+      priorEvidenceUploadTurns: 0,
+    }
+  });
+  const secondReply = composeEvidenceUploadResponse({
+    userMessage: 'Can I attach screenshots?',
+    consent: {
+      store_local: true,
+      cloud_sync: false,
+      share_with_agencies: false,
+      use_anonymised_analytics: false,
+      process_with_ai: false,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    conversationState: {
+      priorEvidenceUploadTurns: 1,
+      latestAssistantMessage: firstReply.assistantMessage,
+    }
+  });
+
+  assert.notEqual(secondReply.assistantMessage, firstReply.assistantMessage);
+  assert.equal(secondReply.responseVariant, 'repeat_follow_up');
+  assert.match(`${secondReply.assistantMessage} ${secondReply.nextQuestion}`, /shared automatically|agency/i);
+  assert.equal((`${secondReply.assistantMessage} ${secondReply.nextQuestion}`.match(/\?/g) ?? []).length, 1);
+});
+
+test('danger messages still stay in emergency mode even when upload is mentioned', () => {
+  const message = 'I have screenshots, and my partner says he will kill me tonight. Can I upload them?';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(detectEvidenceUploadIntent(message), true);
+  assert.equal(responseMode, 'emergency_safety');
+});
+
+test('high-risk evidence upload response answers upload first and includes a short 000 reminder', () => {
+  const reply = composeEvidenceUploadResponse({
+    userMessage: 'I have screenshots. Can I upload them?',
+    consent: {
+      store_local: true,
+      cloud_sync: false,
+      share_with_agencies: false,
+      use_anonymised_analytics: false,
+      process_with_ai: false,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    activeIncident: {
+      matchedFacts: ['death threats'],
+      platforms: ['Facebook'],
+      threatPresent: true,
+      immediateDanger: true,
+    },
+    latestTurnRiskLevel: 'urgent',
+    activeIncidentRiskLevel: 'high',
+    conversationState: {
+      priorEvidenceUploadTurns: 0,
+    }
+  });
+  const combined = `${reply.assistantMessage} ${reply.nextQuestion}`;
+
+  assert.match(reply.assistantMessage, /^(Yes|You can)/);
+  assert.match(combined, /agency|shared automatically|sent to any agency/i);
+  assert.match(combined, /call 000/i);
+  assert.equal(reply.responseVariant, 'high_risk_context');
+  assert.equal((combined.match(/\?/g) ?? []).length, 1);
+});
+
+test('cloud sync on response mentions syncing and avoids local-only wording', () => {
+  const reply = composeEvidenceUploadResponse({
+    userMessage: 'Can I upload evidence?',
+    consent: {
+      store_local: true,
+      cloud_sync: true,
+      share_with_agencies: false,
+      use_anonymised_analytics: false,
+      process_with_ai: false,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    conversationState: {
+      priorEvidenceUploadTurns: 0,
+    }
+  });
+  const combined = `${reply.assistantMessage} ${reply.nextQuestion}`;
+
+  assert.equal(reply.responseVariant, 'cloud_sync_on');
+  assert.match(combined, /cloud sync is on|may sync/i);
+  assert.doesNotMatch(combined, /local only for now/i);
+});
+
+test('agency sharing on response still requires confirmation before sending anywhere', () => {
+  const reply = composeEvidenceUploadResponse({
+    userMessage: 'I have proof. Can I upload it?',
+    consent: {
+      store_local: true,
+      cloud_sync: false,
+      share_with_agencies: true,
+      use_anonymised_analytics: false,
+      process_with_ai: false,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    conversationState: {
+      priorEvidenceUploadTurns: 0,
+    }
+  });
+
+  assert.equal(reply.responseVariant, 'agency_sharing_on');
+  assert.match(reply.assistantMessage, /still ask before sending|without a clear confirmation/i);
+});
+
+test('ai analysis question explains ai consent only when asked', () => {
+  const normalReply = composeEvidenceUploadResponse({
+    userMessage: 'I have screenshots. Can I upload them?',
+    consent: {
+      store_local: true,
+      cloud_sync: false,
+      share_with_agencies: false,
+      use_anonymised_analytics: false,
+      process_with_ai: true,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    conversationState: {
+      priorEvidenceUploadTurns: 0,
+    }
+  });
+  const aiReply = composeEvidenceUploadResponse({
+    userMessage: 'Will AI analyse my screenshot?',
+    consent: {
+      store_local: true,
+      cloud_sync: false,
+      share_with_agencies: false,
+      use_anonymised_analytics: false,
+      process_with_ai: true,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    conversationState: {
+      priorEvidenceUploadTurns: 0,
+    }
+  });
+
+  assert.doesNotMatch(normalReply.assistantMessage, /AI processing is enabled|analyse/i);
+  assert.match(aiReply.assistantMessage, /AI processing is enabled|automatically trigger AI analysis|choose an AI step/i);
 });
 
 test('dynamic support reply handles blackmail paraphrase without source footer', () => {
