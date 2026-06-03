@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 
+import { env } from '@config/env';
 import { redactSensitive, truncateForLog } from '@common/utils/sanitize';
 
 const JSON_RESPONSE_LOG_LIMIT = 10_000;
@@ -45,11 +46,117 @@ export const isConversationMessageAppendRoute = (req: Pick<Request, 'method' | '
   req.method === 'POST' &&
   /\/conversation-flow\/sessions\/[^/]+\/messages(?:\?|$)/.test(req.originalUrl);
 
+const buildCompactConversationResponseLog = (envelope: {
+  success?: unknown;
+  message?: unknown;
+  timestamp?: unknown;
+  requestId?: unknown;
+  data?: {
+    session?: {
+      id?: unknown;
+      status?: unknown;
+      latestTurnRiskLevel?: unknown;
+      activeIncidentRiskLevel?: unknown;
+      sessionHistoricalMaxRiskLevel?: unknown;
+      assistantFormatPreference?: unknown;
+      messageCount?: unknown;
+      userTurnCount?: unknown;
+    };
+    userMessage?: {
+      turnNumber?: unknown;
+      content?: unknown;
+    };
+    assistantMessage?: {
+      turnNumber?: unknown;
+      content?: unknown;
+      metadata?: {
+        intent?: unknown;
+        intentConfidence?: unknown;
+        responseSource?: unknown;
+        selectedResponseSource?: unknown;
+        model?: unknown;
+        guardrailStatus?: unknown;
+        fallbackReason?: unknown;
+        ragStatus?: unknown;
+        nonIncidentTurn?: unknown;
+        triageUpdated?: unknown;
+        latestTurnRiskLevel?: unknown;
+        activeIncidentRiskLevel?: unknown;
+        sessionHistoricalMaxRiskLevel?: unknown;
+        assistantFormatPreference?: unknown;
+        formatPreferenceUpdated?: unknown;
+        encodingWarning?: unknown;
+      };
+    };
+    triage?: {
+      likelyCategory?: unknown;
+      safetyRiskLevel?: unknown;
+      confidenceScore?: unknown;
+    } | null;
+  };
+}) => ({
+  success: envelope.success,
+  message: envelope.message,
+  timestamp: envelope.timestamp,
+  requestId: envelope.requestId,
+  conversation: {
+    sessionId: envelope.data?.session?.id,
+    status: envelope.data?.session?.status,
+    latestUserMessageFirst120:
+      typeof envelope.data?.userMessage?.content === 'string'
+        ? envelope.data.userMessage.content.slice(0, 120)
+        : undefined,
+    userTurnNumber: envelope.data?.userMessage?.turnNumber,
+    assistantResponseFirst120:
+      typeof envelope.data?.assistantMessage?.content === 'string'
+        ? envelope.data.assistantMessage.content.slice(0, 120)
+        : undefined,
+    assistantTurnNumber: envelope.data?.assistantMessage?.turnNumber,
+    detectedIntent: envelope.data?.assistantMessage?.metadata?.intent,
+    intentConfidence: envelope.data?.assistantMessage?.metadata?.intentConfidence,
+    responseSource: envelope.data?.assistantMessage?.metadata?.responseSource,
+    selectedResponseSource: envelope.data?.assistantMessage?.metadata?.selectedResponseSource,
+    model: envelope.data?.assistantMessage?.metadata?.model,
+    ragStatus: envelope.data?.assistantMessage?.metadata?.ragStatus,
+    guardrailStatus: envelope.data?.assistantMessage?.metadata?.guardrailStatus,
+    fallbackReason: envelope.data?.assistantMessage?.metadata?.fallbackReason,
+    nonIncidentTurn: envelope.data?.assistantMessage?.metadata?.nonIncidentTurn,
+    triageUpdated: envelope.data?.assistantMessage?.metadata?.triageUpdated,
+    latestTurnRiskLevel: envelope.data?.assistantMessage?.metadata?.latestTurnRiskLevel,
+    activeIncidentRiskLevel: envelope.data?.assistantMessage?.metadata?.activeIncidentRiskLevel,
+    sessionHistoricalMaxRiskLevel:
+      envelope.data?.assistantMessage?.metadata?.sessionHistoricalMaxRiskLevel,
+    assistantFormatPreference:
+      envelope.data?.assistantMessage?.metadata?.assistantFormatPreference ??
+      envelope.data?.session?.assistantFormatPreference,
+    formatPreferenceUpdated:
+      envelope.data?.assistantMessage?.metadata?.formatPreferenceUpdated,
+    encodingWarning: envelope.data?.assistantMessage?.metadata?.encodingWarning,
+    messageCount: envelope.data?.session?.messageCount,
+    userTurnCount: envelope.data?.session?.userTurnCount,
+    triageSummary: envelope.data?.triage
+      ? {
+          exists: true,
+          likelyCategory: envelope.data.triage.likelyCategory,
+          safetyRiskLevel: envelope.data.triage.safetyRiskLevel,
+          confidenceScore: envelope.data.triage.confidenceScore
+        }
+      : {
+          exists: false
+        }
+  }
+});
+
 export const summarizeResponseBodyForLogging = (input: {
   body: unknown;
   request: Pick<Request, 'method' | 'originalUrl'>;
+  debugFullResponse?: boolean;
 }): unknown => {
   if (!isConversationMessageAppendRoute(input.request)) {
+    return input.body;
+  }
+
+  if (input.debugFullResponse ?? env.DEBUG_FULL_RESPONSE) {
     return input.body;
   }
 
@@ -145,118 +252,7 @@ export const summarizeResponseBodyForLogging = (input: {
     };
   };
 
-  return {
-    success: envelope.success,
-    message: envelope.message,
-    timestamp: envelope.timestamp,
-    requestId: envelope.requestId,
-    data: {
-      session: envelope.data?.session
-        ? {
-            id: envelope.data.session.id,
-            selectedTopic: envelope.data.session.selectedTopic,
-            detectedLanguage: envelope.data.session.detectedLanguage,
-            status: envelope.data.session.status,
-            safetyRiskLevel: envelope.data.session.safetyRiskLevel,
-            latestTurnRiskLevel: envelope.data.session.latestTurnRiskLevel,
-            activeIncidentRiskLevel: envelope.data.session.activeIncidentRiskLevel,
-            sessionHistoricalMaxRiskLevel: envelope.data.session.sessionHistoricalMaxRiskLevel,
-            assistantFormatPreference: envelope.data.session.assistantFormatPreference,
-            messageCount: envelope.data.session.messageCount,
-            userTurnCount: envelope.data.session.userTurnCount
-          }
-        : undefined,
-      userMessage: envelope.data?.userMessage
-        ? {
-            id: envelope.data.userMessage.id,
-            role: envelope.data.userMessage.role,
-            content: envelope.data.userMessage.content,
-            turnNumber: envelope.data.userMessage.turnNumber
-          }
-        : undefined,
-      assistantMessage: envelope.data?.assistantMessage
-        ? {
-            id: envelope.data.assistantMessage.id,
-            role: envelope.data.assistantMessage.role,
-            content: envelope.data.assistantMessage.content,
-            turnNumber: envelope.data.assistantMessage.turnNumber,
-            metadata: envelope.data.assistantMessage.metadata
-              ? {
-                  intent: envelope.data.assistantMessage.metadata.intent,
-                  responseMode: envelope.data.assistantMessage.metadata.responseMode,
-                  intentConfidence: envelope.data.assistantMessage.metadata.intentConfidence,
-                  usedModelGeneration: envelope.data.assistantMessage.metadata.usedModelGeneration,
-                  staticTemplateUsed: envelope.data.assistantMessage.metadata.staticTemplateUsed,
-                  responseSource: envelope.data.assistantMessage.metadata.responseSource,
-                  selectedResponseSource:
-                    envelope.data.assistantMessage.metadata.selectedResponseSource,
-                  model: envelope.data.assistantMessage.metadata.model,
-                  guardrailStatus: envelope.data.assistantMessage.metadata.guardrailStatus,
-                  fallbackReason: envelope.data.assistantMessage.metadata.fallbackReason,
-                  ragStatus: envelope.data.assistantMessage.metadata.ragStatus,
-                  nonIncidentTurn: envelope.data.assistantMessage.metadata.nonIncidentTurn,
-                  triageUpdated: envelope.data.assistantMessage.metadata.triageUpdated,
-                  latestTurnRiskLevel: envelope.data.assistantMessage.metadata.latestTurnRiskLevel,
-                  activeIncidentRiskLevel:
-                    envelope.data.assistantMessage.metadata.activeIncidentRiskLevel,
-                  sessionHistoricalMaxRiskLevel:
-                    envelope.data.assistantMessage.metadata.sessionHistoricalMaxRiskLevel,
-                  assistantFormatPreference:
-                    envelope.data.assistantMessage.metadata.assistantFormatPreference,
-                  formatPreferenceUpdated:
-                    envelope.data.assistantMessage.metadata.formatPreferenceUpdated,
-                  encodingWarning: envelope.data.assistantMessage.metadata.encodingWarning,
-                  classifierSource: envelope.data.assistantMessage.metadata.classifierSource,
-                  matchedSignals: envelope.data.assistantMessage.metadata.matchedSignals
-                }
-              : undefined
-          }
-        : undefined,
-      triageSummary: envelope.data?.triage
-        ? {
-            exists: true,
-            likelyCategory: envelope.data.triage.likelyCategory,
-            confidenceScore: envelope.data.triage.confidenceScore,
-            safetyRiskLevel: envelope.data.triage.safetyRiskLevel,
-            relatedIssueTypes: envelope.data.triage.relatedIssueTypes,
-            structuredFacts: envelope.data.triage.structuredFacts
-              ? {
-                  physicalViolence: envelope.data.triage.structuredFacts.physicalViolence,
-                  threatsPresent: envelope.data.triage.structuredFacts.threatsPresent,
-                  immediateDanger: envelope.data.triage.structuredFacts.immediateDanger,
-                  evidenceAvailable: envelope.data.triage.structuredFacts.evidenceAvailable,
-                  scamFraud: envelope.data.triage.structuredFacts.scamFraud,
-                  workplaceBullying: envelope.data.triage.structuredFacts.workplaceBullying,
-                  racismDiscrimination:
-                    envelope.data.triage.structuredFacts.racismDiscrimination,
-                  migrationOrVisaThreat:
-                    envelope.data.triage.structuredFacts.migrationOrVisaThreat,
-                  languageOrInterpreterNeed:
-                    envelope.data.triage.structuredFacts.languageOrInterpreterNeed
-                }
-              : undefined
-          }
-        : {
-            exists: false
-          },
-      responseMeta: envelope.data?.responseMeta
-        ? {
-            intent: envelope.data.responseMeta.intent,
-            reviewStatus: envelope.data.responseMeta.reviewStatus,
-            responseSource: envelope.data.responseMeta.responseSource,
-            selectedResponseSource: envelope.data.responseMeta.selectedResponseSource,
-            model: envelope.data.responseMeta.model,
-            ragStatus: envelope.data.responseMeta.ragStatus,
-            guardrailStatus: envelope.data.responseMeta.guardrailStatus,
-            nonIncidentTurn: envelope.data.responseMeta.nonIncidentTurn,
-            triageUpdated: envelope.data.responseMeta.triageUpdated,
-            assistantLanguage: envelope.data.responseMeta.assistantLanguage,
-            showSources: envelope.data.responseMeta.showSources,
-            sourceDisplayReason: envelope.data.responseMeta.sourceDisplayReason
-          }
-        : undefined
-    }
-  };
+  return buildCompactConversationResponseLog(envelope);
 };
 
 export const responseBodyLoggerMiddleware = (
@@ -273,7 +269,8 @@ export const responseBodyLoggerMiddleware = (
       redactSensitive(
         summarizeResponseBodyForLogging({
           body: responseBody,
-          request: req
+          request: req,
+          debugFullResponse: env.DEBUG_FULL_RESPONSE
         })
       ),
       JSON_RESPONSE_LOG_LIMIT

@@ -104,6 +104,22 @@ const EVIDENCE_LEGAL_STRATEGY_PATTERNS = [
 ];
 const BULLET_LINE_PATTERN = /^\s*(?:[-*•]|\d+\.)\s+/gm;
 
+const STRUCTURED_BULLET_REQUEST_PATTERNS = [
+  /\bbrief(?:ly)?\b/i,
+  /\bexplain\b/i,
+  /\btell me about\b/i,
+  /\bsteps?\b/i,
+  /\boptions?\b/i,
+  /\bred flags?\b/i,
+  /\bwarning signs?\b/i,
+  /\bwhat should i look for\b/i,
+  /\bhow can i document\b/i,
+  /\bwhat can i do\b/i,
+  /\borgani[sz]e(?:d)? answer\b/i,
+  /\bbullet points?\b/i,
+  /\bsummary\b/i
+];
+
 export type SafeSpeakGuardrailViolationCode =
   | 'wrong_au_emergency_number'
   | 'legal_conclusion'
@@ -179,8 +195,11 @@ export const getSafeSpeakSystemPrompt = (language: string): string =>
     'Uploading a file does not automatically mean it is analysed unless the user chooses that AI step and consent allows it.',
     'For normal conversation or feedback about the assistant, answer directly and naturally.',
     'Triage early, not deeply. Collect only minimum safe understanding.',
-    'Use short natural paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
-    'Use bullet points only when there are multiple concrete safety or evidence steps, or clear comparison options.',
+    'Format intelligently. Do not default to bullets or paragraphs blindly.',
+    'Prefer short paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
+    'Use concise bullets when listing options, steps, red flags, evidence tips, warning signs, or pathways.',
+    'Use numbered steps only when sequence matters.',
+    'Respect explicit formatting preferences, but do not make answers unhelpfully vague.',
     'Do not force the user into incident triage.',
     'Ask at most one user-facing question unless emergency safety requires otherwise.',
     `Match the user language when clear and supported. Preferred language: ${getAssistantLanguagePromptLabel(
@@ -195,7 +214,26 @@ export const buildGuardrailRevisionInstruction = (): string =>
   'Revise the answer to comply with SafeSpeak rules. Remove prohibited legal conclusions, wrong emergency numbers, false action claims, legal-strategy evidence language, commanding language like "you must" or "you need to", extra questions, and unnecessary length. Keep it brief, lower-pressure, information-only, and documentation-focused. For legal-boundary answers, clearly avoid deciding legality or telling the user to sue.';
 
 export const buildCompactRetryInstruction = (): string =>
-  'Rewrite your previous answer more briefly. Keep the same meaning. Use short paragraphs. Ask at most one question. Do not add new advice. Follow SafeSpeak rules.';
+  'Rewrite more briefly in SafeSpeak persona. Keep the meaning. Use short paragraphs. Ask at most one question. Do not add new claims. Keep it information-only and low-pressure.';
+
+const allowsStructuredBullets = (input: {
+  intent?: string;
+  latestUserMessage?: string;
+}): boolean => {
+  const latestUserMessage = input.latestUserMessage ?? '';
+
+  if (
+    input.intent === 'scam_check' ||
+    (input.intent === 'legal_general_information' &&
+      /\bbrief(?:ly)?|explain|summary|summar(?:y|ise|ize)\b/i.test(latestUserMessage)) ||
+    (input.intent === 'evidence_upload' &&
+      /\borgani[sz]e|document|steps?|list|bullet points?\b/i.test(latestUserMessage))
+  ) {
+    return true;
+  }
+
+  return STRUCTURED_BULLET_REQUEST_PATTERNS.some((pattern) => pattern.test(latestUserMessage));
+};
 
 export const detectLegalAdviceRisk = (text: string): boolean =>
   LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(text));
@@ -302,7 +340,14 @@ export const validateSafeSpeakResponse = (input: {
     violations.add('too_many_questions');
   }
 
-  if (input.preferParagraphs && (input.text.match(BULLET_LINE_PATTERN) ?? []).length > 1) {
+  if (
+    input.preferParagraphs &&
+    !allowsStructuredBullets({
+      intent: input.intent,
+      latestUserMessage
+    }) &&
+    (input.text.match(BULLET_LINE_PATTERN) ?? []).length > 1
+  ) {
     violations.add('bullet_heavy_non_actionable');
   }
 

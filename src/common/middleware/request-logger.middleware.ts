@@ -1,10 +1,41 @@
 import type { Request, Response } from 'express';
 import pinoHttp from 'pino-http';
 
+import { isConversationMessageAppendRoute } from '@common/middleware/response-body-logger.middleware';
 import { logger } from '@common/utils/logger';
 import { redactSensitive, truncateForLog } from '@common/utils/sanitize';
+import { env } from '@config/env';
 
 const REQUEST_BODY_LOG_LIMIT = 10_000;
+
+export const summarizeRequestBodyForLogging = (
+  req: Pick<Request, 'method' | 'originalUrl'>,
+  body: unknown,
+  options?: { debugFullResponse?: boolean }
+): unknown => {
+  if (
+    !isConversationMessageAppendRoute(req) ||
+    options?.debugFullResponse === true ||
+    body === null ||
+    typeof body !== 'object' ||
+    Array.isArray(body)
+  ) {
+    return body;
+  }
+
+  const payload = body as {
+    content?: unknown;
+    language?: unknown;
+    debugResponse?: unknown;
+  };
+
+  return {
+    contentPreview:
+      typeof payload.content === 'string' ? payload.content.slice(0, 120) : undefined,
+    language: payload.language,
+    debugResponse: payload.debugResponse
+  };
+};
 
 const getFileMetadata = (file?: Express.Multer.File) => {
   if (!file) {
@@ -45,7 +76,14 @@ const getRequestLogData = (req: Request) => ({
   url: req.originalUrl,
   ip: req.ip,
   userAgent: req.get('user-agent'),
-  body: truncateForLog(redactSensitive(req.body as unknown), REQUEST_BODY_LOG_LIMIT),
+  body: truncateForLog(
+    redactSensitive(
+      summarizeRequestBodyForLogging(req, req.body as unknown, {
+        debugFullResponse: env.DEBUG_FULL_RESPONSE
+      })
+    ),
+    REQUEST_BODY_LOG_LIMIT
+  ),
   query: redactSensitive(req.query),
   params: redactSensitive(req.params),
   file: getFileMetadata(req.file),

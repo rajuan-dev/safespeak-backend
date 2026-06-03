@@ -14,7 +14,8 @@ export const createConversationFlowSessionSchema = z.object({
 
 export const appendConversationFlowMessageSchema = z.object({
   content: z.string().trim().min(1).max(4000),
-  language: z.string().trim().min(2).max(12).default('en')
+  language: z.string().trim().min(2).max(12).default('en'),
+  debugResponse: z.enum(['minimal']).optional()
 });
 
 export type CreateConversationFlowSessionInput = z.infer<

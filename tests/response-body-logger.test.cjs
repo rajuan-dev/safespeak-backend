@@ -5,6 +5,9 @@ const {
   isConversationMessageAppendRoute,
   summarizeResponseBodyForLogging,
 } = require('../src/common/middleware/response-body-logger.middleware.ts');
+const {
+  summarizeRequestBodyForLogging,
+} = require('../src/common/middleware/request-logger.middleware.ts');
 
 test('conversation message append route detection matches only conversation message posts', () => {
   assert.equal(
@@ -30,7 +33,7 @@ test('conversation message append route detection matches only conversation mess
   );
 });
 
-test('conversation message response body logging is summarized to important AI fields', () => {
+test('conversation message response body logging is reduced to compact metadata by default', () => {
   const summary = summarizeResponseBodyForLogging({
     request: {
       method: 'POST',
@@ -124,15 +127,13 @@ test('conversation message response body logging is summarized to important AI f
   });
 
   assert.equal(summary.success, true);
-  assert.equal(summary.data.session.id, '6a1');
-  assert.equal(summary.data.userMessage.content, 'hi');
-  assert.equal(summary.data.assistantMessage.content, 'Hi there.');
-  assert.equal(summary.data.assistantMessage.metadata.intent, 'general_conversation');
-  assert.equal(summary.data.responseMeta.responseSource, 'openai_model');
-  assert.deepEqual(summary.data.triageSummary, { exists: false });
-  assert.equal('factExtraction' in summary.data, false);
-  assert.equal('transition' in summary.data, false);
-  assert.equal('consentSnapshot' in summary.data.assistantMessage.metadata, false);
+  assert.equal(summary.conversation.sessionId, '6a1');
+  assert.equal(summary.conversation.latestUserMessageFirst120, 'hi');
+  assert.equal(summary.conversation.assistantResponseFirst120, 'Hi there.');
+  assert.equal(summary.conversation.detectedIntent, 'general_conversation');
+  assert.equal(summary.conversation.responseSource, 'openai_model');
+  assert.deepEqual(summary.conversation.triageSummary, { exists: false });
+  assert.equal('data' in summary, false);
 });
 
 test('non-conversation response body logging remains unchanged', () => {
@@ -159,4 +160,50 @@ test('non-conversation response body logging remains unchanged', () => {
   });
 
   assert.deepEqual(summary, original);
+});
+
+test('conversation message response body logging keeps full body when debugFullResponse is enabled', () => {
+  const original = {
+    success: true,
+    data: {
+      session: {
+        id: 'session-1'
+      },
+      assistantMessage: {
+        content: 'Full response should stay visible here.'
+      }
+    }
+  };
+
+  const summary = summarizeResponseBodyForLogging({
+    request: {
+      method: 'POST',
+      originalUrl: '/api/v1/conversation-flow/sessions/session-1/messages'
+    },
+    body: original,
+    debugFullResponse: true
+  });
+
+  assert.deepEqual(summary, original);
+});
+
+test('conversation message request body logging is reduced to a preview by default', () => {
+  const summary = summarizeRequestBodyForLogging(
+    {
+      method: 'POST',
+      originalUrl: '/api/v1/conversation-flow/sessions/session-1/messages'
+    },
+    {
+      content: 'hello there this is a test message',
+      language: 'en',
+      debugResponse: 'minimal',
+      ignored: 'field'
+    }
+  );
+
+  assert.deepEqual(summary, {
+    contentPreview: 'hello there this is a test message',
+    language: 'en',
+    debugResponse: 'minimal'
+  });
 });

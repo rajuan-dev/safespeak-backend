@@ -928,6 +928,110 @@ export const buildConversationAssistantResponseMeta = (input: {
   };
 };
 
+const toPlainRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+export const buildMinimalConversationAppendResponse = (input: {
+  session: Record<string, unknown>;
+  userMessage: Record<string, unknown>;
+  assistantMessage: Record<string, unknown>;
+  triage: Record<string, unknown> | null;
+  responseMeta: Record<string, unknown>;
+}) => {
+  const assistantMetadata = toPlainRecord(input.assistantMessage.metadata);
+  const triage = input.triage ? toPlainRecord(input.triage) : null;
+  const structuredFacts = triage ? toPlainRecord(triage.structuredFacts) : {};
+
+  return {
+    session: {
+      id: input.session.id,
+      selectedTopic: input.session.selectedTopic,
+      detectedLanguage: input.session.detectedLanguage,
+      status: input.session.status,
+      safetyRiskLevel: input.session.safetyRiskLevel,
+      latestTurnRiskLevel: input.session.latestTurnRiskLevel,
+      activeIncidentRiskLevel: input.session.activeIncidentRiskLevel,
+      sessionHistoricalMaxRiskLevel: input.session.sessionHistoricalMaxRiskLevel,
+      assistantFormatPreference: input.session.assistantFormatPreference,
+      messageCount: input.session.messageCount,
+      userTurnCount: input.session.userTurnCount
+    },
+    userMessage: {
+      id: input.userMessage.id,
+      role: input.userMessage.role,
+      content: input.userMessage.content,
+      turnNumber: input.userMessage.turnNumber
+    },
+    assistantMessage: {
+      id: input.assistantMessage.id,
+      role: input.assistantMessage.role,
+      content: input.assistantMessage.content,
+      turnNumber: input.assistantMessage.turnNumber,
+      metadata: {
+        intent: assistantMetadata.intent,
+        responseMode: assistantMetadata.responseMode,
+        intentConfidence: assistantMetadata.intentConfidence,
+        usedModelGeneration: assistantMetadata.usedModelGeneration,
+        staticTemplateUsed: assistantMetadata.staticTemplateUsed,
+        responseSource: assistantMetadata.responseSource,
+        selectedResponseSource: assistantMetadata.selectedResponseSource,
+        model: assistantMetadata.model,
+        guardrailStatus: assistantMetadata.guardrailStatus,
+        fallbackReason: assistantMetadata.fallbackReason,
+        ragStatus: assistantMetadata.ragStatus,
+        nonIncidentTurn: assistantMetadata.nonIncidentTurn,
+        triageUpdated: assistantMetadata.triageUpdated,
+        latestTurnRiskLevel: assistantMetadata.latestTurnRiskLevel,
+        activeIncidentRiskLevel: assistantMetadata.activeIncidentRiskLevel,
+        sessionHistoricalMaxRiskLevel: assistantMetadata.sessionHistoricalMaxRiskLevel,
+        assistantFormatPreference: assistantMetadata.assistantFormatPreference,
+        formatPreferenceUpdated: assistantMetadata.formatPreferenceUpdated,
+        encodingWarning: assistantMetadata.encodingWarning,
+        classifierSource: assistantMetadata.classifierSource,
+        matchedSignals: assistantMetadata.matchedSignals
+      }
+    },
+    triageSummary: triage
+      ? {
+          exists: true,
+          likelyCategory: triage.likelyCategory,
+          confidenceScore: triage.confidenceScore,
+          safetyRiskLevel: triage.safetyRiskLevel,
+          relatedIssueTypes: triage.relatedIssueTypes,
+          structuredFacts: {
+            physicalViolence: structuredFacts.physicalViolence,
+            threatsPresent: structuredFacts.threatsPresent,
+            immediateDanger: structuredFacts.immediateDanger,
+            evidenceAvailable: structuredFacts.evidenceAvailable,
+            scamFraud: structuredFacts.scamFraud,
+            workplaceBullying: structuredFacts.workplaceBullying,
+            racismDiscrimination: structuredFacts.racismDiscrimination,
+            migrationOrVisaThreat: structuredFacts.migrationOrVisaThreat,
+            languageOrInterpreterNeed: structuredFacts.languageOrInterpreterNeed
+          }
+        }
+      : {
+          exists: false
+        },
+    responseMeta: {
+      intent: input.responseMeta.intent,
+      reviewStatus: input.responseMeta.reviewStatus,
+      responseSource: input.responseMeta.responseSource,
+      selectedResponseSource: input.responseMeta.selectedResponseSource,
+      model: input.responseMeta.model,
+      ragStatus: input.responseMeta.ragStatus,
+      guardrailStatus: input.responseMeta.guardrailStatus,
+      nonIncidentTurn: input.responseMeta.nonIncidentTurn,
+      triageUpdated: input.responseMeta.triageUpdated,
+      assistantLanguage: input.responseMeta.assistantLanguage,
+      showSources: input.responseMeta.showSources,
+      sourceDisplayReason: input.responseMeta.sourceDisplayReason
+    }
+  };
+};
+
 export const extractSupportFacts = (input: {
   message: string;
   sessionHistory?: Record<string, string>;
@@ -1395,28 +1499,18 @@ const logAssistantTurn = (input: {
     {
       sessionId: input.conversationSessionId,
       turnNumber: input.assistantTurnNumber ?? input.userTurnNumber,
-      userMessageId: input.userMessageId,
-      latestUserMessageContent: escapeUnicodeForLog(input.latestUserMessageContent),
-      latestUserMessageUnicodeEscaped: escapeUnicodeForLog(input.latestUserMessageContent),
       latestUserMessageFirst120: escapeUnicodeForLog(input.latestUserMessageContent.slice(0, 120)),
       detectedIntent: input.detectedIntent,
       intentConfidence: input.intentConfidence,
-      aiResponseMode: input.aiResponseMode,
-      responseMode: input.aiResponseMode,
       responseSource: input.responseSource,
       model: input.model,
       ragStatus: input.ragStatus,
-      usedModelGeneration: input.usedModelGeneration,
-      staticTemplateUsed: input.staticTemplateUsed,
       guardrailStatus: input.guardrailStatus,
       nonIncidentTurn: input.nonIncidentTurn,
       triageUpdated: input.triageUpdated,
       latestTurnRiskLevel: input.latestTurnRiskLevel,
       activeIncidentRiskLevel: input.activeIncidentRiskLevel,
       sessionHistoricalMaxRiskLevel: input.sessionHistoricalMaxRiskLevel,
-      selectedResponseSource: input.selectedResponseSource,
-      assistantMessageId: input.assistantMessageId,
-      assistantResponseUnicodeEscaped: escapeUnicodeForLog(input.assistantMessageContent),
       assistantResponseFirst120: escapeUnicodeForLog(input.assistantMessageContent.slice(0, 120))
     },
     'Conversation assistant turn'
@@ -4539,7 +4633,12 @@ export const appendConversationFlowMessage = async (
       encodingWarning: true
     });
 
-    return {
+    const responseMeta = buildConversationAssistantResponseMeta({
+      assistantPayload,
+      conversationSessionId,
+      offerTriage: false
+    });
+    const fullResponse = {
       session: toSessionRecord(session),
       userMessage: toMessageRecord(userMessage),
       assistantMessage: toMessageRecord(assistantMessage),
@@ -4555,12 +4654,12 @@ export const appendConversationFlowMessage = async (
         primaryCta: null,
         secondaryCta: null
       },
-      responseMeta: buildConversationAssistantResponseMeta({
-        assistantPayload,
-        conversationSessionId,
-        offerTriage: false
-      })
+      responseMeta
     };
+
+    return input.debugResponse === 'minimal'
+      ? buildMinimalConversationAppendResponse(fullResponse)
+      : fullResponse;
   }
   const activeIncidentExists = hasActiveIncidentContext({
     facts: existingFacts,
@@ -4923,7 +5022,12 @@ export const appendConversationFlowMessage = async (
     detectedCategory: triage?.likelyCategory ?? detectedCategory
   });
 
-  return {
+  const responseMeta = buildConversationAssistantResponseMeta({
+    assistantPayload: resolvedAssistantPayload,
+    conversationSessionId,
+    offerTriage
+  });
+  const fullResponse = {
     session: toSessionRecord(session),
     userMessage: toMessageRecord(userMessage),
     assistantMessage: toMessageRecord(assistantMessage),
@@ -4935,12 +5039,12 @@ export const appendConversationFlowMessage = async (
       primaryCta: offerTriage ? 'Continue to Triage' : null,
       secondaryCta: offerTriage ? 'Review options' : null
     },
-    responseMeta: buildConversationAssistantResponseMeta({
-      assistantPayload: resolvedAssistantPayload,
-      conversationSessionId,
-      offerTriage
-    })
+    responseMeta
   };
+
+  return input.debugResponse === 'minimal'
+    ? buildMinimalConversationAppendResponse(fullResponse)
+    : fullResponse;
 };
 
 export const getConversationFlowTriage = async (

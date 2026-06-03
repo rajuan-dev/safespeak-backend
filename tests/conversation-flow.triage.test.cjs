@@ -4,6 +4,7 @@ const test = require('node:test');
 const {
   buildConversationFlowCategoryLabel,
   buildConversationAssistantResponseMeta,
+  buildMinimalConversationAppendResponse,
   buildConversationFlowPresentation,
   buildInternalPathways,
   buildIntakePlanner,
@@ -42,6 +43,9 @@ const {
   generateSafeSpeakResponse,
   normalizeAssistantContent,
 } = require('../src/modules/ai/model-response.service.ts');
+const {
+  validateSafeSpeakResponse,
+} = require('../src/modules/ai/ai-guardrails.ts');
 const {
   hasBrokenTextEncoding,
 } = require('../src/modules/ai/text-encoding.ts');
@@ -433,6 +437,122 @@ test('general legal information turn plan does not mutate triage', () => {
   assert.equal(plan.triageUpdated, false);
   assert.equal(plan.latestTurnRiskLevel, 'none');
   assert.equal(plan.activeIssueId, 'session-125c:issue-1');
+});
+
+test('minimal debug response keeps only the important conversation fields', () => {
+  const minimal = buildMinimalConversationAppendResponse({
+    session: {
+      id: 'session-1',
+      selectedTopic: 'general_assistant',
+      detectedLanguage: 'en',
+      status: 'active',
+      safetyRiskLevel: 'low',
+      latestTurnRiskLevel: 'none',
+      activeIncidentRiskLevel: 'none',
+      sessionHistoricalMaxRiskLevel: 'low',
+      assistantFormatPreference: 'paragraphs',
+      messageCount: 2,
+      userTurnCount: 1,
+      createdAt: 'omit-me'
+    },
+    userMessage: {
+      id: 'user-1',
+      role: 'user',
+      content: 'hi',
+      turnNumber: 1,
+      metadata: {
+        omit: true
+      }
+    },
+    assistantMessage: {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'Hello.',
+      turnNumber: 2,
+      metadata: {
+        intent: 'general_conversation',
+        responseMode: 'safespeak_model',
+        intentConfidence: 'high',
+        usedModelGeneration: true,
+        staticTemplateUsed: false,
+        responseSource: 'openai_model',
+        selectedResponseSource: 'openai_model',
+        model: 'gpt-5.2',
+        guardrailStatus: 'passed',
+        fallbackReason: undefined,
+        ragStatus: 'not_required',
+        nonIncidentTurn: true,
+        triageUpdated: false,
+        latestTurnRiskLevel: 'none',
+        activeIncidentRiskLevel: 'none',
+        sessionHistoricalMaxRiskLevel: 'low',
+        assistantFormatPreference: 'paragraphs',
+        formatPreferenceUpdated: false,
+        encodingWarning: false,
+        classifierSource: 'rule',
+        matchedSignals: ['greeting'],
+        consentSnapshot: {
+          omit: true
+        }
+      }
+    },
+    triage: {
+      likelyCategory: 'general_support',
+      confidenceScore: 0.1,
+      safetyRiskLevel: 'low',
+      relatedIssueTypes: ['general_support'],
+      structuredFacts: {
+        physicalViolence: false,
+        threatsPresent: false,
+        immediateDanger: false,
+        evidenceAvailable: false,
+        scamFraud: false,
+        workplaceBullying: false,
+        racismDiscrimination: false,
+        migrationOrVisaThreat: false,
+        languageOrInterpreterNeed: false,
+        omit: true
+      },
+      presentation: {
+        omit: true
+      }
+    },
+    responseMeta: {
+      intent: 'general_conversation',
+      reviewStatus: 'general_conversation',
+      responseSource: 'openai_model',
+      selectedResponseSource: 'openai_model',
+      model: 'gpt-5.2',
+      ragStatus: 'not_required',
+      guardrailStatus: 'passed',
+      nonIncidentTurn: true,
+      triageUpdated: false,
+      assistantLanguage: 'en',
+      showSources: false,
+      sourceDisplayReason: 'hidden_support_reply',
+      citations: []
+    }
+  });
+
+  assert.equal(minimal.assistantMessage.content, 'Hello.');
+  assert.equal(minimal.assistantMessage.metadata.intent, 'general_conversation');
+  assert.equal(minimal.responseMeta.responseSource, 'openai_model');
+  assert.equal(minimal.triageSummary.exists, true);
+  assert.equal('factExtraction' in minimal, false);
+  assert.equal('presentation' in minimal.triageSummary, false);
+  assert.equal('consentSnapshot' in minimal.assistantMessage.metadata, false);
+});
+
+test('structured bullets are allowed when the user asks for scam warning signs', () => {
+  const validation = validateSafeSpeakResponse({
+    text: ['- Urgent payment demand', '- Suspicious link', '- Pressure to act immediately'].join('\n'),
+    intent: 'scam_check',
+    jurisdiction: 'AU',
+    latestUserMessage: 'Give me bullet points about scam warning signs',
+    preferParagraphs: true
+  });
+
+  assert.equal(validation.violations.includes('bullet_heavy_non_actionable'), false);
 });
 
 test('evidence upload without an active incident stays non-incident and does not create new triage facts', () => {
@@ -899,15 +1019,15 @@ test('meta feedback replies regenerate away from bullet-heavy formatting', async
       intent: 'meta_feedback',
       intentConfidence: 'high',
       classifierSource: 'rule',
-      latestUserMessage: 'are you answering with bullet points every time?',
+      latestUserMessage: 'why are you replying the same thing every time?',
       context: {
         app: 'SafeSpeak',
         jurisdiction: 'AU',
-        latestUserMessage: 'are you answering with bullet points every time?',
+        latestUserMessage: 'why are you replying the same thing every time?',
         detectedLanguage: 'en',
         intent: 'meta_feedback',
         assistantFormatPreference: 'paragraphs',
-        conversationSummary: 'user asks why answers keep using bullets',
+        conversationSummary: 'user says replies feel repetitive',
         activeIncidentSummary: 'None recorded.',
         consentSnapshot: {
           store_local: false,
@@ -1332,7 +1452,7 @@ test('too-long model output uses compact retry prompt and returns regenerated mo
     assert.equal(callCount, 2);
     assert.match(
       requestBodies[1].input[1].content,
-      /Rewrite your previous answer more briefly\. Keep the same meaning\. Use short paragraphs\. Ask at most one question\. Do not add new advice\. Follow SafeSpeak rules\./
+      /Rewrite more briefly in SafeSpeak persona\. Keep the meaning\. Use short paragraphs\. Ask at most one question\. Do not add new claims\. Keep it information-only and low-pressure\./
     );
     assert.equal(reply.usedModelGeneration, true);
     assert.equal(reply.guardrailStatus, 'regenerated');
