@@ -42,6 +42,7 @@ type GenerateSafeSpeakModelResponseOutput = {
   staticTemplateUsed: boolean;
   consentSnapshot?: Record<string, unknown>;
   intentConfidence?: 'high' | 'medium' | 'low';
+  selectedResponseSource?: 'openai_model' | 'dynamic_fallback';
 };
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -83,13 +84,48 @@ const validateGuardrails = (assistantMessage: string, nextQuestion: string): str
   return null;
 };
 
+const buildDynamicFallbackMessage = (
+  input: GenerateSafeSpeakModelResponseInput
+): Pick<GenerateSafeSpeakModelResponseOutput, 'assistantMessage' | 'nextQuestion'> => {
+  if (
+    input.intent === 'safety_physical_harm' ||
+    input.intent === 'physical_harm' ||
+    input.responseMode === 'emergency_safety'
+  ) {
+    return {
+      assistantMessage:
+        'I am sorry that happened. If you are in immediate danger or need urgent help, call 000 now. If you are safe right now, move to a safer place if you can and write down what happened while it is fresh.',
+      nextQuestion: 'Are you safe at the moment?'
+    };
+  }
+
+  if (input.intent === 'meta_feedback_or_capability_question' || input.responseMode === 'meta_feedback') {
+    return {
+      assistantMessage:
+        'That reply did not match your question well enough. Ask again and I will answer it more directly.',
+      nextQuestion: ''
+    };
+  }
+
+  if (input.intent === 'evidence_upload_intent' || input.responseMode === 'evidence_consent') {
+    return {
+      assistantMessage:
+        'You can choose whether to upload anything. Uploading does not automatically send or share evidence.',
+      nextQuestion: 'Would you like to keep it local for now?'
+    };
+  }
+
+  return {
+    assistantMessage: 'I can help with that. Tell me the next detail you want to focus on.',
+    nextQuestion: ''
+  };
+};
+
 export const buildMetaFeedbackFallbackResponse = (
   input: GenerateSafeSpeakModelResponseInput,
   reason?: string
 ): GenerateSafeSpeakModelResponseOutput => ({
-  assistantMessage:
-    'You are right — that sounded too scripted. SafeSpeak should respond to what you actually ask, while still keeping the safety, privacy, consent, and legal boundaries in place.',
-  nextQuestion: 'Would you like to continue testing the chat behavior?',
+  ...buildDynamicFallbackMessage(input),
   readyForSubmission: false,
   confidence: 'medium',
   disclaimer: 'This is information only, not legal advice.',
@@ -107,7 +143,10 @@ export const buildMetaFeedbackFallbackResponse = (
   usedModelGeneration: false,
   guardrailStatus: 'fallback',
   fallbackReason: reason,
-  staticTemplateUsed: false
+  staticTemplateUsed: false,
+  consentSnapshot: input.consentSnapshot,
+  intentConfidence: input.intentConfidence,
+  selectedResponseSource: 'dynamic_fallback'
 });
 
 const callOpenAIForConversation = async (
@@ -210,7 +249,8 @@ export const generateSafeSpeakModelResponse = async (
       guardrailStatus,
       staticTemplateUsed: false,
       consentSnapshot: input.consentSnapshot,
-      intentConfidence: input.intentConfidence
+      intentConfidence: input.intentConfidence,
+      selectedResponseSource: 'openai_model'
     };
   } catch (error) {
     return buildMetaFeedbackFallbackResponse(

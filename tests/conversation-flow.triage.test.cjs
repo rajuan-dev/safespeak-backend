@@ -120,12 +120,58 @@ test('meta feedback fallback stays natural and avoids trauma-template wording', 
   const metadata = buildAssistantMessageMetadata(reply);
   const combined = `${reply.assistantMessage} ${reply.nextQuestion}`.trim();
 
-  assert.match(reply.assistantMessage, /too scripted|respond to what you actually ask|actual question/i);
-  assert.doesNotMatch(combined, /Thank you for telling me about this|what happened/i);
+  assert.match(reply.assistantMessage, /did not match your question|answer it more directly/i);
+  assert.doesNotMatch(combined, /too scripted|continue testing the chat behavior|Thank you for telling me about this|what happened/i);
   assert.equal(metadata.responseMode, 'meta_feedback');
   assert.equal(metadata.usedModelGeneration, false);
   assert.equal(metadata.guardrailStatus, 'fallback');
   assert.equal(metadata.staticTemplateUsed, false);
+  assert.equal(metadata.selectedResponseSource, 'dynamic_fallback');
+});
+
+test('physical harm input is not classified as meta feedback or evidence upload', () => {
+  const message = 'i was walking and someone hit me';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(classifySafeSpeakIntent(message), 'physical_harm');
+  assert.notEqual(responseMode, 'meta_feedback');
+  assert.notEqual(responseMode, 'evidence_upload_intent');
+  assert.match(responseMode, /support_victim_style|emergency_safety/);
+});
+
+test('physical harm fallback never reuses the old meta feedback text', () => {
+  const reply = buildMetaFeedbackFallbackResponse({
+    intent: 'physical_harm',
+    userMessage: 'i was walking and someone hit me',
+    responseMode: 'support_victim_style'
+  });
+  const combined = `${reply.assistantMessage} ${reply.nextQuestion}`.trim();
+
+  assert.match(combined, /sorry that happened|safe at the moment|call 000/i);
+  assert.doesNotMatch(combined, /too scripted|continue testing the chat behavior/i);
+});
+
+test('sequential meta feedback then physical harm classification stays distinct', () => {
+  const firstMessage = 'it sounds scripted';
+  const secondMessage = 'i was walking and someone hit me';
+  const firstFacts = extractSupportFacts({ message: firstMessage });
+  const secondFacts = extractSupportFacts({ message: secondMessage });
+
+  assert.equal(classifySafeSpeakIntent(firstMessage), 'meta_feedback_or_capability_question');
+  assert.equal(
+    classifyResponseMode({ message: firstMessage, sessionFacts: firstFacts.originalFacts }),
+    'meta_feedback'
+  );
+
+  assert.equal(classifySafeSpeakIntent(secondMessage), 'physical_harm');
+  assert.notEqual(
+    classifyResponseMode({ message: secondMessage, sessionFacts: secondFacts.originalFacts }),
+    'meta_feedback'
+  );
 });
 
 test('evidence upload consent reply is direct, privacy-first, and metadata-ready', () => {

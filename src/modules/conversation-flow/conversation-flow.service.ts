@@ -2,6 +2,7 @@ import { StatusCodes } from 'http-status-codes';
 import { Types, type HydratedDocument } from 'mongoose';
 
 import { ApiError } from '@common/errors/ApiError';
+import { logger } from '@common/utils/logger';
 import { classifySafeSpeakIntent } from '@modules/ai/intent-classifier';
 import { generateSafeSpeakModelResponse } from '@modules/ai/model-response.service';
 import { createAuditLog } from '@modules/audit/audit.service';
@@ -647,6 +648,8 @@ export const classifyResponseMode = (input: {
   sessionFacts: ConversationFlowStructuredFacts;
   selectedTopic?: string;
 }): ConversationAssistantResponseMode => {
+  const detectedIntent = classifySafeSpeakIntent(input.message);
+
   if (detectTriageHandoffIntent(input.message)) {
     return 'triage_handoff';
   }
@@ -669,8 +672,16 @@ export const classifyResponseMode = (input: {
     return 'evidence_upload_intent';
   }
 
-  if (classifySafeSpeakIntent(input.message) === 'meta_feedback_or_capability_question') {
+  if (detectedIntent === 'meta_feedback_or_capability_question') {
     return 'meta_feedback';
+  }
+
+  if (
+    detectedIntent === 'physical_harm' ||
+    detectedIntent === 'incident_disclosure' ||
+    detectedIntent === 'safety_physical_harm'
+  ) {
+    return 'support_victim_style';
   }
 
   if (
@@ -990,7 +1001,11 @@ export const buildConversationAssistantResponseMeta = (input: {
     sourceDisplayReason:
       typeof input.assistantPayload.sourceDisplayReason === 'string'
         ? input.assistantPayload.sourceDisplayReason
-        : sourceDisplayMeta.sourceDisplayReason
+        : sourceDisplayMeta.sourceDisplayReason,
+    selectedResponseSource:
+      typeof input.assistantPayload.selectedResponseSource === 'string'
+        ? input.assistantPayload.selectedResponseSource
+        : 'unknown'
   };
 };
 
@@ -1476,6 +1491,10 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
     metadata.staticTemplateUsed = assistantPayload.staticTemplateUsed;
   }
 
+  if (typeof assistantPayload.selectedResponseSource === 'string') {
+    metadata.selectedResponseSource = assistantPayload.selectedResponseSource;
+  }
+
   if (
     assistantPayload.consentSnapshot &&
     typeof assistantPayload.consentSnapshot === 'object' &&
@@ -1485,6 +1504,85 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
   }
 
   return metadata;
+};
+
+const resolveConversationIntent = (input: {
+  detectedIntent: string;
+  responseMode: ConversationAssistantResponseMode;
+  sessionFacts: ConversationFlowStructuredFacts;
+}): string => {
+  if (input.responseMode === 'meta_feedback') {
+    return 'meta_feedback_or_capability_question';
+  }
+
+  if (input.responseMode === 'evidence_upload_intent') {
+    return 'evidence_upload_intent';
+  }
+
+  if (input.responseMode === 'triage_handoff') {
+    return 'triage_handoff';
+  }
+
+  if (input.responseMode === 'legal_lookup') {
+    return 'legal_lookup';
+  }
+
+  if (input.detectedIntent !== 'unknown') {
+    return input.detectedIntent;
+  }
+
+  if (input.responseMode === 'emergency_safety') {
+    return input.sessionFacts.physicalViolence ? 'safety_physical_harm' : 'safety_crisis';
+  }
+
+  if (input.responseMode === 'support_victim_style') {
+    return 'incident_disclosure';
+  }
+
+  if (input.responseMode === 'scamshield_style') {
+    return 'scam_check';
+  }
+
+  return 'general_conversation';
+};
+
+const logAssistantTurn = (input: {
+  conversationSessionId: string;
+  userMessageId: string;
+  userTurnNumber: number;
+  latestUserMessageContent: string;
+  detectedIntent: string;
+  responseMode: ConversationAssistantResponseMode;
+  usedModelGeneration: boolean;
+  staticTemplateUsed: boolean;
+  guardrailStatus: string;
+  selectedResponseSource: string;
+  assistantMessageId?: string;
+  assistantTurnNumber?: number;
+  assistantMessageContent: string;
+}): void => {
+  logger.info(
+    {
+      conversationSessionId: input.conversationSessionId,
+      userMessageId: input.userMessageId,
+      userTurnNumber: input.userTurnNumber,
+      latestUserMessage: {
+        content: input.latestUserMessageContent
+      },
+      detectedIntent: input.detectedIntent,
+      responseMode: input.responseMode,
+      usedModelGeneration: input.usedModelGeneration,
+      staticTemplateUsed: input.staticTemplateUsed,
+      guardrailStatus: input.guardrailStatus,
+      selectedResponseSource: input.selectedResponseSource,
+      assistantMessage: {
+        id: input.assistantMessageId,
+        turnNumber: input.assistantTurnNumber,
+        contentPreview: input.assistantMessageContent.slice(0, 120)
+      }
+    },
+    'Conversation assistant turn'
+  );
 };
 
 const joinNaturalLanguageList = (items: string[]): string => {
@@ -2596,15 +2694,16 @@ const buildFallbackAssistantResponse = (
         unavailable: true,
         resultCount: 0
       },
-      reviewStatus: 'fallback_local'
+      reviewStatus: 'fallback_local',
+      selectedResponseSource: 'legal_lookup_fallback'
     };
   }
 
   if (responseMode === 'meta_feedback') {
     return {
       assistantMessage:
-        'You are right — that sounded too scripted. SafeSpeak should respond to the actual question while still keeping the safety, privacy, consent, and legal boundaries in place.',
-      nextQuestion: 'Would you like to continue testing the chat behavior?',
+        'That reply did not match your question well enough. Ask again and I will answer it more directly.',
+      nextQuestion: '',
       readyForSubmission: false,
       confidence: 'medium' as const,
       disclaimer: 'This is information only, not legal advice.',
@@ -2622,18 +2721,22 @@ const buildFallbackAssistantResponse = (
       usedModelGeneration: false,
       guardrailStatus: 'fallback',
       fallbackReason: 'model_generation_unavailable',
-      staticTemplateUsed: false
+      staticTemplateUsed: false,
+      selectedResponseSource: 'dynamic_fallback'
     };
   }
 
-  return buildSupportReply({
-    facts: supportFacts,
-    responseMode,
-    sessionContext: {
-      selectedTopic,
-      language
-    }
-  });
+  return {
+    ...buildSupportReply({
+      facts: supportFacts,
+      responseMode,
+      sessionContext: {
+        selectedTopic,
+        language
+      }
+    }),
+    selectedResponseSource: 'support_reply_builder'
+  };
 };
 
 export const detectCategory = (input: {
@@ -4313,10 +4416,16 @@ export const appendConversationFlowMessage = async (
     text: `${input.content}\n${JSON.stringify(existingTimeline)}`,
     selectedTopic: session.selectedTopic
   }).category;
+  const detectedIntent = classifySafeSpeakIntent(input.content);
   const responseMode = classifyResponseMode({
     message: input.content,
     sessionFacts: supportFacts.originalFacts,
     selectedTopic: session.selectedTopic
+  });
+  const selectedIntent = resolveConversationIntent({
+    detectedIntent,
+    responseMode,
+    sessionFacts: supportFacts.originalFacts
   });
   const triageHandoffIntent = responseMode === 'triage_handoff';
   const evidenceUploadIntent = responseMode === 'evidence_upload_intent';
@@ -4326,7 +4435,13 @@ export const appendConversationFlowMessage = async (
   if (triageHandoffIntent) {
     assistantPayload = {
       ...buildTriageHandoffAssistantPayload(),
-      assistantMessage: localizeExactString(assistantLanguage, TRIAGE_HANDOFF_MESSAGE)
+      assistantMessage: localizeExactString(assistantLanguage, TRIAGE_HANDOFF_MESSAGE),
+      intent: selectedIntent,
+      responseMode,
+      usedModelGeneration: false,
+      staticTemplateUsed: false,
+      guardrailStatus: 'passed',
+      selectedResponseSource: 'triage_handoff'
     };
   } else if (evidenceUploadIntent) {
     const consent = await getCurrentConsent(context.owner);
@@ -4381,9 +4496,15 @@ export const appendConversationFlowMessage = async (
         language: assistantLanguage
       }
     });
+    assistantPayload.intent = selectedIntent;
+    assistantPayload.responseMode = responseMode;
+    assistantPayload.usedModelGeneration = false;
+    assistantPayload.staticTemplateUsed = false;
+    assistantPayload.guardrailStatus = 'passed';
+    assistantPayload.selectedResponseSource = 'support_reply_builder';
   } else if (responseMode !== 'legal_lookup') {
     assistantPayload = await generateSafeSpeakModelResponse({
-      intent: responseMode,
+      intent: selectedIntent,
       userMessage: input.content,
       conversationSummary: conversationForAssistant
         .slice(-6)
@@ -4438,6 +4559,7 @@ export const appendConversationFlowMessage = async (
         message: input.content,
         assistantPayload
       });
+      assistantPayload.selectedResponseSource = 'rag_timeline_assistant';
     } catch {
       assistantPayload = buildFallbackAssistantResponse(
         input.content,
@@ -4446,11 +4568,37 @@ export const appendConversationFlowMessage = async (
         session.jurisdiction ?? undefined,
         assistantLanguage
       );
+      assistantPayload.selectedResponseSource =
+        typeof assistantPayload.selectedResponseSource === 'string'
+          ? assistantPayload.selectedResponseSource
+          : 'legal_lookup_fallback';
     }
   }
 
   assistantPayload = {
     ...assistantPayload,
+    intent:
+      typeof assistantPayload.intent === 'string' ? assistantPayload.intent : selectedIntent,
+    responseMode:
+      typeof assistantPayload.responseMode === 'string'
+        ? assistantPayload.responseMode
+        : responseMode,
+    usedModelGeneration:
+      typeof assistantPayload.usedModelGeneration === 'boolean'
+        ? assistantPayload.usedModelGeneration
+        : false,
+    staticTemplateUsed:
+      typeof assistantPayload.staticTemplateUsed === 'boolean'
+        ? assistantPayload.staticTemplateUsed
+        : false,
+    guardrailStatus:
+      typeof assistantPayload.guardrailStatus === 'string'
+        ? assistantPayload.guardrailStatus
+        : 'passed',
+    selectedResponseSource:
+      typeof assistantPayload.selectedResponseSource === 'string'
+        ? assistantPayload.selectedResponseSource
+        : 'support_reply_builder',
     assistantLanguage,
     safetyOverride: safetyOverride.safetyOverride || Boolean(assistantPayload.safetyOverride),
     safetyLevel:
@@ -4480,6 +4628,28 @@ export const appendConversationFlowMessage = async (
     content: assistantMessageContent || 'Thank you. What would feel helpful to share next?',
     turnNumber: existingMessages.length + 2,
     metadata: buildAssistantMessageMetadata(assistantPayload)
+  });
+
+  logAssistantTurn({
+    conversationSessionId: session._id.toString(),
+    userMessageId: userMessage._id.toString(),
+    userTurnNumber: userMessage.turnNumber,
+    latestUserMessageContent: input.content,
+    detectedIntent: typeof assistantPayload.intent === 'string' ? assistantPayload.intent : selectedIntent,
+    responseMode,
+    usedModelGeneration: Boolean(assistantPayload.usedModelGeneration),
+    staticTemplateUsed: Boolean(assistantPayload.staticTemplateUsed),
+    guardrailStatus:
+      typeof assistantPayload.guardrailStatus === 'string'
+        ? assistantPayload.guardrailStatus
+        : 'passed',
+    selectedResponseSource:
+      typeof assistantPayload.selectedResponseSource === 'string'
+        ? assistantPayload.selectedResponseSource
+        : 'support_reply_builder',
+    assistantMessageId: assistantMessage._id.toString(),
+    assistantTurnNumber: assistantMessage.turnNumber,
+    assistantMessageContent: assistantMessage.content
   });
 
   session.messageCount += 1;

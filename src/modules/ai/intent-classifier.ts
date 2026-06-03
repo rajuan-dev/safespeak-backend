@@ -4,6 +4,8 @@ export type SafeSpeakIntent =
   | 'ai_analysis_question'
   | 'legal_boundary_intent'
   | 'rag_pathway_question'
+  | 'physical_harm'
+  | 'safety_physical_harm'
   | 'incident_disclosure'
   | 'scam_check'
   | 'language_or_translation'
@@ -33,6 +35,7 @@ export const detectMetaFeedbackOrCapabilityQuestion = (message: string): boolean
     /\byou should be smart\b/,
     /\brespond like chatgpt\b/,
     /\bthis sounds scripted\b/,
+    /\bit sounds scripted\b/,
     /\bdon t give fixed template\b/,
     /\bwhy are you repeating the same thing\b/,
     /\bare you ai\b/,
@@ -58,6 +61,38 @@ export const detectMetaFeedbackOrCapabilityQuestion = (message: string): boolean
 };
 
 export const classifySafeSpeakIntent = (message: string): SafeSpeakIntent => {
+  const normalized = normalize(message);
+
+  if (!normalized) {
+    return 'unknown';
+  }
+
+  if (
+    /\b(i am in danger|im in danger|unsafe right now|call 000|emergency|weapon|knife|gun|kill me|hurting me right now)\b/.test(
+      normalized
+    )
+  ) {
+    return 'safety_crisis';
+  }
+
+  if (
+    /\b(hit me|someone hit me|some one hit me|punched me|slapped me|kicked me|assaulted me|hurt me)\b/.test(
+      normalized
+    )
+  ) {
+    return /\b(now|right now|tonight|still here|following me|in danger|unsafe)\b/.test(normalized)
+      ? 'safety_physical_harm'
+      : 'physical_harm';
+  }
+
+  if (
+    /\b(happened|harassed|threatened|abused|scared|someone followed me|someone touched me|they did this to me)\b/.test(
+      normalized
+    )
+  ) {
+    return 'incident_disclosure';
+  }
+
   if (detectMetaFeedbackOrCapabilityQuestion(message)) {
     return 'meta_feedback_or_capability_question';
   }
