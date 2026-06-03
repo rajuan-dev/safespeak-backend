@@ -40,6 +40,9 @@ const {
   normalizeAssistantContent,
 } = require('../src/modules/ai/model-response.service.ts');
 const {
+  hasBrokenTextEncoding,
+} = require('../src/modules/ai/text-encoding.ts');
+const {
   ASSISTANT_LANGUAGE_REGISTRY,
   resolveAssistantLanguage,
 } = require('../src/modules/ai/assistant-language.ts');
@@ -547,6 +550,144 @@ test('evidence response guardrail regenerates legal-strategy phrasing into lower
     assert.equal(reply.guardrailStatus, 'regenerated');
     assert.doesNotMatch(reply.assistantMessage, /hard to dispute|strong evidence|prove your case|build your case|complaint/i);
     assert.match(reply.assistantMessage, /part of your record|originals unchanged|photo shows/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('mojibake input guard detects broken bengali transport patterns', () => {
+  assert.equal(hasBrokenTextEncoding('αªåαª«αª╛ broken text'), true);
+  assert.equal(hasBrokenTextEncoding('à¦à¦®à¦¾à¦° à¦¬à¦¸'), true);
+  assert.equal(
+    hasBrokenTextEncoding('আমার বস আমার উচ্চারণ নিয়ে হাসাহাসি করে'),
+    false
+  );
+});
+
+test('bengali response normalization preserves unicode and avoids mojibake', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text:
+        'আমি দুঃখিত যে এটা হয়েছে। আপনি যদি এখন নিরাপদে থাকেন, চাইলে আমরা ধীরে ধীরে কী ঘটেছে তা গুছিয়ে নিতে পারি।'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'incident_disclosure',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage:
+        'আমার বস আমার উচ্চারণ নিয়ে হাসাহাসি করে এবং বলে আমি এখানে মানাই না।',
+      context: {
+        app: 'SafeSpeak',
+        jurisdiction: 'AU',
+        latestUserMessage:
+          'আমার বস আমার উচ্চারণ নিয়ে হাসাহাসি করে এবং বলে আমি এখানে মানাই না।',
+        detectedLanguage: 'bn',
+        intent: 'incident_disclosure',
+        assistantFormatPreference: 'paragraphs',
+        conversationSummary: 'user reports workplace humiliation in Bengali',
+        activeIncidentSummary: 'None recorded.',
+        consentSnapshot: {
+          store_local: false,
+          cloud_sync: false,
+          share_with_agencies: false,
+          retain_evidence: false,
+          process_with_ai: true,
+          translate_content: false,
+          warm_referral: false
+        },
+        safetyContext: {
+          latestTurnRiskLevel: 'low',
+          activeIncidentRiskLevel: 'low',
+          sessionHistoricalMaxRiskLevel: 'low',
+          immediateDanger: false,
+          threatsPresent: false,
+          physicalHarm: false,
+          domesticFamilyViolence: false,
+          selfHarm: false,
+          childSafety: false,
+          recommendedEmergencyNumber: '000',
+          relevantSupport: []
+        },
+        ragContext: [],
+        constraints: []
+      }
+    });
+
+    assert.match(reply.assistantMessage, /আমি দুঃখিত|নিরাপদে থাকেন/u);
+    assert.doesNotMatch(reply.assistantMessage, /αª|ΓÇ|à¦|à§/u);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('meta feedback replies regenerate away from bullet-heavy formatting', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? '- I hear you.\n- I can answer more directly.\n- Ask again.'
+            : 'That reply was too list-heavy. Ask again and I will answer more naturally.'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'meta_feedback',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'are you answering with bullet points every time?',
+      context: {
+        app: 'SafeSpeak',
+        jurisdiction: 'AU',
+        latestUserMessage: 'are you answering with bullet points every time?',
+        detectedLanguage: 'en',
+        intent: 'meta_feedback',
+        assistantFormatPreference: 'paragraphs',
+        conversationSummary: 'user asks why answers keep using bullets',
+        activeIncidentSummary: 'None recorded.',
+        consentSnapshot: {
+          store_local: false,
+          cloud_sync: false,
+          share_with_agencies: false,
+          retain_evidence: false,
+          process_with_ai: true,
+          translate_content: false,
+          warm_referral: false
+        },
+        safetyContext: {
+          latestTurnRiskLevel: 'none',
+          activeIncidentRiskLevel: 'none',
+          sessionHistoricalMaxRiskLevel: 'none',
+          immediateDanger: false,
+          threatsPresent: false,
+          physicalHarm: false,
+          domesticFamilyViolence: false,
+          selfHarm: false,
+          childSafety: false,
+          recommendedEmergencyNumber: '000',
+          relevantSupport: []
+        },
+        ragContext: [],
+        constraints: []
+      }
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.doesNotMatch(reply.assistantMessage, /^\s*[-*•]/m);
+    assert.match(reply.assistantMessage, /more naturally|too list-heavy/i);
   } finally {
     global.fetch = originalFetch;
   }

@@ -32,7 +32,11 @@ export const createApp = (): express.Application => {
   app.options(/.*/, cors(corsOptions));
   app.use(compression());
   app.use(cookieParser());
-  app.use(express.json({ limit: '1mb' }));
+  app.use((_req, res, next) => {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    next();
+  });
+  app.use(express.json({ type: 'application/json', limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
   app.use(rateLimiter);
   app.use(passport.initialize());

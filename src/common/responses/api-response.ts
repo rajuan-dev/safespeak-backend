@@ -29,6 +29,7 @@ export class ApiResponse {
     meta: ApiMeta | null = null,
     statusCode = StatusCodes.OK
   ): Response<ApiResponseBody<TData>> {
+    res.type('application/json; charset=utf-8');
     return res.status(statusCode).json(this.successBody(message, data, meta)) as Response<
       ApiResponseBody<TData>
     >;

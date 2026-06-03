@@ -13,6 +13,10 @@ import {
   normalizeAssistantContent
 } from '@modules/ai/model-response.service';
 import {
+  escapeUnicodeForLog,
+  hasBrokenTextEncoding,
+} from '@modules/ai/text-encoding';
+import {
   buildActiveIncidentSummary,
   buildSafeSpeakContext,
   type SafeSpeakRagSnippet,
@@ -1077,6 +1081,11 @@ export const buildConversationAssistantResponseMeta = (input: {
       typeof input.assistantPayload.activeIssueId === 'string'
         ? input.assistantPayload.activeIssueId
         : undefined,
+    assistantFormatPreference:
+      typeof input.assistantPayload.assistantFormatPreference === 'string'
+        ? input.assistantPayload.assistantFormatPreference
+        : 'paragraphs',
+    encodingWarning: Boolean(input.assistantPayload.encodingWarning),
     selectedResponseSource:
       typeof input.assistantPayload.selectedResponseSource === 'string'
         ? input.assistantPayload.selectedResponseSource
@@ -1610,6 +1619,14 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
     metadata.activeIssueId = assistantPayload.activeIssueId;
   }
 
+  if (typeof assistantPayload.assistantFormatPreference === 'string') {
+    metadata.assistantFormatPreference = assistantPayload.assistantFormatPreference;
+  }
+
+  if (typeof assistantPayload.encodingWarning === 'boolean') {
+    metadata.encodingWarning = assistantPayload.encodingWarning;
+  }
+
   if (typeof assistantPayload.classifierSource === 'string') {
     metadata.classifierSource = assistantPayload.classifierSource;
   }
@@ -1699,6 +1716,7 @@ const logAssistantTurn = (input: {
       turnNumber: input.assistantTurnNumber ?? input.userTurnNumber,
       userMessageId: input.userMessageId,
       latestUserMessageContent: input.latestUserMessageContent,
+      latestUserMessageUnicodeEscaped: escapeUnicodeForLog(input.latestUserMessageContent),
       latestUserMessageFirst120: input.latestUserMessageContent.slice(0, 120),
       detectedIntent: input.detectedIntent,
       intentConfidence: input.intentConfidence,
@@ -1717,6 +1735,7 @@ const logAssistantTurn = (input: {
       sessionHistoricalMaxRiskLevel: input.sessionHistoricalMaxRiskLevel,
       selectedResponseSource: input.selectedResponseSource,
       assistantMessageId: input.assistantMessageId,
+      assistantResponseUnicodeEscaped: escapeUnicodeForLog(input.assistantMessageContent),
       assistantResponseFirst120: input.assistantMessageContent.slice(0, 120)
     },
     'Conversation assistant turn'
@@ -2752,6 +2771,7 @@ const toSessionRecord = (session: ConversationFlowSessionDocument) => ({
   latestTurnRiskLevel: session.latestTurnRiskLevel ?? 'none',
   activeIncidentRiskLevel: session.activeIncidentRiskLevel ?? 'none',
   sessionHistoricalMaxRiskLevel: session.sessionHistoricalMaxRiskLevel ?? 'none',
+  assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs',
   jurisdiction: session.jurisdiction,
   location: session.location,
   messageCount: session.messageCount,
@@ -3179,6 +3199,35 @@ const maxConversationRiskLevel = (
 };
 
 const hasNonEmptyValue = (value?: string): boolean => Boolean(value?.trim());
+
+const resolveAssistantFormatPreference = (
+  message: string,
+  currentPreference?: 'paragraphs' | 'bullets' | 'mix'
+): 'paragraphs' | 'bullets' | 'mix' => {
+  const normalized = message.toLowerCase();
+
+  if (
+    /\b(paragraph|paragraphs|natural reply|natural paragraph|no bullet|without bullet|not bullets)\b/.test(
+      normalized
+    )
+  ) {
+    return 'paragraphs';
+  }
+
+  if (/\b(bullet point|bullet points|bullets|list format|use a list)\b/.test(normalized)) {
+    return 'bullets';
+  }
+
+  if (/\b(mix|mixed format|some bullets|both paragraphs and bullets)\b/.test(normalized)) {
+    return 'mix';
+  }
+
+  if (/are you answering with bullet points every time/.test(normalized)) {
+    return 'paragraphs';
+  }
+
+  return currentPreference ?? 'paragraphs';
+};
 
 const hasActiveIncidentContext = (input: {
   facts?: Partial<ConversationFlowFactsDocument> | null;
@@ -4689,6 +4738,7 @@ export const createConversationFlowSession = async (
     latestTurnRiskLevel: 'none',
     activeIncidentRiskLevel: 'none',
     sessionHistoricalMaxRiskLevel: 'none',
+    assistantFormatPreference: 'paragraphs',
     messageCount: 0,
     userTurnCount: 0
   });
@@ -4751,6 +4801,10 @@ export const appendConversationFlowMessage = async (
 
   session.messageCount += 1;
   session.userTurnCount += 1;
+  session.assistantFormatPreference = resolveAssistantFormatPreference(
+    input.content,
+    session.assistantFormatPreference
+  );
 
   const conversationForAssistant = [
     ...existingMessages.map((message) => ({
@@ -4766,6 +4820,103 @@ export const appendConversationFlowMessage = async (
     conversationSessionId: session._id
   }).lean();
   const existingTimeline = (existingFacts?.timeline ?? {}) as Record<string, string>;
+  if (hasBrokenTextEncoding(input.content)) {
+    const assistantPayload = {
+      assistantMessage: 'The message looks like it was received with broken text encoding. Please resend it.',
+      nextQuestion: '',
+      readyForSubmission: false,
+      confidence: 'medium' as const,
+      disclaimer: 'This is information only, not legal advice.',
+      citations: [],
+      showSources: false,
+      sourceDisplayReason: 'hidden_support_reply' as const,
+      rag: {
+        used: false,
+        unavailable: false,
+        resultCount: 0
+      },
+      reviewStatus: 'encoding_error',
+      intent: 'encoding_error',
+      responseMode: 'encoding_error',
+      usedModelGeneration: false,
+      guardrailStatus: 'passed',
+      staticTemplateUsed: false,
+      responseSource: 'encoding_guard',
+      selectedResponseSource: 'encoding_guard',
+      nonIncidentTurn: true,
+      triageUpdated: false,
+      encodingWarning: true,
+      latestTurnRiskLevel: 'none',
+      activeIncidentRiskLevel: session.activeIncidentRiskLevel ?? 'none',
+      sessionHistoricalMaxRiskLevel: session.sessionHistoricalMaxRiskLevel ?? 'none',
+      assistantLanguage: input.language ?? 'en',
+      assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs'
+    };
+    const assistantMessage = await ConversationFlowMessageModel.create({
+      conversationSessionId: session._id,
+      role: 'assistant',
+      content: assistantPayload.assistantMessage,
+      turnNumber: existingMessages.length + 2,
+      metadata: buildAssistantMessageMetadata(assistantPayload)
+    });
+
+    logAssistantTurn({
+      conversationSessionId: session._id.toString(),
+      userMessageId: userMessage._id.toString(),
+      userTurnNumber: userMessage.turnNumber,
+      latestUserMessageContent: input.content,
+      detectedIntent: 'encoding_error',
+      intentConfidence: 'high',
+      aiResponseMode: 'encoding_error',
+      usedModelGeneration: false,
+      staticTemplateUsed: false,
+      responseSource: 'encoding_guard',
+      model: env.OPENAI_MODEL,
+      ragStatus: 'not_required',
+      guardrailStatus: 'passed',
+      nonIncidentTurn: true,
+      triageUpdated: false,
+      latestTurnRiskLevel: 'none',
+      activeIncidentRiskLevel: session.activeIncidentRiskLevel ?? 'none',
+      sessionHistoricalMaxRiskLevel: session.sessionHistoricalMaxRiskLevel ?? 'none',
+      selectedResponseSource: 'encoding_guard',
+      assistantMessageId: assistantMessage._id.toString(),
+      assistantTurnNumber: assistantMessage.turnNumber,
+      assistantMessageContent: assistantMessage.content
+    });
+
+    session.messageCount += 1;
+    session.latestTurnRiskLevel = 'none';
+    await session.save();
+    await audit(context, CONVERSATION_FLOW_ACTIONS.messageAppend, conversationSessionId, {
+      offeredTriage: false,
+      detectedCategory: session.detectedCategory,
+      encodingWarning: true
+    });
+
+    return {
+      session: toSessionRecord(session),
+      userMessage: toMessageRecord(userMessage),
+      assistantMessage: toMessageRecord(assistantMessage),
+      factExtraction: existingFacts ?? null,
+      triage: decorateConversationFlowTriage(
+        await ConversationFlowTriageModel.findOne({
+          conversationSessionId: session._id
+        }).lean()
+      ),
+      transition: {
+        offerTriage: false,
+        prompt: null,
+        primaryCta: null,
+        secondaryCta: null
+      },
+      responseMeta: buildConversationAssistantResponseMeta({
+        assistantPayload,
+        conversationSessionId,
+        offerTriage: false
+      })
+    };
+  }
   const activeIncidentExists = hasActiveIncidentContext({
     facts: existingFacts,
     timeline: existingTimeline,
@@ -4891,7 +5042,8 @@ export const appendConversationFlowMessage = async (
             : []
       },
       ragContext,
-      userSelectedTopic: session.selectedTopic
+      userSelectedTopic: session.selectedTopic,
+      assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs'
     });
 
     assistantPayload = await generateSafeSpeakModelResponse({
@@ -4938,6 +5090,7 @@ export const appendConversationFlowMessage = async (
     activeIncidentRiskLevel: turnHandlingPlan.activeIncidentRiskLevel,
     sessionHistoricalMaxRiskLevel: turnHandlingPlan.sessionHistoricalMaxRiskLevel,
     activeIssueId: turnHandlingPlan.activeIssueId,
+    assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs',
     assistantLanguage,
     safetyOverride:
       latestTurnSafetyOverride.safetyOverride || Boolean(assistantPayload.safetyOverride),

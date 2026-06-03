@@ -48,6 +48,7 @@ export type SafeSpeakModelContext = {
   latestUserMessage: string;
   detectedLanguage: string;
   intent: SafeSpeakIntent;
+  assistantFormatPreference?: 'paragraphs' | 'bullets' | 'mix';
   conversationSummary: string;
   activeIncidentSummary: string;
   consentSnapshot: SafeSpeakConsentContext;
@@ -69,6 +70,7 @@ export type SafeSpeakContextBuilderInput = {
   };
   ragContext?: SafeSpeakRagSnippet[];
   userSelectedTopic?: string;
+  assistantFormatPreference?: 'paragraphs' | 'bullets' | 'mix';
 };
 
 const summarize = (value?: string, fallback = 'None recorded.'): string => {
@@ -100,6 +102,7 @@ export const buildSafeSpeakContext = (
   latestUserMessage: input.latestUserMessage,
   detectedLanguage: input.detectedLanguage,
   intent: input.intentClassification.intent,
+  assistantFormatPreference: input.assistantFormatPreference,
   conversationSummary: summarize(input.conversationSummary),
   activeIncidentSummary: summarize(input.activeIncidentSummary),
   consentSnapshot: toConsentContext(input.consentSnapshot),
@@ -117,6 +120,8 @@ export const buildSafeSpeakContext = (
   userSelectedTopic: input.userSelectedTopic,
   constraints: [
     'Respond naturally to the latest user message.',
+    'Use short natural paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
+    'Use bullet points only when there are multiple concrete safety steps, evidence steps, or comparison options. Do not default to bullets.',
     'Do not claim any upload, sharing, saving, syncing, or agency contact already happened unless confirmed by backend action.',
     'Use Australian emergency guidance only: 000.',
     'Ask at most one user-facing question.',

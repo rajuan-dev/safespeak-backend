@@ -87,6 +87,7 @@ const EVIDENCE_LEGAL_STRATEGY_PATTERNS = [
   /\bbuild your case\b/i,
   /\buse this against them\b/i
 ];
+const BULLET_LINE_PATTERN = /^\s*(?:[-*•]|\d+\.)\s+/gm;
 
 export type SafeSpeakGuardrailViolationCode =
   | 'wrong_au_emergency_number'
@@ -95,6 +96,7 @@ export type SafeSpeakGuardrailViolationCode =
   | 'role_violation'
   | 'safety_promise'
   | 'evidence_legal_strategy'
+  | 'bullet_heavy_non_actionable'
   | 'too_many_questions';
 
 export type SafeSpeakGuardrailResult = {
@@ -126,6 +128,8 @@ export const getSafeSpeakSystemPrompt = (language: string): string =>
     'For AI-analysis questions, clearly separate upload from AI processing.',
     'Uploading a file does not automatically mean it is analysed unless the user chooses that AI step and consent allows it.',
     'For normal conversation or feedback about the assistant, answer directly and naturally.',
+    'Use short natural paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
+    'Use bullet points only when there are multiple concrete safety or evidence steps, or clear comparison options.',
     'Do not force the user into incident triage.',
     'Ask at most one user-facing question unless emergency safety requires otherwise.',
     `Match the user language when clear and supported. Preferred language: ${getAssistantLanguagePromptLabel(
@@ -175,6 +179,7 @@ export const validateSafeSpeakResponse = (input: {
   jurisdiction?: string;
   allowMultipleQuestions?: boolean;
   latestUserMessage?: string;
+  preferParagraphs?: boolean;
 }): SafeSpeakGuardrailResult => {
   const violations = new Set<SafeSpeakGuardrailViolationCode>();
   const normalizedJurisdiction = (input.jurisdiction ?? 'AU').toUpperCase();
@@ -215,6 +220,10 @@ export const validateSafeSpeakResponse = (input: {
 
   if (!input.allowMultipleQuestions && (input.text.match(/\?/g) ?? []).length > 1) {
     violations.add('too_many_questions');
+  }
+
+  if (input.preferParagraphs && (input.text.match(BULLET_LINE_PATTERN) ?? []).length > 1) {
+    violations.add('bullet_heavy_non_actionable');
   }
 
   return {

@@ -42,6 +42,7 @@ export interface ConversationFlowSessionDocument {
   latestTurnRiskLevel?: string;
   activeIncidentRiskLevel?: string;
   sessionHistoricalMaxRiskLevel?: string;
+  assistantFormatPreference?: 'paragraphs' | 'bullets' | 'mix';
   jurisdiction?: string;
   location?: string;
   messageCount: number;
@@ -150,6 +151,12 @@ const conversationFlowSessionSchema = new Schema<ConversationFlowSessionDocument
     },
     sessionHistoricalMaxRiskLevel: {
       type: String,
+      required: false,
+      trim: true
+    },
+    assistantFormatPreference: {
+      type: String,
+      enum: ['paragraphs', 'bullets', 'mix'],
       required: false,
       trim: true
     },

@@ -142,6 +142,7 @@ const buildUserPrompt = (input: GenerateSafeSpeakResponseInput, strictRetry = fa
   [
     `Intent: ${input.intent}`,
     `Latest user message: ${input.latestUserMessage}`,
+    `Assistant format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
     `SafeSpeak context JSON: ${JSON.stringify(input.context)}`,
     `RAG status: ${input.ragStatus ?? 'not_required'}`,
     buildRagPromptSection(input.ragContext ?? input.context.ragContext),
@@ -267,6 +268,12 @@ export const generateSafeSpeakResponse = async (
     url: item.url,
     lastUpdated: item.lastUpdated
   }));
+  const preferParagraphs =
+    input.context.assistantFormatPreference === 'paragraphs' ||
+    input.intent === 'meta_feedback' ||
+    input.intent === 'general_conversation' ||
+    input.intent === 'language_or_translation' ||
+    input.intent === 'encoding_error';
 
   if (!env.OPENAI_API_KEY) {
     const fallback = minimalFallback(input.intent);
@@ -310,7 +317,8 @@ export const generateSafeSpeakResponse = async (
       text: assistantMessage,
       jurisdiction: 'AU',
       allowMultipleQuestions: input.intent === 'safety_crisis',
-      latestUserMessage: input.latestUserMessage
+      latestUserMessage: input.latestUserMessage,
+      preferParagraphs
     });
 
     if (!validation.passed) {
@@ -323,7 +331,8 @@ export const generateSafeSpeakResponse = async (
         text: assistantMessage,
         jurisdiction: 'AU',
         allowMultipleQuestions: input.intent === 'safety_crisis',
-        latestUserMessage: input.latestUserMessage
+        latestUserMessage: input.latestUserMessage,
+        preferParagraphs
       });
     }
 

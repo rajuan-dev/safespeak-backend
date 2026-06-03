@@ -3,6 +3,7 @@ export type SafeSpeakIntent =
   | 'physical_harm'
   | 'incident_disclosure'
   | 'evidence_upload'
+  | 'encoding_error'
   | 'ai_analysis_question'
   | 'legal_boundary'
   | 'rag_pathway_question'
