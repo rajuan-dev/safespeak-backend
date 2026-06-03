@@ -154,6 +154,16 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
     { signal: 'general_legal_explainer', pattern: /\b(explain|tell me about|summary of|briefly explain|what does .* mean|give me a summary of)\b.*\b(criminal law|australian law|discrimination law|legal pathways|law generally)\b/ },
     { signal: 'topic_only_legal_explainer', pattern: /\b(about )?(criminal law|australian criminal law|discrimination law|legal pathways)\b/ },
     {
+      signal: 'named_legislation_lookup',
+      pattern:
+        /\b(what|which|how|why|does|did|according to|under|summary|explain)\b.*\b(act|regulation|code|charter|constitution|policy)\b.*\b\d{4}\b/
+    },
+    {
+      signal: 'section_lookup_question',
+      pattern:
+        /\b(what section|which section|what does this act say|what does the act say|what did this act change|what did the act change)\b/
+    },
+    {
       signal: 'family_violence_law_comparison',
       pattern:
         /\b(are|is|how|what|which|do|does|can|could)\b.*\b(family violence|domestic violence)\b.*\b(law|laws|legal framework|legislation|protection order|dvo|avo|advo|ivo|fvio)\b/

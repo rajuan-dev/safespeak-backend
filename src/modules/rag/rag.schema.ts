@@ -101,6 +101,7 @@ export const ragSearchSchema = z.object({
   topK: z.number().int().min(1).max(20).default(5),
   language: z.string().trim().min(2).max(12).optional(),
   jurisdiction: z.enum(RAG_JURISDICTIONS).optional(),
+  sourceIds: z.array(objectIdSchema).max(20).optional(),
   stateOrTerritory: stateOrTerritorySchema,
   legalDomain: legalDomainSchema,
   pathwayCategory: pathwayCategorySchema,

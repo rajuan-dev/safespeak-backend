@@ -9,6 +9,7 @@ const {
   buildFocusedLegalSearchQuery,
   classifySourceCategory,
   detectLegalHeading,
+  resolveSearchJurisdictions,
 } = require('../src/modules/rag/rag.service.ts');
 
 test('legislation heading parser ignores running headers and page numbers', () => {
@@ -46,6 +47,17 @@ test('focused legal search query removes framing around section questions', () =
       'According to the uploaded Privacy Act 1988, what section deals with serious interference with privacy?'
     ),
     'serious interference with privacy'
+  );
+});
+
+test('AU governed legal searches include Commonwealth sources', () => {
+  assert.deepEqual(
+    resolveSearchJurisdictions('AU', 'official_legal_source'),
+    ['AU', 'Cth']
+  );
+  assert.deepEqual(
+    resolveSearchJurisdictions('NSW', 'official_legal_source'),
+    ['NSW', 'Cth', 'AU']
   );
 });
 

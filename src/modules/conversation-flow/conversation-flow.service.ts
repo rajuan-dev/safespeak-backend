@@ -27,7 +27,11 @@ import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
 import { MicroEducationModel } from '@modules/microeducation/microeducation.model';
 import { RagKnowledgeSourceModel } from '@modules/rag/rag.model';
-import { buildAssistantSourceDisplayMeta, searchRag } from '@modules/rag/rag.service';
+import {
+  buildAssistantSourceDisplayMeta,
+  resolveSearchJurisdictions,
+  searchRag
+} from '@modules/rag/rag.service';
 import { SupportServiceModel } from '@modules/support/support.model';
 
 import { CONVERSATION_FLOW_ACTIONS, CONVERSATION_FLOW_CATEGORIES } from './conversation-flow.constants';
@@ -1771,7 +1775,98 @@ const retrieveConversationFlowRag = async (input: {
     }
   }
 
+  if (
+    input.intent === 'legal_general_information' ||
+    input.intent === 'legal_boundary_specific_case'
+  ) {
+    const targetedSourceIds = await findMatchingLegalSourceIdsForQuery({
+      query: input.query,
+      jurisdiction: input.jurisdiction
+    });
+
+    if (targetedSourceIds.length > 0) {
+      return searchRag(input.context, {
+        query: input.query,
+        topK: 4,
+        language: input.language,
+        jurisdiction: input.jurisdiction,
+        sourceCategory: 'official_legal_source',
+        sourceIds: targetedSourceIds
+      });
+    }
+  }
+
   return [];
+};
+
+const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const extractNamedLegislationReferences = (query: string): string[] =>
+  Array.from(
+    new Set(
+      Array.from(
+        query.matchAll(
+          /\b([A-Z][A-Za-z'’().,&/-]+(?:\s+[A-Z][A-Za-z'’().,&/-]+){0,10}\s+(?:Act|Regulation|Code|Charter|Constitution|Policy)(?:\s+\d{4})?)\b/g
+        )
+      )
+        .map((match) => collapseWhitespace(match[1] ?? ''))
+        .filter(Boolean)
+    )
+  );
+
+const findMatchingLegalSourceIdsForQuery = async (input: {
+  query: string;
+  jurisdiction:
+    | 'Cth'
+    | 'NSW'
+    | 'VIC'
+    | 'QLD'
+    | 'SA'
+    | 'WA'
+    | 'TAS'
+    | 'NT'
+    | 'ACT'
+    | 'AU'
+    | 'Global'
+    | 'Internal';
+}): Promise<string[]> => {
+  const references = extractNamedLegislationReferences(input.query);
+
+  if (references.length === 0) {
+    return [];
+  }
+
+  const jurisdictionFilter = resolveSearchJurisdictions(
+    input.jurisdiction,
+    'official_legal_source'
+  );
+  const patterns = references.map((reference) => new RegExp(`^${escapeRegex(reference)}$`, 'i'));
+  const matches = await RagKnowledgeSourceModel.find({
+    status: 'approved',
+    active: true,
+    deletedAt: { $exists: false },
+    sourceCategory: 'official_legal_source',
+    legalReviewed: true,
+    ...(jurisdictionFilter?.length
+      ? {
+          jurisdiction:
+            jurisdictionFilter.length === 1
+              ? jurisdictionFilter[0]
+              : { $in: jurisdictionFilter }
+        }
+      : {}),
+    $or: patterns.flatMap((pattern) => [
+      { title: pattern },
+      { sourceTitle: pattern },
+      { legislationName: pattern },
+      { 'metadata.detectedActNames': pattern }
+    ])
+  })
+    .select('_id')
+    .limit(8)
+    .lean();
+
+  return matches.map((source) => source._id.toString());
 };
 
 const joinNaturalLanguageList = (items: string[]): string => {

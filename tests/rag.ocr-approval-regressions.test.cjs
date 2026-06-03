@@ -147,7 +147,9 @@ const createHarness = () => {
       : true;
     const matchesTopic = filter.topic ? persistedSource.topic === filter.topic : true;
     const matchesJurisdiction = filter.jurisdiction
-      ? persistedSource.jurisdiction === filter.jurisdiction
+      ? filter.jurisdiction.$in
+        ? filter.jurisdiction.$in.includes(persistedSource.jurisdiction)
+        : persistedSource.jurisdiction === filter.jurisdiction
       : true;
 
     return matchesSourceId &&
@@ -172,6 +174,12 @@ const createHarness = () => {
     },
     get deleteBySourceCalls() {
       return deleteBySourceCalls;
+    },
+    replaceSource(next) {
+      assignPersisted(next);
+    },
+    setChunks(nextChunks) {
+      chunks = clone(nextChunks);
     },
     mocks(t) {
       t.mock.method(ConsentRecordModel, 'findOne', () => makeQuery(() => ({
@@ -316,12 +324,28 @@ const createHarness = () => {
       t.mock.method(ragModel.RagChunkModel, 'updateMany', async (_filter, update) => {
         chunks = chunks.map((chunk) => ({
           ...chunk,
+          legalReviewed:
+            update.$set?.legalReviewed !== undefined
+              ? update.$set.legalReviewed
+              : chunk.legalReviewed,
+          active:
+            update.$set?.active !== undefined
+              ? update.$set.active
+              : chunk.active,
           pineconeVectorId:
             update.$set?.pineconeVectorId !== undefined
               ? update.$set.pineconeVectorId
               : chunk.pineconeVectorId,
           metadata: {
             ...chunk.metadata,
+            legalReviewed:
+              update.$set?.['metadata.legalReviewed'] !== undefined
+                ? update.$set['metadata.legalReviewed']
+                : chunk.metadata?.legalReviewed,
+            active:
+              update.$set?.['metadata.active'] !== undefined
+                ? update.$set['metadata.active']
+                : chunk.metadata?.active,
             pineconeVectorId:
               update.$set?.['metadata.pineconeVectorId'] !== undefined
                 ? update.$set['metadata.pineconeVectorId']
@@ -449,4 +473,160 @@ test('Pinecone upsert populates chunk.pineconeVectorId and source provenance fie
   assert.equal(status.embeddingModel, env.OPENAI_EMBEDDING_MODEL);
   assert.equal(status.pineconeIndex, env.PINECONE_INDEX_NAME);
   assert.equal(status.pineconeNamespace, env.PINECONE_NAMESPACE);
+});
+
+test('approveKnowledgeSource syncs legalReviewed to embedded chunks and Pinecone metadata', async (t) => {
+  const harness = createHarness();
+  harness.replaceSource({
+    ...harness.persistedSource,
+    extractionMethod: 'text',
+    ocrReviewRequired: false,
+    ocrStatus: 'not_required',
+    ingestionStatus: 'embedded',
+    status: 'draft',
+    legalReviewed: false,
+    officialUrl: 'https://www.legislation.gov.au/C2004A00416/latest/text',
+    url: 'https://www.legislation.gov.au/C2004A00416/latest/text',
+    metadata: {
+      ...harness.persistedSource.metadata,
+      ocrReviewRequired: false,
+      ocrStatus: 'not_required',
+      indexSyncStatus: 'synced',
+      pineconeIndexed: true,
+      pineconeVectorCount: 1,
+      indexedChunkCount: 1,
+      chunkCount: 1,
+      mongoChunkCount: 1,
+    },
+  });
+  harness.setChunks([
+    {
+      _id: CHUNK_ID,
+      sourceId: SOURCE_ID,
+      chunkIndex: 0,
+      chunkText: buildLongLegalText(),
+      embedding: Array.from({ length: 8 }, () => 0.5),
+      sourceCategory: 'official_legal_source',
+      sourceAuthority: 'Commonwealth of Australia',
+      jurisdiction: 'AU',
+      stateOrTerritory: 'NSW',
+      pathwayCategory: 'reporting',
+      legalDomain: 'online_safety',
+      topic: 'online_safety',
+      sourceType: 'legislation',
+      legalReviewed: false,
+      active: true,
+      citationLabel: 'Online Safety Act OCR Source [chunk 1]',
+      citationUrl: 'https://www.legislation.gov.au/C2004A00416/latest/text',
+      tokenCount: 50,
+      metadata: {
+        sourceTitle: 'Online Safety Act OCR Source',
+        sourceAuthority: 'Commonwealth of Australia',
+        sourceType: 'legislation',
+        sourceCategory: 'official_legal_source',
+        legalReviewed: false,
+      },
+    },
+  ]);
+  harness.mocks(t);
+
+  const approved = await ragService.approveKnowledgeSource(
+    { owner: { userId: USER_ID }, actorType: 'admin' },
+    SOURCE_ID
+  );
+
+  assert.equal(approved.legalReviewed, true);
+  assert.equal(harness.chunks[0].legalReviewed, true);
+  assert.equal(harness.chunks[0].metadata.legalReviewed, true);
+  assert.ok(harness.upsertedVectors.length > 0);
+  assert.equal(harness.upsertedVectors[0].metadata.legalReviewed, true);
+});
+
+test('official legal search does not require sourceReliability=official when the source is already approved', async (t) => {
+  const harness = createHarness();
+  harness.replaceSource({
+    ...harness.persistedSource,
+    sourceReliability: 'unknown',
+    legalReviewed: true,
+    ingestionStatus: 'embedded',
+    ocrReviewRequired: false,
+    ocrStatus: 'not_required',
+    metadata: {
+      ...harness.persistedSource.metadata,
+      indexSyncStatus: 'synced',
+      pineconeIndexed: true,
+      pineconeIndexedAt: '2026-06-04T00:00:00.000Z',
+      pineconeVectorCount: 1,
+      indexedChunkCount: 1,
+      chunkCount: 1,
+      mongoChunkCount: 1,
+    },
+  });
+  harness.setChunks([
+    {
+      _id: CHUNK_ID,
+      sourceId: SOURCE_ID,
+      chunkIndex: 0,
+      chunkText: buildLongLegalText(),
+      embedding: Array.from({ length: 8 }, () => 0.5),
+      sourceCategory: 'official_legal_source',
+      sourceAuthority: 'Commonwealth of Australia',
+      jurisdiction: 'AU',
+      stateOrTerritory: 'NSW',
+      pathwayCategory: 'reporting',
+      legalDomain: 'online_safety',
+      topic: 'online_safety',
+      sourceType: 'legislation',
+      legalReviewed: true,
+      active: true,
+      citationLabel: 'Online Safety Act OCR Source [chunk 1]',
+      citationUrl: 'https://www.legislation.gov.au/C2004A00416/latest/text',
+      tokenCount: 50,
+      metadata: {
+        sourceTitle: 'Online Safety Act OCR Source',
+        sourceAuthority: 'Commonwealth of Australia',
+        sourceType: 'legislation',
+        sourceCategory: 'official_legal_source',
+        legalReviewed: true,
+      },
+    },
+  ]);
+  harness.mocks(t);
+  harness.upsertedVectors.push({
+    id: `rag_source_${SOURCE_ID}_chunk_${CHUNK_ID}`,
+    values: Array.from({ length: 8 }, () => 0.5),
+    metadata: {
+      chunkId: CHUNK_ID,
+      sourceId: SOURCE_ID,
+      sourceCategory: 'official_legal_source',
+      jurisdiction: 'AU',
+      stateOrTerritory: 'NSW',
+      topic: 'online_safety',
+      legalDomain: 'online_safety',
+      pathwayCategory: 'reporting',
+      sourceType: 'legislation',
+      sourceAuthority: 'Commonwealth of Australia',
+      sourceTitle: 'Online Safety Act OCR Source',
+      title: 'Online Safety Act OCR Source',
+      legalReviewed: true,
+      active: true,
+      status: 'approved',
+    },
+  });
+
+  const results = await ragService.searchRag(
+    { owner: { userId: USER_ID } },
+    {
+      query: 'What official reporting pathway exists for online abuse in NSW?',
+      sourceCategory: 'official_legal_source',
+      jurisdiction: 'AU',
+      stateOrTerritory: 'NSW',
+      topic: 'online_safety',
+      legalDomain: 'online_safety',
+      pathwayCategory: 'reporting',
+    }
+  );
+
+  assert.equal(results.length > 0, true);
+  assert.equal(results[0].sourceId, SOURCE_ID);
 });

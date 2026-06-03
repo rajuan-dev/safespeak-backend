@@ -487,6 +487,16 @@ test('general legal information turn plan does not mutate triage', () => {
   assert.equal(plan.activeIssueId, 'session-125c:issue-1');
 });
 
+test('named Act questions classify as legal general information for RAG-first handling', () => {
+  const classification = classifySafeSpeakIntentDetails(
+    'What did the Referendum Legislation Amendment Act 1999 change?'
+  );
+
+  assert.equal(classification.intent, 'legal_general_information');
+  assert.equal(classification.classifierSource, 'rule');
+  assert.match(classification.matchedSignals.join(' '), /named_legislation_lookup/);
+});
+
 test('rag pathway questions broaden retrieval from legal to support and admin sources', () => {
   const plan = buildConversationFlowRagSearchPlan({
     intent: 'rag_pathway_question',

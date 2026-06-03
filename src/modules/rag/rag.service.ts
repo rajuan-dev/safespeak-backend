@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { StatusCodes } from 'http-status-codes';
-import type { FilterQuery, HydratedDocument, PipelineStage } from 'mongoose';
+import { Types, type FilterQuery, type HydratedDocument, type PipelineStage } from 'mongoose';
 import mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
 
@@ -538,19 +538,38 @@ const isGovernedSourceCategory = (
 const isNswSpecificJurisdiction = (jurisdiction: RagJurisdiction): boolean =>
   !['Cth', 'AU', 'Global', 'Internal'].includes(jurisdiction);
 
+export const resolveSearchJurisdictions = (
+  jurisdiction: RagJurisdiction | undefined,
+  category: RagSourceCategory
+): RagJurisdiction[] | undefined => {
+  if (!jurisdiction) {
+    return undefined;
+  }
+
+  if (isGovernedKnowledgeSource(category) && isNswSpecificJurisdiction(jurisdiction)) {
+    return [jurisdiction, 'Cth', 'AU'];
+  }
+
+  if (isGovernedKnowledgeSource(category) && jurisdiction === 'AU') {
+    return ['AU', 'Cth'];
+  }
+
+  return [jurisdiction];
+};
+
 const buildJurisdictionFilter = (
   jurisdiction: RagJurisdiction | undefined,
   category: RagSourceCategory
 ): FilterQuery<RagKnowledgeSourceDocument> => {
-  if (!jurisdiction) {
+  const searchJurisdictions = resolveSearchJurisdictions(jurisdiction, category);
+
+  if (!searchJurisdictions || searchJurisdictions.length === 0) {
     return {};
   }
 
-  if (isGovernedKnowledgeSource(category) && isNswSpecificJurisdiction(jurisdiction)) {
-    return { jurisdiction: { $in: [jurisdiction, 'Cth', 'AU'] } };
-  }
-
-  return { jurisdiction };
+  return searchJurisdictions.length === 1
+    ? { jurisdiction: searchJurisdictions[0] }
+    : { jurisdiction: { $in: searchJurisdictions } };
 };
 
 type HydratedRagKnowledgeSourceDocument = HydratedDocument<RagKnowledgeSourceDocument>;
@@ -2277,6 +2296,36 @@ const upsertChunksToPinecone = async (
   return { indexedChunkCount, indexedAt };
 };
 
+const syncSourceChunksForRetrieval = async (
+  source: HydratedRagKnowledgeSourceDocument
+): Promise<void> => {
+  await RagChunkModel.updateMany(
+    { sourceId: source._id },
+    {
+      $set: {
+        legalReviewed: source.legalReviewed,
+        active: source.active,
+        'metadata.legalReviewed': source.legalReviewed,
+        'metadata.active': source.active
+      }
+    }
+  );
+
+  if (!shouldUsePineconeProvider() || !isPineconeConfigured()) {
+    return;
+  }
+
+  const chunks = await RagChunkModel.find({ sourceId: source._id, active: true })
+    .select('_id sourceId sectionRef chunkIndex metadata embedding')
+    .lean<PineconeIndexableChunk[]>();
+
+  if (chunks.length === 0) {
+    return;
+  }
+
+  await upsertChunksToPinecone(source, chunks);
+};
+
 const embedKnowledgeSourceText = async (
   source: HydratedRagKnowledgeSourceDocument,
   text: string,
@@ -3154,6 +3203,10 @@ export const updateKnowledgeSource = async (
 
   await source.save();
 
+  if (legalReviewedChanged && source.ingestionStatus === 'embedded') {
+    await syncSourceChunksForRetrieval(source);
+  }
+
   await auditRagAction(context, RAG_ACTIONS.sourceUpdate, source._id.toString(), {
     changedFields: Object.keys(normalizedInput),
     returnedToReview: shouldReturnToReview
@@ -3900,6 +3953,10 @@ export const approveKnowledgeSource = async (
     source.legalReviewedAt = new Date();
     source.legalReviewedBy = context.owner.userId as never;
   }
+  const shouldSyncChunksForApproval =
+    source.sourceCategory === 'official_legal_source' &&
+    source.ingestionStatus === 'embedded' &&
+    source.legalReviewed;
 
   if (isAdminDirectApproval && source.ocrReviewRequired) {
     source.ocrReviewRequired = false;
@@ -3916,6 +3973,10 @@ export const approveKnowledgeSource = async (
     source.ingestionError = undefined;
   }
   await source.save();
+
+  if (shouldSyncChunksForApproval) {
+    await syncSourceChunksForRetrieval(source);
+  }
 
   await auditRagAction(context, RAG_ACTIONS.sourceApprove, source._id.toString());
 
@@ -4673,6 +4734,13 @@ const buildSourceFilter = (
     status: 'approved',
     active: true,
     deletedAt: { $exists: false },
+    ...(input.sourceIds?.length
+      ? {
+          _id: {
+            $in: input.sourceIds.map((sourceId) => new Types.ObjectId(sourceId))
+          }
+        }
+      : {}),
     sourceCategory: category,
     ...(category === 'official_legal_source' ? { legalReviewed: true } : {}),
     $and: [
@@ -4768,7 +4836,6 @@ const searchRagWithPinecone = async (
         topic: input.topic,
         legalDomain: input.legalDomain,
         pathwayCategory: input.pathwayCategory,
-        sourceReliability: category === 'official_legal_source' ? 'official' : undefined,
         active: true,
         legalReviewed: category === 'official_legal_source' ? true : undefined,
         sourceIds: sourceIds.map((sourceId) => String(sourceId))
