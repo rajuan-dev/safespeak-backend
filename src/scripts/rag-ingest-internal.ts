@@ -4,9 +4,13 @@ import path from 'node:path';
 import { logger } from '@common/utils/logger';
 import { connectDatabase, disconnectDatabase } from '@config/database';
 import { env } from '@config/env';
-import { createEmbedding } from '@modules/ai/ai.service';
 import { RagChunkModel, RagKnowledgeSourceModel } from '@modules/rag/rag.model';
+import { ingestKnowledgeSource } from '@modules/rag/rag.service';
 import type { RagTopic } from '@modules/rag/rag.types';
+const SCRIPT_CONTEXT = {
+  owner: { sessionId: 'script:rag-ingest-internal' },
+  actorType: 'admin' as const
+};
 const SUPPORTED_EXTENSIONS = new Set(['.txt', '.md', '.json']);
 const sha256 = (input: string): string => createHash('sha256').update(input).digest('hex');
 const toTitle = (fileName: string): string => fileName.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -28,16 +32,6 @@ const classifyInternalFile = (
   }
 
   return { topic: 'safespeak_policy', sourceType: 'ProductRequirement' };
-};
-const chunkText = (text: string, size = 1200, overlap = 150): string[] => {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  const chunks: string[] = [];
-  let cursor = 0;
-  while (cursor < normalized.length) {
-    chunks.push(normalized.slice(cursor, cursor + size));
-    cursor += size - overlap;
-  }
-  return chunks;
 };
 const run = async (): Promise<void> => {
   const dir = path.resolve(process.cwd(), env.INTERNAL_KNOWLEDGE_DIR);
@@ -87,15 +81,24 @@ const run = async (): Promise<void> => {
       source.rawText = rawText;
       source.sha256Hash = hash;
       source.status = status;
+      source.sourceTitle = source.title;
+      source.sourceAuthority = 'SafeSpeak';
+      source.country = 'Australia';
+      source.sourceReliability = 'internal';
+      source.active = true;
       source.localFilePath = filePath;
       source.ingestedAt = new Date();
       source.version = existing ? (source.version ?? 1) + 1 : 1;
       await source.save();
       await RagChunkModel.deleteMany({ sourceId: source._id });
-      const chunks = chunkText(rawText);
-      const docs = await Promise.all(chunks.map(async (chunk, idx) => ({ sourceId: source._id, sourceCategory: source.sourceCategory, jurisdiction: source.jurisdiction, topic: source.topic, chunkIndex: idx, chunkText: chunk, embedding: await createEmbedding(chunk), tokenCount: Math.ceil(chunk.length / 4), citationLabel: `${source.title} [chunk ${idx + 1}]`, citationUrl: source.url, metadata: { sourceType: source.sourceType } })));
-      if (docs.length > 0) await RagChunkModel.insertMany(docs);
-      logger.info({ file: file.name, chunks: docs.length, status }, 'Internal knowledge ingested');
+      const result = await ingestKnowledgeSource(SCRIPT_CONTEXT, source._id.toString(), {
+        content: rawText,
+        expectedSha256: hash,
+        metadata: {
+          ingestionMode: 'internal_script'
+        }
+      });
+      logger.info({ file: file.name, result, status }, 'Internal knowledge ingested through shared RAG pipeline');
     }
   } finally {
     await disconnectDatabase();

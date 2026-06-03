@@ -1,9 +1,15 @@
 export interface VectorSearchFilters {
   jurisdiction?: string;
+  stateOrTerritory?: string;
   topic?: string;
+  legalDomain?: string;
+  pathwayCategory?: string;
   sourceCategory?: string;
+  sourceType?: string;
+  sourceReliability?: string;
   adminCategory?: string;
   status?: string;
+  active?: boolean;
   legalReviewed?: boolean;
   sourceIds?: string[];
   legislationTags?: string[];

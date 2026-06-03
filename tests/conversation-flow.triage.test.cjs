@@ -1263,6 +1263,53 @@ test('general legal information gives a useful brief overview without over-refus
   }
 });
 
+test('legal general information with retrieved RAG surfaces source-backed response metadata', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text:
+        'This is general information only, not legal advice. Fair Work guidance explains that workplace rights can depend on the facts and the applicable framework.'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'legal_general_information',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'What does Fair Work say about workplace rights?',
+      ragStatus: 'retrieved',
+      ragContext: [
+        {
+          sourceTitle: 'Fair Work Ombudsman guidance',
+          sourceAuthority: 'Fair Work Ombudsman',
+          jurisdiction: 'AU',
+          stateOrTerritory: 'FEDERAL',
+          legalDomain: 'workplace',
+          pathwayCategory: 'workplace_options',
+          sourceType: 'WebPage',
+          url: 'https://example.test/fair-work',
+          lastUpdated: '2026-06-01',
+          sectionNumber: 'Section 1',
+          sectionTitle: 'General protections',
+          relevantSnippet: 'This source explains workplace rights in plain language.'
+        }
+      ],
+      context: createModelContext({
+        latestUserMessage: 'What does Fair Work say about workplace rights?',
+        intent: 'legal_general_information'
+      })
+    });
+
+    assert.equal(reply.ragStatus, 'retrieved');
+    assert.equal(reply.showSources, true);
+    assert.equal(reply.sourceDisplayReason, 'legal_lookup');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('scam bullet request stays model-generated and keeps bullets without fallback', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({

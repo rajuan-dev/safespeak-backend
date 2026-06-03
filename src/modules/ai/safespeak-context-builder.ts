@@ -16,10 +16,16 @@ import {
 
 export type SafeSpeakRagSnippet = {
   sourceTitle: string;
+  sourceAuthority?: string;
   jurisdiction: string;
+  stateOrTerritory?: string;
+  legalDomain?: string;
+  pathwayCategory?: string;
   sourceType: string;
   url?: string;
   lastUpdated?: string;
+  sectionNumber?: string;
+  sectionTitle?: string;
   relevantSnippet: string;
 };
 

@@ -243,6 +243,70 @@ const categoryToRagTopic = (
   }
 };
 
+const categoryToRagLegalDomain = (
+  category?: ConversationFlowCategory
+):
+  | 'discrimination'
+  | 'workplace'
+  | 'online_safety'
+  | 'scam_fraud'
+  | 'domestic_family_violence'
+  | 'police_reporting'
+  | 'support_service'
+  | undefined => {
+  switch (category) {
+    case 'workplace_bullying':
+      return 'workplace';
+    case 'racism_discrimination':
+    case 'harassment':
+      return 'discrimination';
+    case 'online_abuse':
+      return 'online_safety';
+    case 'scam_fraud':
+      return 'scam_fraud';
+    case 'domestic_violence':
+      return 'domestic_family_violence';
+    case 'theft_property':
+      return 'police_reporting';
+    case 'mental_health_distress':
+    case 'general_support':
+      return 'support_service';
+    default:
+      return undefined;
+  }
+};
+
+const categoryToRagPathwayCategory = (
+  category?: ConversationFlowCategory
+):
+  | 'workplace_options'
+  | 'online_abuse'
+  | 'scam_response'
+  | 'domestic_family_violence'
+  | 'reporting'
+  | 'support'
+  | undefined => {
+  switch (category) {
+    case 'workplace_bullying':
+      return 'workplace_options';
+    case 'online_abuse':
+      return 'online_abuse';
+    case 'scam_fraud':
+      return 'scam_response';
+    case 'domestic_violence':
+      return 'domestic_family_violence';
+    case 'theft_property':
+    case 'racism_discrimination':
+    case 'harassment':
+      return 'reporting';
+    case 'mental_health_distress':
+    case 'general_support':
+      return 'support';
+    default:
+      return undefined;
+  }
+};
+
 const conversationCategoryToKnowledgeTopics: Record<ConversationFlowCategory, string[]> = {
   domestic_violence: ['dv', 'support', 'crisis'],
   workplace_bullying: ['workplace', 'support', 'discrimination'],
@@ -1530,9 +1594,21 @@ const shouldUseRagForIntent = (input: {
     return true;
   }
 
+  if (input.intent === 'legal_general_information') {
+    return true;
+  }
+
   if (
     input.intent === 'scam_check' &&
     /\b(report|reportcyber|scamwatch|rights|pathway|agency|police|esafety)\b/i.test(input.message)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(fair work|anti[- ]discrimination|discrimination complaint|workplace rights|esafety|online abuse|1800respect|police report|reporting pathway|support pathway|lawaccess|legal aid|what can i report this to|where can i report this|what can i use this for)\b/i.test(
+      input.message
+    )
   ) {
     return true;
   }
@@ -1550,18 +1626,30 @@ const buildConversationSummary = (
 
 const toRagSnippets = (results: Array<{
   title: string;
+  sourceAuthority?: string;
   jurisdiction: string;
+  stateOrTerritory?: string;
+  legalDomain?: string;
+  pathwayCategory?: string;
   sourceType: string;
   citationUrl?: string;
+  sectionRef?: string;
+  sectionTitle?: string;
   lastUpdated?: Date;
   text: string;
 }>): SafeSpeakRagSnippet[] =>
   results.slice(0, 4).map((result) => ({
     sourceTitle: result.title,
+    sourceAuthority: result.sourceAuthority,
     jurisdiction: result.jurisdiction,
+    stateOrTerritory: result.stateOrTerritory,
+    legalDomain: result.legalDomain,
+    pathwayCategory: result.pathwayCategory,
     sourceType: result.sourceType,
     url: result.citationUrl,
     lastUpdated: result.lastUpdated?.toISOString(),
+    sectionNumber: result.sectionRef,
+    sectionTitle: result.sectionTitle,
     relevantSnippet: result.text.replace(/\s+/g, ' ').trim().slice(0, 500)
   }));
 
@@ -4760,7 +4848,9 @@ export const appendConversationFlowMessage = async (
               | 'Global'
               | 'Internal'
               | undefined) ?? 'AU',
-            topic: categoryToRagTopic(detectedCategory)
+            topic: categoryToRagTopic(detectedCategory),
+            legalDomain: categoryToRagLegalDomain(detectedCategory),
+            pathwayCategory: categoryToRagPathwayCategory(detectedCategory)
           }
         );
 

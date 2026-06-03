@@ -7,7 +7,10 @@ const {
 } = require('../src/modules/rag/rag.schema.ts');
 const {
   normalizeKnowledgeSourceInput,
-  normalizeKnowledgeSourceMetadata
+  normalizeKnowledgeSourceMetadata,
+  normalizeLegalDomainValue,
+  normalizePathwayCategoryValue,
+  normalizeStateOrTerritoryValue
 } = require('../src/modules/rag/rag.normalization.ts');
 
 const baseSource = {
@@ -110,7 +113,12 @@ test('invalid topics report accepted values', () => {
 test('normalization keeps adminCategory display labels stable', () => {
   assert.deepEqual(
     normalizeKnowledgeSourceMetadata({ adminCategory: 'scam_pattern' }),
-    { adminCategory: 'Scam Pattern' }
+    {
+      adminCategory: 'Scam Pattern',
+      stateOrTerritory: undefined,
+      legalDomain: undefined,
+      pathwayCategory: undefined
+    }
   );
   assert.equal(
     normalizeKnowledgeSourceInput({
@@ -121,4 +129,10 @@ test('normalization keeps adminCategory display labels stable', () => {
     }).metadata.adminCategory,
     'Legislation'
   );
+});
+
+test('state, legalDomain, and pathwayCategory normalize to canonical values', () => {
+  assert.equal(normalizeStateOrTerritoryValue('commonwealth'), 'FEDERAL');
+  assert.equal(normalizeLegalDomainValue('online abuse'), 'online_safety');
+  assert.equal(normalizePathwayCategoryValue('evidence'), 'evidence_guidance');
 });

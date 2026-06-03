@@ -134,9 +134,13 @@ const buildRagPromptSection = (ragContext: SafeSpeakRagSnippet[]): string =>
         'RAG snippets:',
         ...ragContext.map(
           (item, index) =>
-            `${index + 1}. title=${item.sourceTitle}; jurisdiction=${item.jurisdiction}; sourceType=${item.sourceType}; url=${
-              item.url ?? 'n/a'
-            }; lastUpdated=${item.lastUpdated ?? 'n/a'}; snippet=${item.relevantSnippet}`
+            `${index + 1}. title=${item.sourceTitle}; authority=${item.sourceAuthority ?? 'n/a'}; jurisdiction=${item.jurisdiction}; stateOrTerritory=${
+              item.stateOrTerritory ?? 'n/a'
+            }; legalDomain=${item.legalDomain ?? 'n/a'}; pathwayCategory=${item.pathwayCategory ?? 'n/a'}; sourceType=${
+              item.sourceType
+            }; sectionNumber=${item.sectionNumber ?? 'n/a'}; sectionTitle=${
+              item.sectionTitle ?? 'n/a'
+            }; url=${item.url ?? 'n/a'}; lastUpdated=${item.lastUpdated ?? 'n/a'}; snippet=${item.relevantSnippet}`
         )
       ].join('\n');
 

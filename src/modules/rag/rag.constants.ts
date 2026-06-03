@@ -14,6 +14,58 @@ export const RAG_SOURCE_CATEGORIES = [
   'admin_content'
 ] as const;
 
+export const RAG_STATE_OR_TERRITORIES = [
+  'AU',
+  'NSW',
+  'VIC',
+  'QLD',
+  'WA',
+  'SA',
+  'TAS',
+  'ACT',
+  'NT',
+  'FEDERAL'
+] as const;
+
+export const RAG_LEGAL_DOMAINS = [
+  'criminal_law',
+  'civil_law',
+  'discrimination',
+  'workplace',
+  'domestic_family_violence',
+  'online_safety',
+  'scam_fraud',
+  'privacy',
+  'migration',
+  'housing',
+  'consumer',
+  'police_reporting',
+  'support_service',
+  'other'
+] as const;
+
+export const RAG_PATHWAY_CATEGORIES = [
+  'reporting',
+  'support',
+  'legal_information',
+  'evidence_guidance',
+  'safety_planning',
+  'scam_response',
+  'workplace_options',
+  'online_abuse',
+  'domestic_family_violence',
+  'other'
+] as const;
+
+export const RAG_SOURCE_RELIABILITIES = [
+  'official',
+  'trusted_partner',
+  'internal',
+  'unknown'
+] as const;
+
+export const RAG_INDEX_SYNC_STATUSES = ['synced', 'pending', 'failed', 'partial'] as const;
+
 export const RAG_JURISDICTIONS = [
   'Cth',
   'NSW',
@@ -120,6 +172,7 @@ export const RAG_GOVERNED_SOURCE_CATEGORIES = [
 
 export const RAG_INGESTION_STATUSES = [
   'metadata_only',
+  'requires_ocr',
   'fetched',
   'chunked',
   'embedded',

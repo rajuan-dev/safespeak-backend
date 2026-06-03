@@ -13,6 +13,7 @@ import {
   approveKnowledgeSourceController,
   createKnowledgeSourceController,
   deleteKnowledgeSourceController,
+  debugRetrieveRagController,
   ingestKnowledgeSourceController,
   knowledgeSourceReadinessController,
   listKnowledgeSourceChunksController,
@@ -31,6 +32,7 @@ import {
   knowledgeSourceChunkQuerySchema,
   ingestKnowledgeSourceSchema,
   ragAnswerSchema,
+  ragDebugRetrieveSchema,
   ragParamsSchema,
   ragSearchSchema,
   ragTimelineAssistantSchema,
@@ -69,6 +71,7 @@ ragRoutes.post(
 );
 ragRoutes.use('/admin', authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 ragRoutes.get('/admin/pinecone/health', pineconeHealthController);
+ragRoutes.post('/debug/retrieve', authenticateUser, requireAdminRole('super_admin', 'content_admin'), validate({ body: ragDebugRetrieveSchema }), debugRetrieveRagController);
 ragRoutes.use('/knowledge-sources', authenticateUser, requireAdminRole('super_admin', 'content_admin'));
 ragRoutes.get('/knowledge-sources', listKnowledgeSourcesController);
 ragRoutes.get('/knowledge-sources/readiness', knowledgeSourceReadinessController);

@@ -63,6 +63,7 @@ import type {
   KnowledgeSourceChunkQueryInput,
   IngestKnowledgeSourceInput,
   RagAnswerInput,
+  RagDebugRetrieveInput,
   RagSearchInput,
   RagTimelineAssistantInput,
   RefreshKnowledgeSourceInput,
@@ -71,14 +72,17 @@ import type {
 } from './rag.schema';
 import type {
   RagJurisdiction,
+  RagLegalDomain,
   RagKnowledgeReadinessBlocker,
   RagKnowledgeReadinessCoverageCell,
   RagLegalAwareness,
   RagOwner,
+  RagPathwayCategory,
   RagSearchResult,
   RagServiceContext,
   RagKnowledgeSourceReadiness,
   RagSourceCategory,
+  RagStateOrTerritory,
   RagTopic,
   RagVectorIndexReadiness
 } from './rag.types';
@@ -140,6 +144,7 @@ const KNOWLEDGE_DOCUMENT_ALLOWED_MIME_TYPES = new Set([
   'text/csv',
   'application/json'
 ]);
+
 const MATERIAL_REVIEW_FIELDS = new Set<keyof UpdateKnowledgeSourceInput>([
   'title',
   'description',
@@ -191,6 +196,102 @@ const auditRagAction = async (
 };
 
 const normalizeHostname = (value: string): string => value.toLowerCase().replace(/^www\./, '');
+
+const shouldUsePineconeProvider = (): boolean =>
+  env.RAG_VECTOR_PROVIDER === 'pinecone' || env.RAG_VECTOR_PROVIDER === 'hybrid';
+
+const shouldAllowMongoFallback = (): boolean =>
+  env.RAG_VECTOR_PROVIDER === 'mongo' || env.RAG_VECTOR_PROVIDER === 'hybrid';
+
+const resolveDefaultStateOrTerritory = (
+  jurisdiction?: RagJurisdiction
+): RagStateOrTerritory | undefined => {
+  switch (jurisdiction) {
+    case 'Cth':
+      return 'FEDERAL';
+    case 'AU':
+      return 'AU';
+    case 'NSW':
+    case 'VIC':
+    case 'QLD':
+    case 'WA':
+    case 'SA':
+    case 'TAS':
+    case 'ACT':
+    case 'NT':
+      return jurisdiction;
+    default:
+      return undefined;
+  }
+};
+
+const resolveDefaultLegalDomain = (
+  sourceCategory: RagSourceCategory,
+  topic: RagTopic
+): RagLegalDomain => {
+  switch (topic) {
+    case 'racial':
+    case 'racial_hatred':
+      return 'discrimination';
+    case 'workplace':
+      return 'workplace';
+    case 'dv':
+      return 'domestic_family_violence';
+    case 'online_safety':
+      return 'online_safety';
+    case 'scam':
+      return 'scam_fraud';
+    case 'privacy':
+      return 'privacy';
+    case 'migrant':
+      return 'migration';
+    case 'support':
+    case 'crisis':
+      return 'support_service';
+    default:
+      return sourceCategory === 'official_legal_source' ? 'civil_law' : 'support_service';
+  }
+};
+
+const resolveDefaultPathwayCategory = (
+  topic: RagTopic,
+  legalDomain?: RagLegalDomain
+): RagPathwayCategory => {
+  switch (topic) {
+    case 'scam':
+      return 'scam_response';
+    case 'workplace':
+      return 'workplace_options';
+    case 'online_safety':
+      return 'online_abuse';
+    case 'dv':
+      return 'domestic_family_violence';
+    case 'evidence':
+      return 'evidence_guidance';
+    case 'crisis':
+      return 'safety_planning';
+    default:
+      return legalDomain === 'support_service' ? 'support' : 'legal_information';
+  }
+};
+
+const resolveSourceReliability = (
+  sourceCategory: RagSourceCategory
+): 'official' | 'trusted_partner' | 'internal' | 'unknown' => {
+  if (sourceCategory === 'official_legal_source') {
+    return 'official';
+  }
+
+  if (sourceCategory === 'official_support_source') {
+    return 'trusted_partner';
+  }
+
+  if (sourceCategory === 'internal_product_rule') {
+    return 'internal';
+  }
+
+  return 'unknown';
+};
 
 const isOfficialSourceUrl = (url: string): boolean => {
   try {
@@ -838,6 +939,7 @@ const resolveKnowledgeSourceText = async (
     metadata: {
       uploadedFile: sourceMetadata.uploadedFile,
       extractedPageCount: extracted.pageCount,
+      extractionQualityScore: extracted.qualityScore,
       extractionStatus: 'extracted',
       processingStage: 'indexing',
       processingError: undefined,
@@ -1051,9 +1153,81 @@ const readStoredKnowledgeDocument = async (
   };
 };
 
+const buildDerivedSourceFields = (input: {
+  title?: string;
+  sourceTitle?: string;
+  publisher?: string;
+  sourceAuthority?: string;
+  url?: string;
+  officialUrl?: string;
+  jurisdiction?: RagJurisdiction;
+  sourceCategory?: RagSourceCategory;
+  topic?: RagTopic;
+  legalDomain?: RagLegalDomain;
+  pathwayCategory?: RagPathwayCategory;
+  stateOrTerritory?: RagStateOrTerritory;
+  sourceReliability?: RagKnowledgeSourceDocument['sourceReliability'];
+}): Partial<RagKnowledgeSourceDocument> => {
+  const legalDomain =
+    input.legalDomain ??
+    (input.sourceCategory && input.topic
+      ? resolveDefaultLegalDomain(input.sourceCategory, input.topic)
+      : undefined);
+
+  return {
+    sourceTitle: input.sourceTitle ?? input.title,
+    sourceAuthority: input.sourceAuthority ?? input.publisher,
+    officialUrl: input.officialUrl ?? input.url,
+    country: 'Australia',
+    stateOrTerritory: input.stateOrTerritory ?? resolveDefaultStateOrTerritory(input.jurisdiction),
+    legalDomain,
+    pathwayCategory:
+      input.pathwayCategory ??
+      (input.topic ? resolveDefaultPathwayCategory(input.topic, legalDomain) : undefined),
+    sourceReliability:
+      input.sourceReliability ??
+      (input.sourceCategory ? resolveSourceReliability(input.sourceCategory) : 'unknown')
+  };
+};
+
+const estimateExtractionQuality = (text: string): number => {
+  const trimmed = text.trim();
+
+  if (!trimmed) {
+    return 0;
+  }
+
+  const alphaNumericChars = (trimmed.match(/[A-Za-z0-9]/g) ?? []).length;
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+  const uniqueWords = new Set(trimmed.toLowerCase().split(/\s+/).filter(Boolean)).size;
+
+  return Number(
+    Math.max(
+      0,
+      Math.min(
+        1,
+        alphaNumericChars / Math.max(trimmed.length, 1) * 0.5 +
+          Math.min(wordCount / 200, 1) * 0.3 +
+          Math.min(uniqueWords / 120, 1) * 0.2
+      )
+    ).toFixed(3)
+  );
+};
+
+const shouldRequireOcr = (input: { text: string; extractor: string; mimeType?: string }): boolean => {
+  if (env.RAG_ENABLE_OCR) {
+    return false;
+  }
+
+  const qualityScore = estimateExtractionQuality(input.text);
+  const looksLikePdf = /pdf/i.test(input.mimeType ?? '') || input.extractor === 'pdf-parse';
+
+  return looksLikePdf && (input.text.trim().length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH || qualityScore < 0.3);
+};
+
 const extractTextFromUploadedDocument = async (
   file: UploadedKnowledgeDocument
-): Promise<{ text: string; extractor: string; pageCount?: number }> => {
+): Promise<{ text: string; extractor: string; pageCount?: number; qualityScore: number }> => {
   const extension = getDocumentExtension(file.originalname);
   const mimeType = file.mimetype.toLowerCase();
 
@@ -1067,7 +1241,8 @@ const extractTextFromUploadedDocument = async (
       return {
         text: parsed.text.trim(),
         extractor: 'pdf-parse',
-        pageCount: typeof parsedPageCount === 'number' ? parsedPageCount : undefined
+        pageCount: typeof parsedPageCount === 'number' ? parsedPageCount : undefined,
+        qualityScore: estimateExtractionQuality(parsed.text)
       };
     } finally {
       await parser.destroy();
@@ -1080,7 +1255,11 @@ const extractTextFromUploadedDocument = async (
   ) {
     const parsed = await mammoth.extractRawText({ buffer: file.buffer });
 
-    return { text: parsed.value.trim(), extractor: 'mammoth' };
+    return {
+      text: parsed.value.trim(),
+      extractor: 'mammoth',
+      qualityScore: estimateExtractionQuality(parsed.value)
+    };
   }
 
   if (extension === '.doc' || mimeType === 'application/msword') {
@@ -1093,10 +1272,12 @@ const extractTextFromUploadedDocument = async (
   const rawText = file.buffer.toString('utf8');
 
   if (extension === '.html' || extension === '.htm' || /html/i.test(file.mimetype)) {
-    return { text: htmlToText(rawText), extractor: 'html-to-text' };
+    const text = htmlToText(rawText);
+    return { text, extractor: 'html-to-text', qualityScore: estimateExtractionQuality(text) };
   }
 
-  return { text: rawText.trim(), extractor: 'plain-text' };
+  const text = rawText.trim();
+  return { text, extractor: 'plain-text', qualityScore: estimateExtractionQuality(text) };
 };
 
 const fetchOfficialSourceText = async (rawUrl: string): Promise<OfficialFetchResult> => {
@@ -1279,6 +1460,15 @@ const serializeKnowledgeSourceForAdmin = (
     metadata?: unknown;
     ingestionError?: string;
     localFilePath?: string;
+    sourceAuthority?: string;
+    officialUrl?: string;
+    country?: string;
+    stateOrTerritory?: string;
+    pathwayCategory?: string;
+    legalDomain?: string;
+    legislationName?: string;
+    active?: boolean;
+    sourceReliability?: string;
   }
 ): Record<string, unknown> => {
   const { _id, rawText, metadata, ingestionError, ...rest } = source;
@@ -1416,13 +1606,27 @@ const buildVectorMetadata = (
     chunkId: chunk._id.toString(),
     sourceId: chunk.sourceId.toString(),
     title: source.title,
+    sourceTitle: source.sourceTitle ?? source.title,
+    sourceAuthority: source.sourceAuthority ?? source.publisher,
     sourceCategory: source.sourceCategory,
     adminCategory: metadataString(sourceMetadata, 'adminCategory'),
     jurisdiction: source.jurisdiction,
+    stateOrTerritory: source.stateOrTerritory,
+    pathwayCategory: source.pathwayCategory,
+    legalDomain: source.legalDomain,
     topic: source.topic,
     sourceType: source.sourceType,
+    sourceReliability: source.sourceReliability,
     status: source.status,
+    active: source.active,
     legalReviewed: source.legalReviewed,
+    officialUrl: source.officialUrl ?? source.url,
+    citationUrl: source.officialUrl ?? source.url,
+    legislationName:
+      source.legislationName ??
+      metadataString(chunkMetadata, 'actName') ??
+      metadataString(sourceMetadata, 'actName') ??
+      source.title,
     actName:
       metadataString(chunkMetadata, 'actName') ??
       metadataString(sourceMetadata, 'actName') ??
@@ -1443,7 +1647,10 @@ const buildVectorMetadata = (
     version: source.version,
     pageStart: metadataNumber(chunkMetadata, 'pageStart'),
     pageEnd: metadataNumber(chunkMetadata, 'pageEnd'),
-    chunkIndex: chunk.chunkIndex
+    chunkIndex: chunk.chunkIndex,
+    embeddingModel: env.OPENAI_EMBEDDING_MODEL,
+    pineconeIndex: getPineconeIndexName(),
+    pineconeNamespace: getPineconeNamespace()
   };
 };
 
@@ -1473,6 +1680,18 @@ const persistSourceIndexingProgress = async (
       $set: {
         'metadata.chunkCount': chunkCount,
         'metadata.indexedChunkCount': indexedChunkCount,
+        'metadata.pineconeIndexed': !update.indexingError && indexedChunkCount === chunkCount,
+        'metadata.pineconeVectorCount': indexedChunkCount,
+        'metadata.mongoChunkCount': chunkCount,
+        'metadata.lastIndexedAt': update.indexedAt,
+        'metadata.indexSyncStatus': update.indexingError
+          ? partiallyIndexed
+            ? 'partial'
+            : 'failed'
+          : indexedChunkCount === chunkCount
+            ? 'synced'
+            : 'pending',
+        'metadata.indexSyncError': update.indexingError,
         'metadata.pineconeIndexedAt': update.indexedAt,
         'metadata.pineconeNamespace': getPineconeNamespace(),
         'metadata.pineconeIndexName': getPineconeIndexName(),
@@ -1646,7 +1865,13 @@ const embedKnowledgeSourceText = async (
         updatedAt: new Date().toISOString(),
         extractor: metadataString(toMetadataRecord(baseMetadata.ingestionPipeline), 'extractor'),
         error: undefined
-      }
+      },
+      pineconeIndexed: false,
+      pineconeVectorCount: 0,
+      mongoChunkCount: chunks.length,
+      lastIndexedAt: undefined,
+      indexSyncStatus: shouldUsePineconeProvider() ? 'pending' : 'synced',
+      indexSyncError: undefined
     },
     'indexing'
   );
@@ -1680,6 +1905,7 @@ const embedKnowledgeSourceText = async (
   });
   const embeddingBatches = buildEmbeddingBatches(chunkDescriptors);
   const embeddedChunks: EmbeddedKnowledgeSourceChunk[] = [];
+  const verificationDate = options.verificationDate ?? new Date();
 
   for (const [batchIndex, batch] of embeddingBatches.entries()) {
     const embeddings = await runBatchWithRetry(
@@ -1692,23 +1918,56 @@ const embedKnowledgeSourceText = async (
     batch.forEach((chunk, index) => {
       embeddedChunks.push({
         sourceId: source._id,
+        sourceTitle: source.sourceTitle ?? source.title,
         sourceCategory: source.sourceCategory,
+        sourceAuthority: source.sourceAuthority ?? source.publisher,
+        officialUrl: source.officialUrl ?? source.url,
+        country: source.country,
         jurisdiction: source.jurisdiction,
+        stateOrTerritory: source.stateOrTerritory,
+        pathwayCategory: source.pathwayCategory,
+        legalDomain: source.legalDomain,
         topic: source.topic,
+        legislationName:
+          source.legislationName ??
+          metadataString(sourceMetadata, 'actName') ??
+          metadataStringArray(sourceMetadata, 'detectedActNames')[0] ??
+          source.title,
+        sourceType: source.sourceType,
         sectionRef: chunk.sectionRef,
+        sectionNumber: chunk.sectionNumber,
+        sectionTitle: chunk.sectionHeading,
         chunkIndex: chunk.index,
         chunkText: chunk.text,
+        chunkHash: hashText(chunk.text),
         embedding: embeddings[index],
+        embeddingModel: env.OPENAI_EMBEDDING_MODEL,
+        pineconeIndex: shouldUsePineconeProvider() ? getPineconeIndexName() : undefined,
+        pineconeNamespace: shouldUsePineconeProvider() ? getPineconeNamespace() : undefined,
+        legalReviewed: source.legalReviewed,
+        active: source.active,
         tokenCount: chunk.tokenCount,
         citationLabel: chunk.citationLabel,
-        citationUrl: source.url,
+        citationUrl: source.officialUrl ?? source.url,
         metadata: {
           ...sourceMetadata,
           sourceTitle: source.title,
+          sourceAuthority: source.sourceAuthority ?? source.publisher,
           sourceType: source.sourceType,
           sourceCategory: source.sourceCategory,
+          officialUrl: source.officialUrl ?? source.url,
+          country: source.country,
           language: source.language,
           jurisdiction: source.jurisdiction,
+          stateOrTerritory: source.stateOrTerritory,
+          pathwayCategory: source.pathwayCategory,
+          legalDomain: source.legalDomain,
+          legislationName:
+            source.legislationName ??
+            metadataString(sourceMetadata, 'actName') ??
+            metadataStringArray(sourceMetadata, 'detectedActNames')[0] ??
+            source.title,
+          sourceReliability: source.sourceReliability,
           legalSourceType: source.sourceType,
           actName:
             metadataString(sourceMetadata, 'actName') ??
@@ -1722,7 +1981,12 @@ const embedKnowledgeSourceText = async (
           pageEnd: chunk.pageEnd,
           constitutionalBasis: metadataString(sourceMetadata, 'constitutionalBasis'),
           legislationTags: metadataStringArray(sourceMetadata, 'legislationTags'),
-          embeddingStatus: isPineconeConfigured() ? ('pending' as const) : ('indexed' as const)
+          embeddingStatus: shouldUsePineconeProvider() ? ('pending' as const) : ('indexed' as const),
+          pineconeIndexed: false,
+          embeddingModel: env.OPENAI_EMBEDDING_MODEL,
+          pineconeIndex: shouldUsePineconeProvider() ? getPineconeIndexName() : undefined,
+          pineconeNamespace: shouldUsePineconeProvider() ? getPineconeNamespace() : undefined,
+          embeddingCreatedAt: verificationDate.toISOString()
         }
       });
     });
@@ -1754,8 +2018,6 @@ const embedKnowledgeSourceText = async (
 
   source.sha256Hash = sha256Hash;
   source.rawText = text;
-
-  const verificationDate = options.verificationDate ?? new Date();
   const nextRefreshAt =
     options.nextRefreshAt ??
     (isGovernedKnowledgeSource(source.sourceCategory)
@@ -1785,12 +2047,15 @@ const embedKnowledgeSourceText = async (
   source.nextRefreshAt = nextRefreshAt;
   source.version = (source.version ?? 1) + (hashChanged ? 1 : 0);
 
-  if (isPineconeConfigured()) {
+  if (shouldUsePineconeProvider() && isPineconeConfigured()) {
     await pineconeVectorStore.deleteBySource(source._id.toString());
   }
 
   const savedChunks = await RagChunkModel.find({ sourceId: source._id }).sort({ chunkIndex: 1 });
-  const pineconeIndexing = await upsertChunksToPinecone(source, savedChunks);
+  const pineconeIndexing =
+    shouldUsePineconeProvider() && isPineconeConfigured()
+      ? await upsertChunksToPinecone(source, savedChunks)
+      : { indexedChunkCount: savedChunks.length, indexedAt: verificationDate.toISOString() };
   const indexingFailed = Boolean(pineconeIndexing.indexingError);
   const partiallyIndexed = indexingFailed && pineconeIndexing.indexedChunkCount > 0;
   const searchableAt = indexingFailed ? undefined : getSearchableAt(verificationDate);
@@ -1810,9 +2075,30 @@ const embedKnowledgeSourceText = async (
       indexedChunkCount: isPineconeConfigured()
         ? pineconeIndexing.indexedChunkCount
         : embeddedChunks.length,
+      pineconeIndexed:
+        shouldUsePineconeProvider() && isPineconeConfigured()
+          ? pineconeIndexing.indexedChunkCount === embeddedChunks.length && !indexingFailed
+          : false,
+      pineconeVectorCount:
+        shouldUsePineconeProvider() && isPineconeConfigured()
+          ? pineconeIndexing.indexedChunkCount
+          : 0,
+      mongoChunkCount: embeddedChunks.length,
+      lastIndexedAt: pineconeIndexing.indexedAt,
+      indexSyncStatus:
+        shouldUsePineconeProvider() && isPineconeConfigured()
+          ? indexingFailed
+            ? partiallyIndexed
+              ? 'partial'
+              : 'failed'
+            : 'synced'
+          : 'synced',
+      indexSyncError: pineconeIndexing.indexingError,
       pineconeIndexedAt: pineconeIndexing.indexedAt,
-      pineconeNamespace: isPineconeConfigured() ? getPineconeNamespace() : undefined,
-      pineconeIndexName: isPineconeConfigured() ? getPineconeIndexName() : undefined,
+      pineconeNamespace:
+        shouldUsePineconeProvider() && isPineconeConfigured() ? getPineconeNamespace() : undefined,
+      pineconeIndexName:
+        shouldUsePineconeProvider() && isPineconeConfigured() ? getPineconeIndexName() : undefined,
       indexingError: pineconeIndexing.indexingError,
       extractionStatus: 'extracted',
       processingStage: indexingFailed
@@ -2291,9 +2577,11 @@ export const createKnowledgeSource = async (
   }
 
   assertKnowledgeSourceGovernance(normalizedInput);
+  const derivedFields = buildDerivedSourceFields(normalizedInput);
 
   const source = await RagKnowledgeSourceModel.create({
     ...normalizedInput,
+    ...derivedFields,
     createdBy: context.owner.userId,
     legalReviewedBy: normalizedInput.legalReviewed ? context.owner.userId : undefined,
     legalReviewedAt: normalizedInput.legalReviewed ? new Date() : undefined,
@@ -2325,6 +2613,21 @@ export const updateKnowledgeSource = async (
 
   const source = await getSource(sourceId);
   assertMergedKnowledgeSourceGovernance(source, normalizedInput);
+  const derivedFields = buildDerivedSourceFields({
+    title: normalizedInput.title ?? source.title,
+    sourceTitle: normalizedInput.sourceTitle ?? source.sourceTitle,
+    publisher: normalizedInput.publisher ?? source.publisher,
+    sourceAuthority: normalizedInput.sourceAuthority ?? source.sourceAuthority,
+    url: normalizedInput.url ?? source.url,
+    officialUrl: normalizedInput.officialUrl ?? source.officialUrl,
+    jurisdiction: normalizedInput.jurisdiction ?? source.jurisdiction,
+    sourceCategory: normalizedInput.sourceCategory ?? source.sourceCategory,
+    topic: normalizedInput.topic ?? source.topic,
+    legalDomain: normalizedInput.legalDomain ?? source.legalDomain,
+    pathwayCategory: normalizedInput.pathwayCategory ?? source.pathwayCategory,
+    stateOrTerritory: normalizedInput.stateOrTerritory ?? source.stateOrTerritory,
+    sourceReliability: normalizedInput.sourceReliability ?? source.sourceReliability
+  });
 
   const shouldReturnToReview =
     source.status === 'approved' &&
@@ -2334,7 +2637,10 @@ export const updateKnowledgeSource = async (
     normalizedInput.legalReviewed !== undefined &&
     normalizedInput.legalReviewed !== source.legalReviewed;
 
-  source.set(normalizedInput);
+  source.set({
+    ...normalizedInput,
+    ...derivedFields
+  });
 
   if (legalReviewedChanged) {
     source.legalReviewedBy = normalizedInput.legalReviewed
@@ -2371,7 +2677,7 @@ export const deleteKnowledgeSource = async (
   source.deletedAt = new Date();
   await source.save();
 
-  if (isPineconeConfigured()) {
+  if (shouldUsePineconeProvider() && isPineconeConfigured()) {
     try {
       await pineconeVectorStore.deleteBySource(source._id.toString());
     } catch (error) {
@@ -2455,6 +2761,40 @@ export const uploadKnowledgeSourceDocument = async (
 
   try {
     const extracted = await extractTextFromUploadedDocument(file);
+    const requiresOcr = shouldRequireOcr({
+      text: extracted.text,
+      extractor: extracted.extractor,
+      mimeType: file.mimetype
+    });
+
+    if (requiresOcr) {
+      source.ingestionStatus = 'requires_ocr';
+      source.ingestionError =
+        'Extracted document text quality was too low for safe indexing. OCR is required before ingestion.';
+      source.metadata = withSearchReadiness({
+        ...toMetadataRecord(source.metadata),
+        uploadedFile: documentMetadata,
+        extractedPageCount: extracted.pageCount,
+        extractionQualityScore: extracted.qualityScore,
+        extractionStatus: 'requires_ocr',
+        processingStage: 'requires_ocr',
+        processingError: source.ingestionError,
+        ingestionPipeline: {
+          status: 'requires_ocr',
+          extractor: extracted.extractor,
+          updatedAt: new Date().toISOString(),
+          error: source.ingestionError
+        }
+      }, 'not_indexed');
+      await source.save();
+
+      return {
+        source: serializeKnowledgeSourceForAdmin(source.toObject()),
+        uploadedFile: documentMetadata,
+        ingestionStatus: source.ingestionStatus,
+        warning: source.ingestionError
+      };
+    }
 
     if (extracted.text.length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH) {
       throw new ApiError(
@@ -2467,6 +2807,7 @@ export const uploadKnowledgeSourceDocument = async (
       metadata: {
         uploadedFile: documentMetadata,
         extractedPageCount: extracted.pageCount,
+        extractionQualityScore: extracted.qualityScore,
         extractionStatus: 'extracted',
         processingStage: 'indexing',
         processingError: undefined,
@@ -2560,6 +2901,35 @@ export const ingestKnowledgeSource = async (
 
   try {
     const resolvedText = await resolveKnowledgeSourceText(source, input);
+    if (
+      shouldRequireOcr({
+        text: resolvedText.text,
+        extractor:
+          metadataString(toMetadataRecord(resolvedText.metadata), 'extractor') ?? 'plain-text',
+        mimeType: resolvedText.contentType
+      })
+    ) {
+      source.ingestionStatus = 'requires_ocr';
+      source.ingestionError =
+        'Extracted document text quality was too low for safe indexing. OCR is required before ingestion.';
+      source.metadata = withSearchReadiness({
+        ...toMetadataRecord(source.metadata),
+        ...toMetadataRecord(normalizedMetadata),
+        ...toMetadataRecord(resolvedText.metadata),
+        extractionStatus: 'requires_ocr',
+        processingStage: 'requires_ocr',
+        processingError: source.ingestionError
+      }, 'not_indexed');
+      await source.save();
+
+      return {
+        source: serializeKnowledgeSourceForAdmin(source.toObject()),
+        chunkCount: 0,
+        metadataOnly: true,
+        ingestionStatus: source.ingestionStatus,
+        warning: source.ingestionError
+      };
+    }
 
     if (resolvedText.text.length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH) {
       throw new ApiError(
@@ -3186,11 +3556,15 @@ const buildSourceFilter = (
 
   return {
     status: 'approved',
+    active: true,
     deletedAt: { $exists: false },
     sourceCategory: category,
     ...(category === 'official_legal_source' ? { legalReviewed: true } : {}),
     ...(input.language ? { language: input.language } : {}),
     ...buildJurisdictionFilter(input.jurisdiction, category),
+    ...(input.stateOrTerritory ? { stateOrTerritory: input.stateOrTerritory } : {}),
+    ...(input.legalDomain ? { legalDomain: input.legalDomain } : {}),
+    ...(input.pathwayCategory ? { pathwayCategory: input.pathwayCategory } : {}),
     ...(input.topic ? { topic: input.topic } : {}),
     ...(isGovernedKnowledgeSource(category)
       ? {
@@ -3201,6 +3575,47 @@ const buildSourceFilter = (
   };
 };
 
+const getEffectiveTopK = (input: RagSearchInput, category: RagSourceCategory): number => {
+  if (input.topK) {
+    return input.topK;
+  }
+
+  return category === 'official_legal_source' ? env.RAG_TOP_K_LEGAL : env.RAG_TOP_K_SUPPORT;
+};
+
+const getMinimumScore = (category: RagSourceCategory): number =>
+  category === 'official_legal_source' ? env.RAG_MIN_SCORE_LEGAL : env.RAG_MIN_SCORE_SUPPORT;
+
+const suppressDuplicateAndWeakResults = (
+  results: RagSearchResult[],
+  category: RagSourceCategory
+): RagSearchResult[] => {
+  const minScore = getMinimumScore(category);
+  const maxChunksPerSource = env.RAG_MAX_CHUNKS_PER_SOURCE;
+  const seenSnippetKeys = new Set<string>();
+  const countBySourceId = new Map<string, number>();
+
+  return results.filter((result) => {
+    if (typeof result.score === 'number' && result.score < minScore) {
+      return false;
+    }
+
+    const snippetKey = `${result.sourceId}:${normalizeLegalSearchText(result.text).slice(0, 220)}`;
+    if (seenSnippetKeys.has(snippetKey)) {
+      return false;
+    }
+
+    const sourceCount = countBySourceId.get(result.sourceId) ?? 0;
+    if (sourceCount >= maxChunksPerSource) {
+      return false;
+    }
+
+    seenSnippetKeys.add(snippetKey);
+    countBySourceId.set(result.sourceId, sourceCount + 1);
+    return true;
+  });
+};
+
 const searchRagWithPinecone = async (
   input: RagSearchInput,
   category: RagSourceCategory,
@@ -3208,7 +3623,7 @@ const searchRagWithPinecone = async (
   queryVector: number[],
   sourceIds: unknown[]
 ): Promise<RagSearchResult[]> => {
-  const requestedTopK = input.topK ?? DEFAULT_RAG_TOP_K;
+  const requestedTopK = getEffectiveTopK(input, category);
   const candidateTopK =
     category === 'official_legal_source'
       ? Math.max(requestedTopK * PINECONE_SEARCH_CANDIDATE_MULTIPLIER, PINECONE_SEARCH_MIN_CANDIDATES)
@@ -3216,13 +3631,19 @@ const searchRagWithPinecone = async (
   const vectorResults = await pineconeVectorStore.search({
     vector: queryVector,
     topK: candidateTopK,
-    filters: {
-      sourceCategory: category,
-      jurisdiction: input.jurisdiction,
-      topic: input.topic,
-      sourceIds: sourceIds.map((sourceId) => String(sourceId))
-    }
-  });
+      filters: {
+        sourceCategory: category,
+        jurisdiction: input.jurisdiction,
+        stateOrTerritory: input.stateOrTerritory,
+        topic: input.topic,
+        legalDomain: input.legalDomain,
+        pathwayCategory: input.pathwayCategory,
+        sourceReliability: category === 'official_legal_source' ? 'official' : undefined,
+        active: true,
+        legalReviewed: category === 'official_legal_source' ? true : undefined,
+        sourceIds: sourceIds.map((sourceId) => String(sourceId))
+      }
+    });
 
   if (vectorResults.length === 0) {
     return [];
@@ -3255,12 +3676,19 @@ const searchRagWithPinecone = async (
         chunkId: chunk._id.toString(),
         sourceId: chunk.sourceId.toString(),
         title: source.title,
+        sourceTitle: source.sourceTitle ?? source.title,
         publisher: source.publisher,
+        sourceAuthority: source.sourceAuthority ?? source.publisher,
         sourceCategory: source.sourceCategory,
         sourceType: source.sourceType,
         jurisdiction: source.jurisdiction,
+        stateOrTerritory: source.stateOrTerritory,
+        pathwayCategory: source.pathwayCategory,
+        legalDomain: source.legalDomain,
         topic: source.topic,
+        legislationName: source.legislationName,
         sectionRef: chunk.sectionRef,
+        sectionTitle: chunk.sectionTitle,
         citationUrl: chunk.citationUrl,
         lastUpdated: source.lastUpdated,
         text: chunk.chunkText,
@@ -3281,7 +3709,7 @@ const searchRagWithPinecone = async (
       ? rerankLegalSearchResults(orderedResults, input.query)
       : orderedResults;
 
-  return rerankedResults.slice(0, requestedTopK);
+  return suppressDuplicateAndWeakResults(rerankedResults, category).slice(0, requestedTopK);
 };
 
 const isVectorSearchUnavailable = (error: unknown): boolean => {
@@ -3441,7 +3869,7 @@ export const searchRag = async (
     );
   });
 
-  if (isPineconeConfigured() && !pineconeCoverageIncomplete) {
+  if (shouldUsePineconeProvider() && isPineconeConfigured() && !pineconeCoverageIncomplete) {
     try {
       const pineconeResults = await searchRagWithPinecone(
         input,
@@ -3453,7 +3881,7 @@ export const searchRag = async (
 
       await auditRagAction(context, RAG_ACTIONS.search, undefined, {
         resultCount: pineconeResults.length,
-        topK: input.topK ?? DEFAULT_RAG_TOP_K,
+        topK: getEffectiveTopK(input, sourceCategory),
         vectorStore: 'pinecone'
       });
 
@@ -3469,7 +3897,7 @@ export const searchRag = async (
         'Pinecone RAG search failed; falling back to Mongo vector search'
       );
     }
-  } else if (isPineconeConfigured() && pineconeCoverageIncomplete) {
+  } else if (shouldUsePineconeProvider() && isPineconeConfigured() && pineconeCoverageIncomplete) {
     logger.warn(
       {
         sourceCategory,
@@ -3481,15 +3909,26 @@ export const searchRag = async (
     );
   }
 
+  if (!shouldAllowMongoFallback()) {
+    return [];
+  }
+
   const pipeline: PipelineStage[] = [
     {
       $vectorSearch: {
         index: env.RAG_VECTOR_INDEX,
         path: 'embedding',
         queryVector,
-        numCandidates: Math.max((input.topK ?? DEFAULT_RAG_TOP_K) * 10, 50),
-        limit: input.topK ?? DEFAULT_RAG_TOP_K,
-        filter: { sourceId: { $in: sourceIds }, sourceCategory }
+        numCandidates: Math.max(getEffectiveTopK(input, sourceCategory) * 10, 50),
+        limit: getEffectiveTopK(input, sourceCategory),
+        filter: {
+          sourceId: { $in: sourceIds },
+          sourceCategory,
+          ...(input.stateOrTerritory ? { stateOrTerritory: input.stateOrTerritory } : {}),
+          ...(input.legalDomain ? { legalDomain: input.legalDomain } : {}),
+          ...(input.pathwayCategory ? { pathwayCategory: input.pathwayCategory } : {}),
+          active: true
+        }
       }
     },
     {
@@ -3511,11 +3950,17 @@ export const searchRag = async (
         metadata: 1,
         score: { $meta: 'vectorSearchScore' },
         'source.title': 1,
+        'source.sourceTitle': 1,
         'source.publisher': 1,
+        'source.sourceAuthority': 1,
         'source.sourceCategory': 1,
         'source.sourceType': 1,
         'source.topic': 1,
         'source.jurisdiction': 1,
+        'source.stateOrTerritory': 1,
+        'source.pathwayCategory': 1,
+        'source.legalDomain': 1,
+        'source.legislationName': 1,
         'source.lastUpdated': 1
       }
     }
@@ -3531,11 +3976,17 @@ export const searchRag = async (
     score?: number;
     source: {
       title: string;
+      sourceTitle?: string;
       publisher: string;
+      sourceAuthority?: string;
       sourceCategory: RagSourceCategory;
       sourceType: RagSearchResult['sourceType'];
       topic: RagSearchResult['topic'];
       jurisdiction: RagSearchResult['jurisdiction'];
+      stateOrTerritory?: RagStateOrTerritory;
+      pathwayCategory?: RagPathwayCategory;
+      legalDomain?: RagLegalDomain;
+      legislationName?: string;
       lastUpdated?: Date;
     };
   };
@@ -3550,12 +4001,19 @@ export const searchRag = async (
     chunkId: result._id.toString(),
     sourceId: result.sourceId.toString(),
     title: result.source.title,
+    sourceTitle: result.source.sourceTitle ?? result.source.title,
     publisher: result.source.publisher,
+    sourceAuthority: result.source.sourceAuthority ?? result.source.publisher,
     sourceCategory: result.source.sourceCategory,
     sourceType: result.source.sourceType,
     jurisdiction: result.source.jurisdiction,
+    stateOrTerritory: result.source.stateOrTerritory,
+    pathwayCategory: result.source.pathwayCategory,
+    legalDomain: result.source.legalDomain,
     topic: result.source.topic,
+    legislationName: result.source.legislationName,
     sectionRef: result.sectionRef,
+    sectionTitle: metadataString(result.metadata ?? {}, 'sectionHeading'),
     citationUrl: result.citationUrl,
     lastUpdated: result.source.lastUpdated,
     text: result.chunkText,
@@ -3563,9 +4021,49 @@ export const searchRag = async (
     metadata: result.metadata ?? {}
   }));
 
-  return sourceCategory === 'official_legal_source'
-    ? rerankLegalSearchResults(mappedResults, input.query)
-    : mappedResults;
+  const filteredResults = suppressDuplicateAndWeakResults(
+    sourceCategory === 'official_legal_source'
+      ? rerankLegalSearchResults(mappedResults, input.query)
+      : mappedResults,
+    sourceCategory
+  );
+
+  return filteredResults;
+};
+
+export const debugRetrieveRag = async (
+  context: RagServiceContext,
+  input: RagDebugRetrieveInput
+): Promise<Record<string, unknown>> => {
+  const sourceCategory = classifySourceCategory(input);
+  const minScore = getMinimumScore(sourceCategory);
+  const results = await searchRag(context, {
+    ...input,
+    sourceCategory,
+    topK: input.topK
+  });
+
+  return {
+    vectorProvider: env.RAG_VECTOR_PROVIDER,
+    sourceCategory,
+    threshold: minScore,
+    topK: getEffectiveTopK(input, sourceCategory),
+    results: results.map((result) => ({
+      score: result.score ?? 0,
+      passedThreshold: typeof result.score === 'number' ? result.score >= minScore : true,
+      sourceTitle: result.sourceTitle,
+      sourceAuthority: result.sourceAuthority,
+      jurisdiction: result.jurisdiction,
+      stateOrTerritory: result.stateOrTerritory,
+      legalDomain: result.legalDomain,
+      pathwayCategory: result.pathwayCategory,
+      section: result.sectionTitle
+        ? [result.sectionRef, result.sectionTitle].filter(Boolean).join(' - ')
+        : result.sectionRef,
+      snippet: result.text.slice(0, 500),
+      metadata: result.metadata
+    }))
+  };
 };
 
 const buildRagContextEntry = (result: RagSearchResult, index: number): string => {
@@ -3977,12 +4475,17 @@ export const answerRag = async (
       sourceId: result.sourceId,
       title: result.title,
       publisher: result.publisher,
+      sourceAuthority: result.sourceAuthority,
       url: result.citationUrl,
       jurisdiction: result.jurisdiction,
+      stateOrTerritory: result.stateOrTerritory,
       sourceCategory: result.sourceCategory,
       sourceType: result.sourceType,
+      pathwayCategory: result.pathwayCategory,
+      legalDomain: result.legalDomain,
       topic: result.topic,
       sectionRef: result.sectionRef,
+      sectionTitle: result.sectionTitle,
       lastUpdated: result.lastUpdated
     })),
     showSources: sourceDisplayMeta.showSources,

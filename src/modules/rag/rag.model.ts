@@ -3,17 +3,26 @@ import { Schema, model, type Types } from 'mongoose';
 import {
   RAG_INGESTION_STATUSES,
   RAG_JURISDICTIONS,
+  RAG_LEGAL_DOMAINS,
+  RAG_PATHWAY_CATEGORIES,
   RAG_SOURCE_CATEGORIES,
+  RAG_SOURCE_RELIABILITIES,
   RAG_SOURCE_STATUSES,
   RAG_SOURCE_TYPES,
+  RAG_STATE_OR_TERRITORIES,
   RAG_TOPICS
 } from './rag.constants';
 import type {
+  RagIndexSyncStatus,
   RagJurisdiction,
+  RagLegalDomain,
+  RagPathwayCategory,
   RagSourceCategory,
   RagIngestionStatus,
+  RagSourceReliability,
   RagSourceStatus,
   RagSourceType,
+  RagStateOrTerritory,
   RagTopic
 } from './rag.types';
 
@@ -42,6 +51,12 @@ export interface RagKnowledgeSourceMetadata {
   pineconeIndexName?: string;
   indexedChunkCount?: number;
   indexingError?: string;
+  pineconeIndexed?: boolean;
+  pineconeVectorCount?: number;
+  mongoChunkCount?: number;
+  lastIndexedAt?: string;
+  indexSyncStatus?: RagIndexSyncStatus;
+  indexSyncError?: string;
   searchableAt?: string;
   searchReadinessStatus?:
     | 'not_indexed'
@@ -66,6 +81,11 @@ export interface RagChunkMetadata {
   legislationTags?: string[];
   pineconeVectorId?: string;
   pineconeIndexedAt?: string;
+  pineconeIndexed?: boolean;
+  embeddingModel?: string;
+  pineconeIndex?: string;
+  pineconeNamespace?: string;
+  embeddingCreatedAt?: string;
   embeddingStatus?: 'pending' | 'indexed' | 'failed';
   embeddingError?: string;
   [key: string]: unknown;
@@ -73,11 +93,20 @@ export interface RagChunkMetadata {
 
 export interface RagKnowledgeSourceDocument {
   _id: Types.ObjectId;
+  sourceId?: string;
   title: string;
+  sourceTitle?: string;
   description?: string;
   sourceCategory: RagSourceCategory;
+  sourceAuthority?: string;
+  officialUrl?: string;
+  country?: string;
   jurisdiction: RagJurisdiction;
+  stateOrTerritory?: RagStateOrTerritory;
+  pathwayCategory?: RagPathwayCategory;
+  legalDomain?: RagLegalDomain;
   topic: RagTopic;
+  legislationName?: string;
   sourceType: RagSourceType;
   language: string;
   url?: string;
@@ -98,6 +127,8 @@ export interface RagKnowledgeSourceDocument {
   fetchedAt?: Date;
   sha256Hash?: string;
   version: number;
+  active: boolean;
+  sourceReliability: RagSourceReliability;
   rawText?: string;
   metadata: RagKnowledgeSourceMetadata;
   createdBy?: Types.ObjectId;
@@ -115,13 +146,31 @@ export interface RagKnowledgeSourceDocument {
 export interface RagChunkDocument {
   _id: Types.ObjectId;
   sourceId: Types.ObjectId;
+  sourceTitle?: string;
   sourceCategory: RagSourceCategory;
+  sourceAuthority?: string;
+  officialUrl?: string;
+  country?: string;
   jurisdiction: RagJurisdiction;
+  stateOrTerritory?: RagStateOrTerritory;
+  pathwayCategory?: RagPathwayCategory;
+  legalDomain?: RagLegalDomain;
   topic: RagTopic;
+  legislationName?: string;
+  sourceType?: RagSourceType;
   sectionRef?: string;
+  sectionNumber?: string;
+  sectionTitle?: string;
   chunkIndex: number;
   chunkText: string;
+  chunkHash?: string;
   embedding: number[];
+  embeddingModel?: string;
+  pineconeIndex?: string;
+  pineconeNamespace?: string;
+  pineconeVectorId?: string;
+  legalReviewed: boolean;
+  active: boolean;
   tokenCount: number;
   citationLabel: string;
   citationUrl?: string;
@@ -133,9 +182,14 @@ export interface RagChunkDocument {
 const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
   {
     title: { type: String, required: true, trim: true, index: true },
+    sourceId: { type: String, required: false, trim: true, index: true },
+    sourceTitle: { type: String, required: false, trim: true },
     description: { type: String, required: false, trim: true },
     sourceCategory: { type: String, enum: RAG_SOURCE_CATEGORIES, required: true, index: true },
     sourceType: { type: String, enum: RAG_SOURCE_TYPES, required: true, index: true },
+    sourceAuthority: { type: String, required: false, trim: true },
+    officialUrl: { type: String, required: false, trim: true },
+    country: { type: String, required: false, trim: true, index: true },
     jurisdiction: {
       type: String,
       enum: RAG_JURISDICTIONS,
@@ -143,7 +197,29 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
       trim: true,
       index: true
     },
+    stateOrTerritory: {
+      type: String,
+      enum: RAG_STATE_OR_TERRITORIES,
+      required: false,
+      trim: true,
+      index: true
+    },
+    pathwayCategory: {
+      type: String,
+      enum: RAG_PATHWAY_CATEGORIES,
+      required: false,
+      trim: true,
+      index: true
+    },
+    legalDomain: {
+      type: String,
+      enum: RAG_LEGAL_DOMAINS,
+      required: false,
+      trim: true,
+      index: true
+    },
     topic: { type: String, enum: RAG_TOPICS, required: true, index: true },
+    legislationName: { type: String, required: false, trim: true, index: true },
     language: { type: String, required: true, default: 'en', index: true },
     url: { type: String, required: false, trim: true },
     localFilePath: { type: String, required: false, trim: true },
@@ -169,6 +245,14 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
     fetchedAt: { type: Date, required: false },
     sha256Hash: { type: String, required: false, index: true },
     version: { type: Number, required: true, default: 1 },
+    active: { type: Boolean, required: true, default: true, index: true },
+    sourceReliability: {
+      type: String,
+      enum: RAG_SOURCE_RELIABILITIES,
+      required: true,
+      default: 'unknown',
+      index: true
+    },
     rawText: { type: String, required: false },
     metadata: { type: Schema.Types.Mixed, default: {} },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
@@ -191,13 +275,49 @@ const ragChunkSchema = new Schema<RagChunkDocument>(
       required: true,
       index: true
     },
+    sourceTitle: { type: String, required: false, trim: true, index: true },
     sourceCategory: { type: String, enum: RAG_SOURCE_CATEGORIES, required: true, index: true },
+    sourceAuthority: { type: String, required: false, trim: true },
+    officialUrl: { type: String, required: false, trim: true },
+    country: { type: String, required: false, trim: true, index: true },
     jurisdiction: { type: String, enum: RAG_JURISDICTIONS, required: true, index: true },
+    stateOrTerritory: {
+      type: String,
+      enum: RAG_STATE_OR_TERRITORIES,
+      required: false,
+      trim: true,
+      index: true
+    },
+    pathwayCategory: {
+      type: String,
+      enum: RAG_PATHWAY_CATEGORIES,
+      required: false,
+      trim: true,
+      index: true
+    },
+    legalDomain: {
+      type: String,
+      enum: RAG_LEGAL_DOMAINS,
+      required: false,
+      trim: true,
+      index: true
+    },
     topic: { type: String, enum: RAG_TOPICS, required: true, index: true },
+    legislationName: { type: String, required: false, trim: true, index: true },
+    sourceType: { type: String, enum: RAG_SOURCE_TYPES, required: false, index: true },
     sectionRef: { type: String, required: false, trim: true },
+    sectionNumber: { type: String, required: false, trim: true, index: true },
+    sectionTitle: { type: String, required: false, trim: true },
     chunkIndex: { type: Number, required: true, min: 0 },
     chunkText: { type: String, required: true },
+    chunkHash: { type: String, required: false, trim: true, index: true },
     embedding: { type: [Number], required: true },
+    embeddingModel: { type: String, required: false, trim: true },
+    pineconeIndex: { type: String, required: false, trim: true },
+    pineconeNamespace: { type: String, required: false, trim: true },
+    pineconeVectorId: { type: String, required: false, trim: true, index: true },
+    legalReviewed: { type: Boolean, required: true, default: false, index: true },
+    active: { type: Boolean, required: true, default: true, index: true },
     tokenCount: { type: Number, required: true, min: 0 },
     citationLabel: { type: String, required: true, trim: true },
     citationUrl: { type: String, required: false, trim: true },
@@ -207,7 +327,15 @@ const ragChunkSchema = new Schema<RagChunkDocument>(
 );
 
 ragChunkSchema.index({ sourceId: 1, chunkIndex: 1 }, { unique: true });
-ragChunkSchema.index({ sourceCategory: 1, jurisdiction: 1, topic: 1 });
+ragChunkSchema.index({
+  sourceCategory: 1,
+  jurisdiction: 1,
+  stateOrTerritory: 1,
+  topic: 1,
+  legalDomain: 1,
+  pathwayCategory: 1,
+  active: 1
+});
 
 export const RagKnowledgeSourceModel = model<RagKnowledgeSourceDocument>(
   'RagKnowledgeSource',

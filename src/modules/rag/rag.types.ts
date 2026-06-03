@@ -1,9 +1,14 @@
 import type {
+  RAG_INDEX_SYNC_STATUSES,
   RAG_INGESTION_STATUSES,
   RAG_JURISDICTIONS,
+  RAG_LEGAL_DOMAINS,
+  RAG_PATHWAY_CATEGORIES,
   RAG_SOURCE_CATEGORIES,
+  RAG_SOURCE_RELIABILITIES,
   RAG_SOURCE_STATUSES,
   RAG_SOURCE_TYPES,
+  RAG_STATE_OR_TERRITORIES,
   RAG_TOPICS
 } from './rag.constants';
 
@@ -13,6 +18,11 @@ export type RagSourceCategory = (typeof RAG_SOURCE_CATEGORIES)[number];
 export type RagJurisdiction = (typeof RAG_JURISDICTIONS)[number];
 export type RagTopic = (typeof RAG_TOPICS)[number];
 export type RagIngestionStatus = (typeof RAG_INGESTION_STATUSES)[number];
+export type RagStateOrTerritory = (typeof RAG_STATE_OR_TERRITORIES)[number];
+export type RagLegalDomain = (typeof RAG_LEGAL_DOMAINS)[number];
+export type RagPathwayCategory = (typeof RAG_PATHWAY_CATEGORIES)[number];
+export type RagSourceReliability = (typeof RAG_SOURCE_RELIABILITIES)[number];
+export type RagIndexSyncStatus = (typeof RAG_INDEX_SYNC_STATUSES)[number];
 
 export interface RagOwner {
   userId?: string;
@@ -23,12 +33,19 @@ export interface RagSearchResult {
   chunkId: string;
   sourceId: string;
   title: string;
+  sourceTitle: string;
   publisher: string;
+  sourceAuthority: string;
   sourceCategory: RagSourceCategory;
   sourceType: RagSourceType;
   jurisdiction: RagJurisdiction;
+  stateOrTerritory?: RagStateOrTerritory;
+  pathwayCategory?: RagPathwayCategory;
+  legalDomain?: RagLegalDomain;
   topic: RagTopic;
+  legislationName?: string;
   sectionRef?: string;
+  sectionTitle?: string;
   lastUpdated?: Date;
   citationUrl?: string;
   text: string;

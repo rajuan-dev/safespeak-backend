@@ -10,6 +10,7 @@ import {
   approveKnowledgeSource,
   createKnowledgeSource,
   deleteKnowledgeSource,
+  debugRetrieveRag,
   getPineconeHealth,
   ingestKnowledgeSource,
   getKnowledgeSourceReadiness,
@@ -29,6 +30,7 @@ import type {
   KnowledgeSourceChunkQueryInput,
   IngestKnowledgeSourceInput,
   RagAnswerInput,
+  RagDebugRetrieveInput,
   RagSearchInput,
   RagTimelineAssistantInput,
   RefreshKnowledgeSourceInput,
@@ -95,6 +97,14 @@ export const pineconeHealthController = asyncHandler(async (req: Request, res: R
   const health = await getPineconeHealth(getContext(req));
 
   res.status(StatusCodes.OK).json(successResponse('Pinecone health retrieved', { health }));
+});
+
+export const debugRetrieveRagController = asyncHandler(async (req: Request, res: Response) => {
+  const result = await debugRetrieveRag(getContext(req), req.body as RagDebugRetrieveInput);
+
+  res
+    .status(StatusCodes.OK)
+    .json(successResponse('RAG debug retrieval completed', result, { informationOnly: true }));
 });
 
 export const listKnowledgeSourceChunksController = asyncHandler(

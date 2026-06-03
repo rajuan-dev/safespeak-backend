@@ -2,9 +2,13 @@ import { z } from 'zod';
 
 import {
   RAG_JURISDICTIONS,
+  RAG_LEGAL_DOMAINS,
+  RAG_PATHWAY_CATEGORIES,
   RAG_SOURCE_CATEGORIES,
+  RAG_SOURCE_RELIABILITIES,
   RAG_SOURCE_STATUSES,
   RAG_SOURCE_TYPES,
+  RAG_STATE_OR_TERRITORIES,
   RAG_TOPICS
 } from './rag.constants';
 import {
@@ -65,6 +69,10 @@ const incidentCategorySchema = z.enum([
   'migrant_challenges',
   'cyber_scam'
 ]);
+const stateOrTerritorySchema = z.enum(RAG_STATE_OR_TERRITORIES).optional();
+const legalDomainSchema = z.enum(RAG_LEGAL_DOMAINS).optional();
+const pathwayCategorySchema = z.enum(RAG_PATHWAY_CATEGORIES).optional();
+const sourceReliabilitySchema = z.enum(RAG_SOURCE_RELIABILITIES).default('unknown');
 
 export const ragParamsSchema = z.object({ id: objectIdSchema });
 export const knowledgeSourceChunkQuerySchema = z.object({
@@ -77,6 +85,9 @@ export const ragSearchSchema = z.object({
   topK: z.number().int().min(1).max(20).default(5),
   language: z.string().trim().min(2).max(12).optional(),
   jurisdiction: z.enum(RAG_JURISDICTIONS).optional(),
+  stateOrTerritory: stateOrTerritorySchema,
+  legalDomain: legalDomainSchema,
+  pathwayCategory: pathwayCategorySchema,
   sourceCategory: ragSourceCategorySchema.optional(),
   topic: ragTopicSchema.optional(),
   filters: z.record(z.unknown()).optional()
@@ -102,12 +113,21 @@ export const ragTimelineAssistantSchema = z.object({
 });
 
 export const createKnowledgeSourceSchema = z.object({
+  sourceId: z.string().trim().min(1).max(200).optional(),
   title: z.string().trim().min(1).max(200),
+  sourceTitle: z.string().trim().min(1).max(200).optional(),
   description: z.string().trim().max(1000).optional(),
   sourceCategory: ragSourceCategorySchema,
   jurisdiction: z.enum(RAG_JURISDICTIONS),
+  stateOrTerritory: stateOrTerritorySchema,
+  pathwayCategory: pathwayCategorySchema,
+  legalDomain: legalDomainSchema,
   topic: ragTopicSchema,
+  legislationName: z.string().trim().max(200).optional(),
   sourceType: z.enum(RAG_SOURCE_TYPES),
+  sourceAuthority: z.string().trim().max(200).optional(),
+  officialUrl: z.string().url().optional(),
+  country: z.string().trim().max(80).optional(),
   language: z.string().trim().min(2).max(12).default('en'),
   url: z.string().url().optional(),
   localFilePath: z.string().trim().max(1000).optional(),
@@ -118,6 +138,8 @@ export const createKnowledgeSourceSchema = z.object({
   nextReviewAt: z.coerce.date().optional(),
   nextRefreshAt: z.coerce.date().optional(),
   legalReviewed: z.boolean().default(false),
+  active: z.boolean().default(true),
+  sourceReliability: sourceReliabilitySchema,
   reviewNotes: z.string().trim().max(2000).optional(),
   status: z.enum(RAG_SOURCE_STATUSES).default('draft'),
   version: z.number().int().min(1).default(1),
@@ -148,6 +170,10 @@ export const refreshKnowledgeSourceSchema = z.object({
   metadata: z.record(z.unknown()).default({})
 });
 
+export const ragDebugRetrieveSchema = ragSearchSchema.extend({
+  topK: z.number().int().min(1).max(20).default(5)
+});
+
 export const rejectKnowledgeSourceSchema = z.object({
   reason: z.string().trim().min(1).max(1000)
 });
@@ -161,3 +187,4 @@ export type IngestKnowledgeSourceInput = z.infer<typeof ingestKnowledgeSourceSch
 export type RefreshKnowledgeSourceInput = z.infer<typeof refreshKnowledgeSourceSchema>;
 export type RejectKnowledgeSourceInput = z.infer<typeof rejectKnowledgeSourceSchema>;
 export type KnowledgeSourceChunkQueryInput = z.infer<typeof knowledgeSourceChunkQuerySchema>;
+export type RagDebugRetrieveInput = z.infer<typeof ragDebugRetrieveSchema>;

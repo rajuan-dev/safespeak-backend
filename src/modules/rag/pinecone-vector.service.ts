@@ -79,10 +79,16 @@ const buildPineconeFilter = (filters: VectorSearchFilters = {}): Record<string, 
   const filter: Record<string, unknown> = {};
 
   if (filters.jurisdiction) filter.jurisdiction = { $eq: filters.jurisdiction };
+  if (filters.stateOrTerritory) filter.stateOrTerritory = { $eq: filters.stateOrTerritory };
   if (filters.topic) filter.topic = { $eq: filters.topic };
+  if (filters.legalDomain) filter.legalDomain = { $eq: filters.legalDomain };
+  if (filters.pathwayCategory) filter.pathwayCategory = { $eq: filters.pathwayCategory };
   if (filters.sourceCategory) filter.sourceCategory = { $eq: filters.sourceCategory };
+  if (filters.sourceType) filter.sourceType = { $eq: filters.sourceType };
+  if (filters.sourceReliability) filter.sourceReliability = { $eq: filters.sourceReliability };
   if (filters.adminCategory) filter.adminCategory = { $eq: filters.adminCategory };
   if (filters.status) filter.status = { $eq: filters.status };
+  if (typeof filters.active === 'boolean') filter.active = { $eq: filters.active };
   if (typeof filters.legalReviewed === 'boolean') {
     filter.legalReviewed = { $eq: filters.legalReviewed };
   }
