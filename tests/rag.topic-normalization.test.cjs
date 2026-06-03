@@ -60,6 +60,13 @@ test('knowledge source topic aliases normalize to backend canonical values', () 
     }).topic,
     'support'
   );
+  assert.equal(
+    createKnowledgeSourceSchema.parse({
+      ...baseSource,
+      topic: 'constitutional_law'
+    }).topic,
+    'other'
+  );
 });
 
 test('knowledge source sourceCategory aliases normalize to backend canonical values', () => {
@@ -88,6 +95,13 @@ test('search topic aliases use the same normalization', () => {
       topic: 'domestic_violence'
     }).topic,
     'dv'
+  );
+  assert.equal(
+    ragSearchSchema.parse({
+      query: 'constitutional referendum law',
+      topic: 'constitutional_law'
+    }).topic,
+    'other'
   );
   assert.equal(
     ragSearchSchema.parse({

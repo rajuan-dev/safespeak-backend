@@ -38,6 +38,8 @@ const topicAliases = [
   'scamshield',
   'migrant_challenges',
   'migrant',
+  'constitutional_law',
+  'constitutional',
   'support',
   'resources',
   'local_intelligence',

@@ -34,6 +34,8 @@ const topicAliases: Record<string, RagTopic> = {
   scamshield: 'scam',
   migrant_challenges: 'migrant',
   migrant: 'migrant',
+  constitutional_law: 'other',
+  constitutional: 'other',
   support: 'support',
   resources: 'support',
   local_intelligence: 'local_intelligence',
