@@ -3,16 +3,17 @@ import {
   type SupportedAssistantLanguageCode
 } from './assistant-language';
 
-const INFORMATION_ONLY_DISCLAIMER =
-  'This information is for general awareness only and does not constitute legal advice.';
+const INFORMATION_ONLY_DISCLAIMER = 'This is information only, not legal advice.';
 
 const LEGAL_ADVICE_RISK_PATTERNS = [
   /\byou should sue\b/i,
-  /\byou must report\b/i,
-  /\bI advise you to\b/i,
-  /\blegal advice\b/i,
-  /\byou are entitled to compensation\b/i,
-  /\byou have a case\b/i
+  /\byou must sue\b/i,
+  /\byou have a case\b/i,
+  /\bthis is illegal\b/i,
+  /\bthat is illegal\b/i,
+  /\bthey broke the law\b/i,
+  /\byou will win\b/i,
+  /\byou are entitled to compensation\b/i
 ];
 
 const CLINICAL_ADVICE_RISK_PATTERNS = [
@@ -62,26 +63,70 @@ const SAFESPEAK_PRODUCT_PATTERNS = [
   /\bis safespeak\b/i
 ];
 
+const AU_WRONG_EMERGENCY_PATTERNS = [/\b911\b/, /\b999\b/, /\b112\b/];
+const FALSE_ACTION_CLAIM_PATTERNS = [
+  /\bi uploaded\b/i,
+  /\bi shared this\b/i,
+  /\bi sent this to police\b/i,
+  /\bi contacted an agency\b/i,
+  /\byour evidence has been saved\b/i,
+  /\byour evidence has been synced\b/i
+];
+const ROLE_VIOLATION_PATTERNS = [
+  /\bi am your lawyer\b/i,
+  /\bi am your counsellor\b/i,
+  /\bi diagnosed\b/i,
+  /\bi can represent you\b/i,
+  /\bi will manage your case\b/i
+];
+const SAFETY_PROMISE_PATTERNS = [/\byou are safe now\b/i, /\beverything will be okay\b/i];
+
+export type SafeSpeakGuardrailViolationCode =
+  | 'wrong_au_emergency_number'
+  | 'legal_conclusion'
+  | 'false_action_claim'
+  | 'role_violation'
+  | 'safety_promise'
+  | 'too_many_questions';
+
+export type SafeSpeakGuardrailResult = {
+  passed: boolean;
+  violations: SafeSpeakGuardrailViolationCode[];
+};
+
 export const buildInformationOnlyDisclaimer = (): string => INFORMATION_ONLY_DISCLAIMER;
 
 export const getSafeSpeakSystemPrompt = (language: string): string =>
   [
-    'You are SafeSpeak AI. Return only valid JSON.',
-    'SafeSpeak is an information and triage tool only.',
-    'SafeSpeak is not legal advice, counselling, crisis service, case-management, or automatic reporting.',
-    'Never provide prescriptive legal advice like "you should sue" or "you must report".',
-    'Use language like "options may include" and "you may consider".',
-    'If immediate danger may be present, direct the person to call 000 immediately.',
-    'If safe and relevant, mention 1800RESPECT as an official support option.',
-    'Do not diagnose, provide therapy, or clinical advice.',
-    'Cite authoritative sources where available. Do not treat internal product documents as legal authority.',
-    'Do not add repetitive legal or policy disclaimers inside normal conversational replies.',
-    'Keep the tone calm, human, supportive, and easy to talk to.',
-    'Set reviewStatus to "pending_human_review".',
-    `Respond in language: ${getAssistantLanguagePromptLabel(
+    'You are SafeSpeak Guide, a multilingual, trauma-informed community safety navigation assistant for Australia.',
+    'You are not a lawyer, police officer, therapist, counsellor, emergency service, or case manager.',
+    'Your role is to guide safely, explain possible pathways, support documentation, reduce confusion, and preserve user control.',
+    'Respond naturally and directly to the latest user message.',
+    'Do not sound scripted. Do not reuse fixed templates. Do not repeat the same wording unless necessary for safety.',
+    'Use calm, plain language.',
+    'For emergencies in Australia, direct users to call 000.',
+    'For family, domestic, or sexual violence support, mention 1800RESPECT where relevant.',
+    'Never suggest 911, 999, or 112 for Australia.',
+    'For legal or reporting questions, provide information only, not legal advice.',
+    'Do not decide whether something is illegal. Do not say the user has a case. Do not tell the user to sue.',
+    'Use words like may, possible, option, and pathway.',
+    'For evidence upload questions, explain consent, storage, cloud sync, retention, and agency sharing only as relevant.',
+    'Do not claim evidence has been uploaded, shared, synced, retained, or analysed unless a confirmed user action says that happened.',
+    'For AI-analysis questions, clearly separate upload from AI processing.',
+    'Uploading a file does not automatically mean it is analysed unless the user chooses that AI step and consent allows it.',
+    'For normal conversation or feedback about the assistant, answer directly and naturally.',
+    'Do not force the user into incident triage.',
+    'Ask at most one user-facing question unless emergency safety requires otherwise.',
+    `Match the user language when clear and supported. Preferred language: ${getAssistantLanguagePromptLabel(
       language as SupportedAssistantLanguageCode
     )}.`
   ].join(' ');
+
+export const buildRawDevSystemPrompt = (): string =>
+  'You are a helpful assistant. Reply naturally and directly in plain text.';
+
+export const buildGuardrailRevisionInstruction = (): string =>
+  'Revise the answer to comply with SafeSpeak rules. Remove prohibited legal conclusions, wrong emergency numbers, false action claims, and extra questions.';
 
 export const detectLegalAdviceRisk = (text: string): boolean =>
   LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(text));
@@ -114,16 +159,45 @@ export const shouldRequireHumanReview = (flags: {
   flags.insufficientSources ||
   Boolean(flags.insufficientInput);
 
-export const enforceAiOutputGuardrails = (text: string): string => {
-  let safeText = text;
+export const validateSafeSpeakResponse = (input: {
+  text: string;
+  jurisdiction?: string;
+  allowMultipleQuestions?: boolean;
+}): SafeSpeakGuardrailResult => {
+  const violations = new Set<SafeSpeakGuardrailViolationCode>();
+  const normalizedJurisdiction = (input.jurisdiction ?? 'AU').toUpperCase();
 
-  safeText = safeText.replace(/\byou should sue\b/gi, 'options may include seeking legal information');
-  safeText = safeText.replace(/\byou must report\b/gi, 'you may consider reporting if safe to do so');
-  safeText = safeText.replace(/\byou are entitled to compensation\b/gi, 'compensation may be a legal topic to ask a qualified service about');
-  safeText = safeText.replace(/\byou have a case\b/gi, 'an official legal or support service may help explain possible options');
-  safeText = safeText.replace(/\byou have (ptsd|depression|anxiety|trauma)\b/gi, 'your wellbeing may have been affected');
-  safeText = safeText.replace(/\btake (this )?medication\b/gi, 'speak with a qualified health professional about medication');
-  safeText = safeText.replace(/\bstop taking (your )?medication\b/gi, 'speak with a qualified health professional before changing medication');
+  if (
+    normalizedJurisdiction === 'AU' &&
+    AU_WRONG_EMERGENCY_PATTERNS.some((pattern) => pattern.test(input.text))
+  ) {
+    violations.add('wrong_au_emergency_number');
+  }
 
-  return safeText;
+  if (LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(input.text))) {
+    violations.add('legal_conclusion');
+  }
+
+  if (FALSE_ACTION_CLAIM_PATTERNS.some((pattern) => pattern.test(input.text))) {
+    violations.add('false_action_claim');
+  }
+
+  if (ROLE_VIOLATION_PATTERNS.some((pattern) => pattern.test(input.text))) {
+    violations.add('role_violation');
+  }
+
+  if (SAFETY_PROMISE_PATTERNS.some((pattern) => pattern.test(input.text))) {
+    violations.add('safety_promise');
+  }
+
+  if (!input.allowMultipleQuestions && (input.text.match(/\?/g) ?? []).length > 1) {
+    violations.add('too_many_questions');
+  }
+
+  return {
+    passed: violations.size === 0,
+    violations: Array.from(violations)
+  };
 };
+
+export const enforceAiOutputGuardrails = (text: string): string => text.trim();

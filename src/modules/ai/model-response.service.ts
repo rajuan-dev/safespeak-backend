@@ -3,46 +3,87 @@ import { StatusCodes } from 'http-status-codes';
 import { ApiError } from '@common/errors/ApiError';
 import { env } from '@config/env';
 
+import {
+  buildGuardrailRevisionInstruction,
+  buildInformationOnlyDisclaimer,
+  buildRawDevSystemPrompt,
+  getSafeSpeakSystemPrompt,
+  validateSafeSpeakResponse
+} from './ai-guardrails';
+import type {
+  SafeSpeakModelContext,
+  SafeSpeakRagSnippet,
+  SafeSpeakRagStatus
+} from './safespeak-context-builder';
+
 type GuardrailStatus = 'passed' | 'regenerated' | 'fallback';
 
-type GenerateSafeSpeakModelResponseInput = {
+export type GenerateSafeSpeakResponseInput = {
+  mode?: 'safespeak_model' | 'raw_dev';
+  model?: string;
   intent: string;
-  userMessage: string;
-  conversationSummary?: string;
-  activeIncident?: Record<string, unknown>;
-  consentSnapshot?: Record<string, unknown>;
-  detectedLanguage?: string;
-  ragContext?: string;
-  safetyContext?: Record<string, unknown>;
-  responseMode: string;
-  previousAssistantMessage?: string;
   intentConfidence?: 'high' | 'medium' | 'low';
+  classifierSource?: 'rule' | 'model' | 'hybrid';
+  context: SafeSpeakModelContext;
+  ragContext?: SafeSpeakRagSnippet[];
+  ragStatus?: SafeSpeakRagStatus;
+  latestUserMessage: string;
 };
 
-type GenerateSafeSpeakModelResponseOutput = {
+export type GenerateSafeSpeakResponseOutput = {
   assistantMessage: string;
   nextQuestion: string;
   readyForSubmission: false;
   confidence: 'medium';
   disclaimer: string;
-  citations: [];
-  showSources: false;
-  sourceDisplayReason: 'hidden_support_reply';
+  citations: Array<{
+    title: string;
+    jurisdiction: string;
+    sourceType: string;
+    url?: string;
+    lastUpdated?: string;
+  }>;
+  showSources: boolean;
+  sourceDisplayReason:
+    | 'legal_lookup'
+    | 'explicit_citation_request'
+    | 'hidden_support_reply'
+    | 'triage_handoff'
+    | 'not_directly_grounded';
   rag: {
-    used: false;
-    unavailable: false;
-    resultCount: 0;
+    used: boolean;
+    unavailable: boolean;
+    resultCount: number;
   };
   reviewStatus: string;
-  responseMode: string;
+  responseMode:
+    | 'safespeak_model'
+    | 'raw_dev'
+    | 'emergency_minimum_fallback'
+    | 'guardrail_fallback';
   intent: string;
   usedModelGeneration: boolean;
   guardrailStatus: GuardrailStatus;
   fallbackReason?: string;
-  staticTemplateUsed: boolean;
-  consentSnapshot?: Record<string, unknown>;
+  staticTemplateUsed: false;
+  consentSnapshot: SafeSpeakModelContext['consentSnapshot'];
   intentConfidence?: 'high' | 'medium' | 'low';
-  selectedResponseSource?: 'openai_model' | 'dynamic_fallback';
+  classifierSource?: 'rule' | 'model' | 'hybrid';
+  responseSource:
+    | 'openai_model'
+    | 'openai_model_with_rag'
+    | 'raw_openai_model'
+    | 'emergency_override'
+    | 'guardrail_fallback';
+  model: string;
+  jurisdiction: 'AU';
+  ragStatus: SafeSpeakRagStatus;
+  selectedResponseSource:
+    | 'openai_model'
+    | 'openai_model_with_rag'
+    | 'raw_openai_model'
+    | 'emergency_override'
+    | 'guardrail_fallback';
 };
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -66,93 +107,102 @@ const extractOutputText = (payload: unknown): string => {
   );
 };
 
-const validateGuardrails = (assistantMessage: string, nextQuestion: string): string | null => {
-  const combined = `${assistantMessage} ${nextQuestion}`.trim();
+const buildRagPromptSection = (ragContext: SafeSpeakRagSnippet[]): string =>
+  ragContext.length === 0
+    ? 'RAG snippets: none.'
+    : [
+        'RAG snippets:',
+        ...ragContext.map(
+          (item, index) =>
+            `${index + 1}. title=${item.sourceTitle}; jurisdiction=${item.jurisdiction}; sourceType=${item.sourceType}; url=${
+              item.url ?? 'n/a'
+            }; lastUpdated=${item.lastUpdated ?? 'n/a'}; snippet=${item.relevantSnippet}`
+        )
+      ].join('\n');
 
-  if ((combined.match(/\?/g) ?? []).length > 1) {
-    return 'too_many_questions';
-  }
+const buildUserPrompt = (input: GenerateSafeSpeakResponseInput, strictRetry = false): string =>
+  [
+    `Intent: ${input.intent}`,
+    `Latest user message: ${input.latestUserMessage}`,
+    `SafeSpeak context JSON: ${JSON.stringify(input.context)}`,
+    `RAG status: ${input.ragStatus ?? 'not_required'}`,
+    buildRagPromptSection(input.ragContext ?? input.context.ragContext),
+    strictRetry
+      ? buildGuardrailRevisionInstruction()
+      : 'Write the final assistant reply naturally. Do not output JSON.'
+  ].join('\n');
 
-  if (
-    /\b(you should sue|this is illegal|you have a case|definitely illegal|we reported|we shared|we sent)\b/i.test(
-      combined
-    )
-  ) {
-    return 'unsafe_claim';
-  }
-
-  return null;
-};
-
-const buildDynamicFallbackMessage = (
-  input: GenerateSafeSpeakModelResponseInput
-): Pick<GenerateSafeSpeakModelResponseOutput, 'assistantMessage' | 'nextQuestion'> => {
-  if (
-    input.intent === 'safety_physical_harm' ||
-    input.intent === 'physical_harm' ||
-    input.responseMode === 'emergency_safety'
-  ) {
+const minimalFallback = (intent: string): { assistantMessage: string; responseMode: 'emergency_minimum_fallback' | 'guardrail_fallback'; responseSource: 'emergency_override' | 'guardrail_fallback' } => {
+  if (intent === 'safety_crisis') {
     return {
-      assistantMessage:
-        'I am sorry that happened. If you are in immediate danger or need urgent help, call 000 now. If you are safe right now, move to a safer place if you can and write down what happened while it is fresh.',
-      nextQuestion: 'Are you safe at the moment?'
-    };
-  }
-
-  if (input.intent === 'meta_feedback_or_capability_question' || input.responseMode === 'meta_feedback') {
-    return {
-      assistantMessage:
-        'That reply did not match your question well enough. Ask again and I will answer it more directly.',
-      nextQuestion: ''
-    };
-  }
-
-  if (input.intent === 'evidence_upload_intent' || input.responseMode === 'evidence_consent') {
-    return {
-      assistantMessage:
-        'You can choose whether to upload anything. Uploading does not automatically send or share evidence.',
-      nextQuestion: 'Would you like to keep it local for now?'
+      assistantMessage: 'If you are in immediate danger in Australia, call 000 now.',
+      responseMode: 'emergency_minimum_fallback',
+      responseSource: 'emergency_override'
     };
   }
 
   return {
-    assistantMessage: 'I can help with that. Tell me the next detail you want to focus on.',
-    nextQuestion: ''
+    assistantMessage:
+      'I can help, but I need to keep this safety-focused and information-only. Could you rephrase what you want help with?',
+    responseMode: 'guardrail_fallback',
+    responseSource: 'guardrail_fallback'
   };
 };
 
-export const buildMetaFeedbackFallbackResponse = (
-  input: GenerateSafeSpeakModelResponseInput,
-  reason?: string
-): GenerateSafeSpeakModelResponseOutput => ({
-  ...buildDynamicFallbackMessage(input),
-  readyForSubmission: false,
-  confidence: 'medium',
-  disclaimer: 'This is information only, not legal advice.',
-  citations: [],
-  showSources: false,
-  sourceDisplayReason: 'hidden_support_reply',
-  rag: {
-    used: false,
-    unavailable: false,
-    resultCount: 0
-  },
-  reviewStatus: input.intent,
-  responseMode: input.responseMode,
-  intent: input.intent,
-  usedModelGeneration: false,
-  guardrailStatus: 'fallback',
-  fallbackReason: reason,
-  staticTemplateUsed: false,
-  consentSnapshot: input.consentSnapshot,
-  intentConfidence: input.intentConfidence,
-  selectedResponseSource: 'dynamic_fallback'
-});
+export const buildSafeSpeakFallbackResponse = (input: {
+  intent: string;
+  reason?: string;
+  ragStatus?: SafeSpeakRagStatus;
+  consentSnapshot?: SafeSpeakModelContext['consentSnapshot'];
+  intentConfidence?: 'high' | 'medium' | 'low';
+  classifierSource?: 'rule' | 'model' | 'hybrid';
+}): GenerateSafeSpeakResponseOutput => {
+  const fallback = minimalFallback(input.intent);
 
-const callOpenAIForConversation = async (
-  input: GenerateSafeSpeakModelResponseInput,
-  strictRetry = false
-): Promise<string> => {
+  return {
+    assistantMessage: fallback.assistantMessage,
+    nextQuestion: '',
+    readyForSubmission: false,
+    confidence: 'medium',
+    disclaimer: buildInformationOnlyDisclaimer(),
+    citations: [],
+    showSources: false,
+    sourceDisplayReason: 'hidden_support_reply',
+    rag: {
+      used: false,
+      unavailable: input.ragStatus === 'required_but_no_sources_found',
+      resultCount: 0
+    },
+    reviewStatus: input.intent,
+    responseMode: fallback.responseMode,
+    intent: input.intent,
+    usedModelGeneration: false,
+    guardrailStatus: 'fallback',
+    fallbackReason: input.reason,
+    staticTemplateUsed: false,
+    consentSnapshot:
+      input.consentSnapshot ??
+      {
+        store_local: false,
+        cloud_sync: false,
+        share_with_agencies: false,
+        retain_evidence: false,
+        process_with_ai: false,
+        translate_content: false,
+        warm_referral: false
+      },
+    intentConfidence: input.intentConfidence,
+    classifierSource: input.classifierSource,
+    responseSource: fallback.responseSource,
+    model: env.OPENAI_MODEL,
+    jurisdiction: 'AU',
+    ragStatus: input.ragStatus ?? 'not_required',
+    selectedResponseSource: fallback.responseSource
+  };
+};
+
+const callOpenAI = async (input: GenerateSafeSpeakResponseInput, strictRetry = false): Promise<string> => {
+  const mode = input.mode ?? env.AI_RESPONSE_MODE;
   const response = await fetch(OPENAI_RESPONSES_URL, {
     method: 'POST',
     headers: {
@@ -160,41 +210,21 @@ const callOpenAIForConversation = async (
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: env.OPENAI_MODEL,
+      model: input.model ?? env.OPENAI_MODEL,
       input: [
         {
           role: 'system',
-          content: [
-            'You are a helpful assistant.',
-            'Reply directly to the latest user message in natural plain text.',
-            'Do not wrap the reply in JSON, labels, or templates.',
-            'Use the user language when it is clear from the message.',
-            strictRetry ? 'Rewrite the reply more safely and concisely.' : 'Keep the reply natural and concise.'
-          ].join(' ')
+          content:
+            mode === 'raw_dev'
+              ? buildRawDevSystemPrompt()
+              : getSafeSpeakSystemPrompt(input.context.detectedLanguage)
         },
         {
           role: 'user',
-          content: [
-            input.conversationSummary ? `Conversation summary: ${input.conversationSummary}` : '',
-            input.previousAssistantMessage
-              ? `Previous assistant message: ${input.previousAssistantMessage}`
-              : '',
-            input.intent ? `Detected intent: ${input.intent}.` : '',
-            input.responseMode ? `Conversation mode: ${input.responseMode}.` : '',
-            input.detectedLanguage ? `Detected language: ${input.detectedLanguage}.` : '',
-            input.consentSnapshot
-              ? `Consent snapshot: ${JSON.stringify(input.consentSnapshot)}`
-              : '',
-            `Latest user message: ${input.userMessage}`,
-            strictRetry
-              ? 'Rewrite the reply more safely. Keep it concise and natural.'
-              : 'Reply directly to the latest user message.'
-          ]
-            .filter(Boolean)
-            .join('\n')
+          content: buildUserPrompt(input, strictRetry)
         }
       ],
-      temperature: 0.6
+      temperature: mode === 'raw_dev' ? 0.7 : 0.4
     })
   });
 
@@ -205,57 +235,183 @@ const callOpenAIForConversation = async (
   return extractOutputText(await response.json()).trim();
 };
 
-export const generateSafeSpeakModelResponse = async (
-  input: GenerateSafeSpeakModelResponseInput
-): Promise<GenerateSafeSpeakModelResponseOutput> => {
+export const generateSafeSpeakResponse = async (
+  input: GenerateSafeSpeakResponseInput
+): Promise<GenerateSafeSpeakResponseOutput> => {
+  const mode = input.mode ?? env.AI_RESPONSE_MODE;
+  const model = input.model ?? env.OPENAI_MODEL;
+  const ragContext = input.ragContext ?? input.context.ragContext;
+  const ragStatus = input.ragStatus ?? (ragContext.length > 0 ? 'retrieved' : 'not_required');
+  const citations = ragContext.map((item) => ({
+    title: item.sourceTitle,
+    jurisdiction: item.jurisdiction,
+    sourceType: item.sourceType,
+    url: item.url,
+    lastUpdated: item.lastUpdated
+  }));
+
   if (!env.OPENAI_API_KEY) {
-    return buildMetaFeedbackFallbackResponse(input, 'missing_openai_key');
-  }
-
-  try {
-    let assistantMessage = await callOpenAIForConversation(input);
-    let nextQuestion = '';
-    let guardrailStatus: GuardrailStatus = 'passed';
-    let guardrailFailure = validateGuardrails(assistantMessage, nextQuestion);
-
-    if (guardrailFailure) {
-      assistantMessage = await callOpenAIForConversation(input, true);
-      guardrailStatus = 'regenerated';
-      guardrailFailure = validateGuardrails(assistantMessage, nextQuestion);
-    }
-
-    if (guardrailFailure) {
-      return buildMetaFeedbackFallbackResponse(input, guardrailFailure);
-    }
+    const fallback = minimalFallback(input.intent);
 
     return {
-      assistantMessage,
-      nextQuestion,
+      assistantMessage: fallback.assistantMessage,
+      nextQuestion: '',
       readyForSubmission: false,
       confidence: 'medium',
-      disclaimer: 'This is information only, not legal advice.',
+      disclaimer: buildInformationOnlyDisclaimer(),
       citations: [],
       showSources: false,
       sourceDisplayReason: 'hidden_support_reply',
       rag: {
-        used: false,
-        unavailable: false,
-        resultCount: 0
+        used: ragContext.length > 0,
+        unavailable: ragStatus === 'required_but_no_sources_found',
+        resultCount: ragContext.length
       },
       reviewStatus: input.intent,
-      responseMode: input.responseMode,
+      responseMode: fallback.responseMode,
+      intent: input.intent,
+      usedModelGeneration: false,
+      guardrailStatus: 'fallback',
+      fallbackReason: 'missing_openai_key',
+      staticTemplateUsed: false,
+      consentSnapshot: input.context.consentSnapshot,
+      intentConfidence: input.intentConfidence,
+      classifierSource: input.classifierSource,
+      responseSource: fallback.responseSource,
+      model,
+      jurisdiction: 'AU',
+      ragStatus,
+      selectedResponseSource: fallback.responseSource
+    };
+  }
+
+  try {
+    let assistantMessage = await callOpenAI({ ...input, mode, model, ragContext, ragStatus });
+    let guardrailStatus: GuardrailStatus = 'passed';
+    let validation = validateSafeSpeakResponse({
+      text: assistantMessage,
+      jurisdiction: 'AU',
+      allowMultipleQuestions: input.intent === 'safety_crisis'
+    });
+
+    if (!validation.passed) {
+      assistantMessage = await callOpenAI(
+        { ...input, mode, model, ragContext, ragStatus },
+        true
+      );
+      guardrailStatus = 'regenerated';
+      validation = validateSafeSpeakResponse({
+        text: assistantMessage,
+        jurisdiction: 'AU',
+        allowMultipleQuestions: input.intent === 'safety_crisis'
+      });
+    }
+
+    if (!validation.passed) {
+      const fallback = minimalFallback(input.intent);
+
+      return {
+        assistantMessage: fallback.assistantMessage,
+        nextQuestion: '',
+        readyForSubmission: false,
+        confidence: 'medium',
+        disclaimer: buildInformationOnlyDisclaimer(),
+        citations: [],
+        showSources: false,
+        sourceDisplayReason: 'hidden_support_reply',
+        rag: {
+          used: ragContext.length > 0,
+          unavailable: ragStatus === 'required_but_no_sources_found',
+          resultCount: ragContext.length
+        },
+        reviewStatus: input.intent,
+        responseMode: fallback.responseMode,
+        intent: input.intent,
+        usedModelGeneration: false,
+        guardrailStatus: 'fallback',
+        fallbackReason: validation.violations.join(','),
+        staticTemplateUsed: false,
+        consentSnapshot: input.context.consentSnapshot,
+        intentConfidence: input.intentConfidence,
+        classifierSource: input.classifierSource,
+        responseSource: fallback.responseSource,
+        model,
+        jurisdiction: 'AU',
+        ragStatus,
+        selectedResponseSource: fallback.responseSource
+      };
+    }
+
+    const responseSource =
+      mode === 'raw_dev'
+        ? 'raw_openai_model'
+        : ragStatus === 'retrieved'
+          ? 'openai_model_with_rag'
+          : 'openai_model';
+
+    return {
+      assistantMessage,
+      nextQuestion: '',
+      readyForSubmission: false,
+      confidence: 'medium',
+      disclaimer: buildInformationOnlyDisclaimer(),
+      citations,
+      showSources: ragStatus === 'retrieved',
+      sourceDisplayReason: ragStatus === 'retrieved' ? 'legal_lookup' : 'hidden_support_reply',
+      rag: {
+        used: ragContext.length > 0,
+        unavailable: ragStatus === 'required_but_no_sources_found',
+        resultCount: ragContext.length
+      },
+      reviewStatus: input.intent,
+      responseMode: mode,
       intent: input.intent,
       usedModelGeneration: true,
       guardrailStatus,
       staticTemplateUsed: false,
-      consentSnapshot: input.consentSnapshot,
+      consentSnapshot: input.context.consentSnapshot,
       intentConfidence: input.intentConfidence,
-      selectedResponseSource: 'openai_model'
+      classifierSource: input.classifierSource,
+      responseSource,
+      model,
+      jurisdiction: 'AU',
+      ragStatus,
+      selectedResponseSource: responseSource
     };
   } catch (error) {
-    return buildMetaFeedbackFallbackResponse(
-      input,
-      error instanceof Error ? error.message : 'model_generation_failed'
-    );
+    const fallback = minimalFallback(input.intent);
+
+    return {
+      assistantMessage: fallback.assistantMessage,
+      nextQuestion: '',
+      readyForSubmission: false,
+      confidence: 'medium',
+      disclaimer: buildInformationOnlyDisclaimer(),
+      citations: [],
+      showSources: false,
+      sourceDisplayReason: 'hidden_support_reply',
+      rag: {
+        used: ragContext.length > 0,
+        unavailable: ragStatus === 'required_but_no_sources_found',
+        resultCount: ragContext.length
+      },
+      reviewStatus: input.intent,
+      responseMode: fallback.responseMode,
+      intent: input.intent,
+      usedModelGeneration: false,
+      guardrailStatus: 'fallback',
+      fallbackReason: error instanceof Error ? error.message : 'model_generation_failed',
+      staticTemplateUsed: false,
+      consentSnapshot: input.context.consentSnapshot,
+      intentConfidence: input.intentConfidence,
+      classifierSource: input.classifierSource,
+      responseSource: fallback.responseSource,
+      model,
+      jurisdiction: 'AU',
+      ragStatus,
+      selectedResponseSource: fallback.responseSource
+    };
   }
 };
+
+export const generateSafeSpeakModelResponse = generateSafeSpeakResponse;

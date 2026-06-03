@@ -3,16 +3,23 @@ import { Types, type HydratedDocument } from 'mongoose';
 
 import { ApiError } from '@common/errors/ApiError';
 import { logger } from '@common/utils/logger';
-import { classifySafeSpeakIntent } from '@modules/ai/intent-classifier';
+import { env } from '@config/env';
+import {
+  classifySafeSpeakIntent,
+  classifySafeSpeakIntentDetails
+} from '@modules/ai/intent-classifier';
 import { generateSafeSpeakModelResponse } from '@modules/ai/model-response.service';
+import {
+  buildActiveIncidentSummary,
+  buildSafeSpeakContext,
+  type SafeSpeakRagSnippet,
+  type SafeSpeakRagStatus
+} from '@modules/ai/safespeak-context-builder';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
 import { MicroEducationModel } from '@modules/microeducation/microeducation.model';
 import { RagKnowledgeSourceModel } from '@modules/rag/rag.model';
-import {
-  buildAssistantSourceDisplayMeta,
-  runTimelineAssistant
-} from '@modules/rag/rag.service';
+import { buildAssistantSourceDisplayMeta, searchRag } from '@modules/rag/rag.service';
 import { SupportServiceModel } from '@modules/support/support.model';
 
 import { CONVERSATION_FLOW_ACTIONS, CONVERSATION_FLOW_CATEGORIES } from './conversation-flow.constants';
@@ -175,7 +182,7 @@ const selectedTopicFallbackCategory = (selectedTopic?: string): ConversationFlow
   }
 };
 
-const categoryToRagIncidentCategory = (
+export const categoryToRagIncidentCategory = (
   category?: ConversationFlowCategory
 ): 'domestic_violence' | 'racial_abuse' | 'migrant_challenges' | 'cyber_scam' | undefined => {
   switch (category) {
@@ -188,6 +195,43 @@ const categoryToRagIncidentCategory = (
       return 'cyber_scam';
     default:
       return undefined;
+  }
+};
+
+const categoryToRagTopic = (
+  category?: ConversationFlowCategory
+):
+  | 'discrimination'
+  | 'racial'
+  | 'online_safety'
+  | 'scam'
+  | 'migrant'
+  | 'privacy'
+  | 'workplace'
+  | 'dv'
+  | 'evidence'
+  | 'support'
+  | 'crisis'
+  | undefined => {
+  switch (category) {
+    case 'domestic_violence':
+      return 'dv';
+    case 'racism_discrimination':
+      return 'racial';
+    case 'online_abuse':
+      return 'online_safety';
+    case 'scam_fraud':
+      return 'scam';
+    case 'workplace_bullying':
+      return 'workplace';
+    case 'harassment':
+      return 'discrimination';
+    case 'mental_health_distress':
+      return 'crisis';
+    case 'theft_property':
+      return 'evidence';
+    default:
+      return 'support';
   }
 };
 
@@ -672,14 +716,13 @@ export const classifyResponseMode = (input: {
     return 'evidence_upload_intent';
   }
 
-  if (detectedIntent === 'meta_feedback_or_capability_question') {
+  if (detectedIntent === 'meta_feedback') {
     return 'meta_feedback';
   }
 
   if (
     detectedIntent === 'physical_harm' ||
-    detectedIntent === 'incident_disclosure' ||
-    detectedIntent === 'safety_physical_harm'
+    detectedIntent === 'incident_disclosure'
   ) {
     return 'support_victim_style';
   }
@@ -971,6 +1014,7 @@ export const buildConversationAssistantResponseMeta = (input: {
         resultCount: 0
       },
     reviewStatus: input.assistantPayload.reviewStatus ?? 'fallback_local',
+    intent: typeof input.assistantPayload.intent === 'string' ? input.assistantPayload.intent : undefined,
     triageReady,
     nextAction:
       typeof input.assistantPayload.nextAction === 'string'
@@ -1002,6 +1046,16 @@ export const buildConversationAssistantResponseMeta = (input: {
       typeof input.assistantPayload.sourceDisplayReason === 'string'
         ? input.assistantPayload.sourceDisplayReason
         : sourceDisplayMeta.sourceDisplayReason,
+    responseSource:
+      typeof input.assistantPayload.responseSource === 'string'
+        ? input.assistantPayload.responseSource
+        : 'guardrail_fallback',
+    model:
+      typeof input.assistantPayload.model === 'string' ? input.assistantPayload.model : undefined,
+    ragStatus:
+      typeof input.assistantPayload.ragStatus === 'string'
+        ? input.assistantPayload.ragStatus
+        : 'not_required',
     selectedResponseSource:
       typeof input.assistantPayload.selectedResponseSource === 'string'
         ? input.assistantPayload.selectedResponseSource
@@ -1495,6 +1549,30 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
     metadata.selectedResponseSource = assistantPayload.selectedResponseSource;
   }
 
+  if (typeof assistantPayload.responseSource === 'string') {
+    metadata.responseSource = assistantPayload.responseSource;
+  }
+
+  if (typeof assistantPayload.model === 'string') {
+    metadata.model = assistantPayload.model;
+  }
+
+  if (typeof assistantPayload.jurisdiction === 'string') {
+    metadata.jurisdiction = assistantPayload.jurisdiction;
+  }
+
+  if (typeof assistantPayload.ragStatus === 'string') {
+    metadata.ragStatus = assistantPayload.ragStatus;
+  }
+
+  if (typeof assistantPayload.classifierSource === 'string') {
+    metadata.classifierSource = assistantPayload.classifierSource;
+  }
+
+  if (Array.isArray(assistantPayload.matchedSignals)) {
+    metadata.matchedSignals = assistantPayload.matchedSignals;
+  }
+
   if (
     assistantPayload.consentSnapshot &&
     typeof assistantPayload.consentSnapshot === 'object' &&
@@ -1512,11 +1590,11 @@ const resolveConversationIntent = (input: {
   sessionFacts: ConversationFlowStructuredFacts;
 }): string => {
   if (input.responseMode === 'meta_feedback') {
-    return 'meta_feedback_or_capability_question';
+    return 'meta_feedback';
   }
 
   if (input.responseMode === 'evidence_upload_intent') {
-    return 'evidence_upload_intent';
+    return 'evidence_upload';
   }
 
   if (input.responseMode === 'triage_handoff') {
@@ -1524,7 +1602,7 @@ const resolveConversationIntent = (input: {
   }
 
   if (input.responseMode === 'legal_lookup') {
-    return 'legal_lookup';
+    return 'legal_boundary';
   }
 
   if (input.detectedIntent !== 'unknown') {
@@ -1532,7 +1610,7 @@ const resolveConversationIntent = (input: {
   }
 
   if (input.responseMode === 'emergency_safety') {
-    return input.sessionFacts.physicalViolence ? 'safety_physical_harm' : 'safety_crisis';
+    return 'safety_crisis';
   }
 
   if (input.responseMode === 'support_victim_style') {
@@ -1552,38 +1630,87 @@ const logAssistantTurn = (input: {
   userTurnNumber: number;
   latestUserMessageContent: string;
   detectedIntent: string;
-  responseMode: ConversationAssistantResponseMode;
+  intentConfidence?: string;
+  aiResponseMode: string;
   usedModelGeneration: boolean;
   staticTemplateUsed: boolean;
+  responseSource: string;
+  model?: string;
+  ragStatus?: string;
   guardrailStatus: string;
-  selectedResponseSource: string;
   assistantMessageId?: string;
   assistantTurnNumber?: number;
   assistantMessageContent: string;
 }): void => {
   logger.info(
     {
-      conversationSessionId: input.conversationSessionId,
+      sessionId: input.conversationSessionId,
+      turnNumber: input.assistantTurnNumber ?? input.userTurnNumber,
       userMessageId: input.userMessageId,
-      userTurnNumber: input.userTurnNumber,
-      latestUserMessage: {
-        content: input.latestUserMessageContent
-      },
+      latestUserMessageFirst120: input.latestUserMessageContent.slice(0, 120),
       detectedIntent: input.detectedIntent,
-      responseMode: input.responseMode,
+      intentConfidence: input.intentConfidence,
+      aiResponseMode: input.aiResponseMode,
+      responseSource: input.responseSource,
+      model: input.model,
+      ragStatus: input.ragStatus,
       usedModelGeneration: input.usedModelGeneration,
       staticTemplateUsed: input.staticTemplateUsed,
       guardrailStatus: input.guardrailStatus,
-      selectedResponseSource: input.selectedResponseSource,
-      assistantMessage: {
-        id: input.assistantMessageId,
-        turnNumber: input.assistantTurnNumber,
-        contentPreview: input.assistantMessageContent.slice(0, 120)
-      }
+      assistantMessageId: input.assistantMessageId,
+      assistantResponseFirst120: input.assistantMessageContent.slice(0, 120)
     },
     'Conversation assistant turn'
   );
 };
+
+const shouldUseRagForIntent = (input: {
+  intent: string;
+  message: string;
+  responseMode: ConversationAssistantResponseMode;
+}): boolean => {
+  if (input.responseMode === 'legal_lookup') {
+    return true;
+  }
+
+  if (input.intent === 'legal_boundary' || input.intent === 'rag_pathway_question') {
+    return true;
+  }
+
+  if (
+    input.intent === 'scam_check' &&
+    /\b(report|reportcyber|scamwatch|rights|pathway|agency|police|esafety)\b/i.test(input.message)
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
+const buildConversationSummary = (
+  conversation: Array<{ role: 'assistant' | 'user'; content: string }>
+): string =>
+  conversation
+    .slice(-6)
+    .map((message) => `${message.role}: ${message.content.replace(/\s+/g, ' ').trim()}`)
+    .join('\n');
+
+const toRagSnippets = (results: Array<{
+  title: string;
+  jurisdiction: string;
+  sourceType: string;
+  citationUrl?: string;
+  lastUpdated?: Date;
+  text: string;
+}>): SafeSpeakRagSnippet[] =>
+  results.slice(0, 4).map((result) => ({
+    sourceTitle: result.title,
+    jurisdiction: result.jurisdiction,
+    sourceType: result.sourceType,
+    url: result.citationUrl,
+    lastUpdated: result.lastUpdated?.toISOString(),
+    relevantSnippet: result.text.replace(/\s+/g, ' ').trim().slice(0, 500)
+  }));
 
 const joinNaturalLanguageList = (items: string[]): string => {
   const filteredItems = items.map((item) => item.trim()).filter(Boolean);
@@ -2660,7 +2787,7 @@ const buildFactsFromTimeline = (
   };
 };
 
-const buildFallbackAssistantResponse = (
+export const buildFallbackAssistantResponse = (
   message: string,
   timeline: Record<string, string>,
   selectedTopic?: string,
@@ -4416,7 +4543,8 @@ export const appendConversationFlowMessage = async (
     text: `${input.content}\n${JSON.stringify(existingTimeline)}`,
     selectedTopic: session.selectedTopic
   }).category;
-  const detectedIntent = classifySafeSpeakIntent(input.content);
+  const intentClassification = classifySafeSpeakIntentDetails(input.content);
+  const detectedIntent = intentClassification.intent;
   const responseMode = classifyResponseMode({
     message: input.content,
     sessionFacts: supportFacts.originalFacts,
@@ -4428,7 +4556,6 @@ export const appendConversationFlowMessage = async (
     sessionFacts: supportFacts.originalFacts
   });
   const triageHandoffIntent = responseMode === 'triage_handoff';
-  const evidenceUploadIntent = responseMode === 'evidence_upload_intent';
 
   let assistantPayload: Record<string, unknown>;
 
@@ -4443,136 +4570,91 @@ export const appendConversationFlowMessage = async (
       guardrailStatus: 'passed',
       selectedResponseSource: 'triage_handoff'
     };
-  } else if (evidenceUploadIntent) {
-    const consent = await getCurrentConsent(context.owner);
-    assistantPayload = await generateSafeSpeakModelResponse({
-      intent: 'evidence_upload_intent',
-      userMessage: input.content,
-      conversationSummary: conversationForAssistant
-        .slice(-4)
-        .map((message) => `${message.role}: ${message.content}`)
-        .join('\n'),
-      consentSnapshot: consent,
-      detectedLanguage: assistantLanguage,
-      safetyContext: {
-        safetyLevel: safetyOverride.safetyLevel,
-        safetyOverride: safetyOverride.safetyOverride
-      },
-      responseMode: 'evidence_consent',
-      previousAssistantMessage:
-        existingMessages
-          .slice()
-          .reverse()
-          .find((message) => message.role === 'assistant')?.content ?? undefined,
-      intentConfidence: 'high'
-    });
-  } else if (responseMode === 'meta_feedback') {
-    assistantPayload = await generateSafeSpeakModelResponse({
-      intent: 'meta_feedback_or_capability_question',
-      userMessage: input.content,
-      conversationSummary: conversationForAssistant
-        .slice(-4)
-        .map((message) => `${message.role}: ${message.content}`)
-        .join('\n'),
-      consentSnapshot: await getCurrentConsent(context.owner),
-      detectedLanguage: assistantLanguage,
-      safetyContext: {
-        safetyLevel: safetyOverride.safetyLevel,
-        safetyOverride: safetyOverride.safetyOverride
-      },
-      responseMode: 'meta_feedback',
-      previousAssistantMessage:
-        existingMessages
-          .slice()
-          .reverse()
-          .find((message) => message.role === 'assistant')?.content ?? undefined
-    });
-  } else if (responseMode === 'emergency_safety') {
-    assistantPayload = buildSupportReply({
-      facts: supportFacts,
-      responseMode,
-      sessionContext: {
-        selectedTopic: session.selectedTopic,
-        language: assistantLanguage
-      }
-    });
-    assistantPayload.intent = selectedIntent;
-    assistantPayload.responseMode = responseMode;
-    assistantPayload.usedModelGeneration = false;
-    assistantPayload.staticTemplateUsed = false;
-    assistantPayload.guardrailStatus = 'passed';
-    assistantPayload.selectedResponseSource = 'support_reply_builder';
-  } else if (responseMode !== 'legal_lookup') {
-    assistantPayload = await generateSafeSpeakModelResponse({
-      intent: selectedIntent,
-      userMessage: input.content,
-      conversationSummary: conversationForAssistant
-        .slice(-6)
-        .map((message) => `${message.role}: ${message.content}`)
-        .join('\n'),
-      detectedLanguage: assistantLanguage,
-      safetyContext: {
-        safetyLevel: safetyOverride.safetyLevel,
-        safetyOverride: safetyOverride.safetyOverride
-      },
-      responseMode,
-      previousAssistantMessage:
-        existingMessages
-          .slice()
-          .reverse()
-          .find((message) => message.role === 'assistant')?.content ?? undefined,
-      intentConfidence: responseMode === 'clarification_needed' ? 'medium' : 'high'
-    });
   } else {
-    try {
-      assistantPayload = await runTimelineAssistant(
-        {
-          owner: context.owner,
-          ip: context.ip,
-          userAgent: context.userAgent
-        },
-        {
-          message: input.content,
-          topK: 4,
-          conversation: conversationForAssistant,
-          timeline: existingTimeline,
-          language: assistantLanguage,
-          incidentCategory: categoryToRagIncidentCategory(detectedCategory),
-          jurisdiction: session.jurisdiction as
-            | 'Cth'
-            | 'NSW'
-            | 'VIC'
-            | 'QLD'
-            | 'SA'
-            | 'WA'
-            | 'TAS'
-            | 'NT'
-            | 'ACT'
-            | 'AU'
-            | 'Global'
-            | 'Internal'
-            | undefined
-        }
-      );
-      assistantPayload = localizeKnownLegalLookupAnswer({
-        language: assistantLanguage,
-        message: input.content,
-        assistantPayload
-      });
-      assistantPayload.selectedResponseSource = 'rag_timeline_assistant';
-    } catch {
-      assistantPayload = buildFallbackAssistantResponse(
-        input.content,
-        existingTimeline,
-        session.selectedTopic,
-        session.jurisdiction ?? undefined,
-        assistantLanguage
-      );
-      assistantPayload.selectedResponseSource =
-        typeof assistantPayload.selectedResponseSource === 'string'
-          ? assistantPayload.selectedResponseSource
-          : 'legal_lookup_fallback';
+    const consent = await getCurrentConsent(context.owner);
+    const ragRequired = shouldUseRagForIntent({
+      intent: selectedIntent,
+      message: input.content,
+      responseMode
+    });
+    let ragContext: SafeSpeakRagSnippet[] = [];
+    let ragStatus: SafeSpeakRagStatus = ragRequired ? 'required_but_no_sources_found' : 'not_required';
+
+    if (ragRequired) {
+      try {
+        const ragResults = await searchRag(
+          {
+            owner: context.owner,
+            ip: context.ip,
+            userAgent: context.userAgent
+          },
+          {
+            query: input.content,
+            topK: 4,
+            language: assistantLanguage,
+            jurisdiction: (session.jurisdiction as
+              | 'Cth'
+              | 'NSW'
+              | 'VIC'
+              | 'QLD'
+              | 'SA'
+              | 'WA'
+              | 'TAS'
+              | 'NT'
+              | 'ACT'
+              | 'AU'
+              | 'Global'
+              | 'Internal'
+              | undefined) ?? 'AU',
+            topic: categoryToRagTopic(detectedCategory)
+          }
+        );
+
+        ragContext = toRagSnippets(ragResults);
+        ragStatus = ragContext.length > 0 ? 'retrieved' : 'required_but_no_sources_found';
+      } catch {
+        ragStatus = 'required_but_no_sources_found';
+      }
     }
+
+    const contextForModel = buildSafeSpeakContext({
+      latestUserMessage: input.content,
+      detectedLanguage: assistantLanguage,
+      intentClassification,
+      conversationSummary: buildConversationSummary(conversationForAssistant),
+      activeIncidentSummary: buildActiveIncidentSummary(existingFacts ?? {}),
+      consentSnapshot: consent,
+      safetyContext: {
+        latestTurnRiskLevel: safetyOverride.safetyLevel,
+        activeIncidentRiskLevel: safetyOverride.safetyLevel,
+        sessionHistoricalMaxRiskLevel: session.safetyRiskLevel,
+        immediateDanger: supportFacts.originalFacts.immediateDanger,
+        threatsPresent: supportFacts.originalFacts.threatsPresent,
+        physicalHarm: supportFacts.originalFacts.physicalViolence,
+        domesticFamilyViolence: supportFacts.originalFacts.domesticViolence,
+        selfHarm: supportFacts.originalFacts.selfHarmOrSuicidal,
+        childSafety: supportFacts.originalFacts.childSafetyRisk,
+        relevantSupport:
+          supportFacts.originalFacts.domesticViolence || supportFacts.originalFacts.sexualViolenceRisk
+            ? ['1800RESPECT']
+            : []
+      },
+      ragContext,
+      userSelectedTopic: session.selectedTopic
+    });
+
+    assistantPayload = await generateSafeSpeakModelResponse({
+      mode: env.AI_RESPONSE_MODE,
+      model: env.OPENAI_MODEL,
+      intent: selectedIntent,
+      intentConfidence: intentClassification.confidence,
+      classifierSource: intentClassification.classifierSource,
+      context: contextForModel,
+      ragContext,
+      ragStatus,
+      latestUserMessage: input.content
+    });
+    assistantPayload.matchedSignals = intentClassification.matchedSignals;
   }
 
   assistantPayload = {
@@ -4636,17 +4718,27 @@ export const appendConversationFlowMessage = async (
     userTurnNumber: userMessage.turnNumber,
     latestUserMessageContent: input.content,
     detectedIntent: typeof assistantPayload.intent === 'string' ? assistantPayload.intent : selectedIntent,
-    responseMode,
+    intentConfidence:
+      typeof assistantPayload.intentConfidence === 'string'
+        ? assistantPayload.intentConfidence
+        : intentClassification.confidence,
+    aiResponseMode:
+      typeof assistantPayload.responseMode === 'string'
+        ? assistantPayload.responseMode
+        : env.AI_RESPONSE_MODE,
     usedModelGeneration: Boolean(assistantPayload.usedModelGeneration),
     staticTemplateUsed: Boolean(assistantPayload.staticTemplateUsed),
+    responseSource:
+      typeof assistantPayload.responseSource === 'string'
+        ? assistantPayload.responseSource
+        : 'guardrail_fallback',
+    model: typeof assistantPayload.model === 'string' ? assistantPayload.model : env.OPENAI_MODEL,
+    ragStatus:
+      typeof assistantPayload.ragStatus === 'string' ? assistantPayload.ragStatus : 'not_required',
     guardrailStatus:
       typeof assistantPayload.guardrailStatus === 'string'
         ? assistantPayload.guardrailStatus
         : 'passed',
-    selectedResponseSource:
-      typeof assistantPayload.selectedResponseSource === 'string'
-        ? assistantPayload.selectedResponseSource
-        : 'support_reply_builder',
     assistantMessageId: assistantMessage._id.toString(),
     assistantTurnNumber: assistantMessage.turnNumber,
     assistantMessageContent: assistantMessage.content

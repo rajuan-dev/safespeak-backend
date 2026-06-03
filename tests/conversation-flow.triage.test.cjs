@@ -30,10 +30,12 @@ const {
 } = require('../src/modules/ai/response-composer.ts');
 const {
   classifySafeSpeakIntent,
+  classifySafeSpeakIntentDetails,
   detectMetaFeedbackOrCapabilityQuestion,
 } = require('../src/modules/ai/intent-classifier.ts');
 const {
-  buildMetaFeedbackFallbackResponse,
+  buildSafeSpeakFallbackResponse,
+  generateSafeSpeakResponse,
 } = require('../src/modules/ai/model-response.service.ts');
 const {
   ASSISTANT_LANGUAGE_REGISTRY,
@@ -105,28 +107,25 @@ test('meta feedback messages are not misclassified as incident support', () => {
   });
 
   assert.equal(detectMetaFeedbackOrCapabilityQuestion(message), true);
-  assert.equal(classifySafeSpeakIntent(message), 'meta_feedback_or_capability_question');
+  assert.equal(classifySafeSpeakIntent(message), 'meta_feedback');
   assert.equal(responseMode, 'meta_feedback');
 });
 
-test('meta feedback fallback stays natural and avoids trauma-template wording', () => {
-  const reply = buildMetaFeedbackFallbackResponse({
-    intent: 'meta_feedback_or_capability_question',
-    userMessage: 'why are you repeating the same thing?',
-    responseMode: 'meta_feedback',
-    previousAssistantMessage:
-      'Thank you for telling me about this. You do not need to explain everything at once.'
+test('meta feedback fallback stays minimal and avoids old scripted copy', () => {
+  const reply = buildSafeSpeakFallbackResponse({
+    intent: 'meta_feedback',
+    reason: 'guardrail_failure'
   });
   const metadata = buildAssistantMessageMetadata(reply);
   const combined = `${reply.assistantMessage} ${reply.nextQuestion}`.trim();
 
-  assert.match(reply.assistantMessage, /did not match your question|answer it more directly/i);
+  assert.match(reply.assistantMessage, /safety-focused and information-only|rephrase/i);
   assert.doesNotMatch(combined, /too scripted|continue testing the chat behavior|Thank you for telling me about this|what happened/i);
-  assert.equal(metadata.responseMode, 'meta_feedback');
+  assert.equal(metadata.responseMode, 'guardrail_fallback');
   assert.equal(metadata.usedModelGeneration, false);
   assert.equal(metadata.guardrailStatus, 'fallback');
   assert.equal(metadata.staticTemplateUsed, false);
-  assert.equal(metadata.selectedResponseSource, 'dynamic_fallback');
+  assert.equal(metadata.responseSource, 'guardrail_fallback');
 });
 
 test('physical harm input is not classified as meta feedback or evidence upload', () => {
@@ -137,21 +136,24 @@ test('physical harm input is not classified as meta feedback or evidence upload'
     sessionFacts: facts.originalFacts
   });
 
+  const classification = classifySafeSpeakIntentDetails(message);
+
   assert.equal(classifySafeSpeakIntent(message), 'physical_harm');
+  assert.equal(classification.intent, 'physical_harm');
+  assert.equal(classification.classifierSource, 'rule');
   assert.notEqual(responseMode, 'meta_feedback');
   assert.notEqual(responseMode, 'evidence_upload_intent');
   assert.match(responseMode, /support_victim_style|emergency_safety/);
 });
 
 test('physical harm fallback never reuses the old meta feedback text', () => {
-  const reply = buildMetaFeedbackFallbackResponse({
+  const reply = buildSafeSpeakFallbackResponse({
     intent: 'physical_harm',
-    userMessage: 'i was walking and someone hit me',
-    responseMode: 'support_victim_style'
+    reason: 'guardrail_failure'
   });
   const combined = `${reply.assistantMessage} ${reply.nextQuestion}`.trim();
 
-  assert.match(combined, /sorry that happened|safe at the moment|call 000/i);
+  assert.match(combined, /safety-focused and information-only|rephrase/i);
   assert.doesNotMatch(combined, /too scripted|continue testing the chat behavior/i);
 });
 
@@ -161,7 +163,7 @@ test('sequential meta feedback then physical harm classification stays distinct'
   const firstFacts = extractSupportFacts({ message: firstMessage });
   const secondFacts = extractSupportFacts({ message: secondMessage });
 
-  assert.equal(classifySafeSpeakIntent(firstMessage), 'meta_feedback_or_capability_question');
+  assert.equal(classifySafeSpeakIntent(firstMessage), 'meta_feedback');
   assert.equal(
     classifyResponseMode({ message: firstMessage, sessionFacts: firstFacts.originalFacts }),
     'meta_feedback'
@@ -172,6 +174,207 @@ test('sequential meta feedback then physical harm classification stays distinct'
     classifyResponseMode({ message: secondMessage, sessionFacts: secondFacts.originalFacts }),
     'meta_feedback'
   );
+});
+
+test('model response path uses generation metadata for general conversation', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text: 'Hello. I can help explain options, evidence, or support pathways in Australia.'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'general_conversation',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'hi',
+      context: {
+        app: 'SafeSpeak',
+        jurisdiction: 'AU',
+        latestUserMessage: 'hi',
+        detectedLanguage: 'en',
+        intent: 'general_conversation',
+        conversationSummary: 'user: hi',
+        activeIncidentSummary: 'None recorded.',
+        consentSnapshot: {
+          store_local: false,
+          cloud_sync: false,
+          share_with_agencies: false,
+          retain_evidence: false,
+          process_with_ai: true,
+          translate_content: false,
+          warm_referral: false
+        },
+        safetyContext: {
+          latestTurnRiskLevel: 'none',
+          activeIncidentRiskLevel: 'none',
+          sessionHistoricalMaxRiskLevel: 'none',
+          immediateDanger: false,
+          threatsPresent: false,
+          physicalHarm: false,
+          domesticFamilyViolence: false,
+          selfHarm: false,
+          childSafety: false,
+          recommendedEmergencyNumber: '000',
+          relevantSupport: []
+        },
+        ragContext: [],
+        constraints: []
+      }
+    });
+
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.staticTemplateUsed, false);
+    assert.equal(reply.responseMode, 'safespeak_model');
+    assert.equal(reply.responseSource, 'openai_model');
+    assert.doesNotMatch(
+      reply.assistantMessage,
+      /Thank you for telling me|You do not need to explain everything at once/i
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('guardrail rewrites wrong emergency number for AU emergency context', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'Call 911 right now. Are you alone? Are the doors locked?'
+            : 'If you are in immediate danger in Australia, call 000 now.'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'safety_crisis',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'someone is outside my house threatening me right now',
+      context: {
+        app: 'SafeSpeak',
+        jurisdiction: 'AU',
+        latestUserMessage: 'someone is outside my house threatening me right now',
+        detectedLanguage: 'en',
+        intent: 'safety_crisis',
+        conversationSummary: 'user reports immediate threat',
+        activeIncidentSummary: 'Threat outside home right now.',
+        consentSnapshot: {
+          store_local: false,
+          cloud_sync: false,
+          share_with_agencies: false,
+          retain_evidence: false,
+          process_with_ai: true,
+          translate_content: false,
+          warm_referral: false
+        },
+        safetyContext: {
+          latestTurnRiskLevel: 'urgent',
+          activeIncidentRiskLevel: 'urgent',
+          sessionHistoricalMaxRiskLevel: 'urgent',
+          immediateDanger: true,
+          threatsPresent: true,
+          physicalHarm: false,
+          domesticFamilyViolence: false,
+          selfHarm: false,
+          childSafety: false,
+          recommendedEmergencyNumber: '000',
+          relevantSupport: []
+        },
+        ragContext: [],
+        constraints: []
+      }
+    });
+
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.match(reply.assistantMessage, /000/);
+    assert.doesNotMatch(reply.assistantMessage, /\b911|999|112\b/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('legal boundary model response stays information-only and uses rag metadata when retrieved', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text:
+        'I cannot decide whether it is illegal, but possible options may include getting legal information and checking the reporting pathway that fits your situation in NSW.'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'legal_boundary',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'Is this illegal? Can I sue them?',
+      ragStatus: 'retrieved',
+      ragContext: [
+        {
+          sourceTitle: 'Anti-Discrimination NSW guidance',
+          jurisdiction: 'NSW',
+          sourceType: 'Webpage',
+          url: 'https://example.test/nsw-guidance',
+          lastUpdated: '2026-01-01',
+          relevantSnippet: 'This source explains complaint pathways and information-only guidance.'
+        }
+      ],
+      context: {
+        app: 'SafeSpeak',
+        jurisdiction: 'AU',
+        latestUserMessage: 'Is this illegal? Can I sue them?',
+        detectedLanguage: 'en',
+        intent: 'legal_boundary',
+        conversationSummary: 'user asks about legal boundary',
+        activeIncidentSummary: 'None recorded.',
+        consentSnapshot: {
+          store_local: false,
+          cloud_sync: false,
+          share_with_agencies: false,
+          retain_evidence: false,
+          process_with_ai: true,
+          translate_content: false,
+          warm_referral: false
+        },
+        safetyContext: {
+          latestTurnRiskLevel: 'low',
+          activeIncidentRiskLevel: 'low',
+          sessionHistoricalMaxRiskLevel: 'low',
+          immediateDanger: false,
+          threatsPresent: false,
+          physicalHarm: false,
+          domesticFamilyViolence: false,
+          selfHarm: false,
+          childSafety: false,
+          recommendedEmergencyNumber: '000',
+          relevantSupport: []
+        },
+        ragContext: [],
+        constraints: []
+      }
+    });
+
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.ragStatus, 'retrieved');
+    assert.equal(reply.responseSource, 'openai_model_with_rag');
+    assert.match(reply.disclaimer, /information only, not legal advice/i);
+    assert.doesNotMatch(reply.assistantMessage, /you should sue|you have a case|this is illegal/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test('evidence upload consent reply is direct, privacy-first, and metadata-ready', () => {
