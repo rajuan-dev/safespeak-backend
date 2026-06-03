@@ -152,7 +152,17 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
 
   const legalGeneralSignals = collectSignals(normalized, [
     { signal: 'general_legal_explainer', pattern: /\b(explain|tell me about|summary of|briefly explain|what does .* mean|give me a summary of)\b.*\b(criminal law|australian law|discrimination law|legal pathways|law generally)\b/ },
-    { signal: 'topic_only_legal_explainer', pattern: /\b(about )?(criminal law|australian criminal law|discrimination law|legal pathways)\b/ }
+    { signal: 'topic_only_legal_explainer', pattern: /\b(about )?(criminal law|australian criminal law|discrimination law|legal pathways)\b/ },
+    {
+      signal: 'family_violence_law_comparison',
+      pattern:
+        /\b(are|is|how|what|which|do|does|can|could)\b.*\b(family violence|domestic violence)\b.*\b(law|laws|legal framework|legislation|protection order|dvo|avo|advo|ivo|fvio)\b/
+    },
+    {
+      signal: 'state_by_state_legal_difference',
+      pattern:
+        /\b(across|between|same across|same in|different across|different in|all australian states|states and territories|each state|each territory)\b.*\b(law|laws|legislation|legal)\b/
+    }
   ]);
   if (legalGeneralSignals.length > 0) {
     return {
@@ -165,7 +175,17 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
 
   const ragPathwaySignals = collectSignals(normalized, [
     { signal: 'reporting_pathway_question', pattern: /\b(where can i report|reportcyber|scamwatch|esafety|fair work|anti discrimination|police report|what are my rights)\b/ },
-    { signal: 'agency_question', pattern: /\b(which agency|what pathway|who do i report to|what are my reporting options|reporting options)\b/ }
+    { signal: 'agency_question', pattern: /\b(which agency|what pathway|who do i report to|what are my reporting options|reporting options)\b/ },
+    {
+      signal: 'legal_assistance_services_question',
+      pattern:
+        /\b(what|which|where|who)\b.*\b(legal assistance|legal aid|legal service|legal services|lawyer|lawyers|community legal centre|community legal centres|wdvcas|family violence prevention legal services)\b/
+    },
+    {
+      signal: 'help_for_family_violence_question',
+      pattern:
+        /\b(help|support|service|services|pathway|pathways)\b.*\b(someone|person|people)\b.*\b(experiencing|facing)\b.*\b(family violence|domestic violence)\b/
+    }
   ]);
   if (ragPathwaySignals.length > 0) {
     return {

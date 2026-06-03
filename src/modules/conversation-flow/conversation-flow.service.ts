@@ -1653,6 +1653,127 @@ const toRagSnippets = (results: Array<{
     relevantSnippet: result.text.replace(/\s+/g, ' ').trim().slice(0, 500)
   }));
 
+type ConversationFlowRagSearchPlan = {
+  sourceCategory?: 'official_legal_source' | 'official_support_source' | 'admin_content';
+  topic?: ReturnType<typeof categoryToRagTopic>;
+  legalDomain?: ReturnType<typeof categoryToRagLegalDomain>;
+  pathwayCategory?: ReturnType<typeof categoryToRagPathwayCategory>;
+};
+
+const dedupeConversationFlowRagPlan = (
+  plan: ConversationFlowRagSearchPlan[]
+): ConversationFlowRagSearchPlan[] => {
+  const seen = new Set<string>();
+
+  return plan.filter((entry) => {
+    const key = JSON.stringify({
+      sourceCategory: entry.sourceCategory ?? 'auto',
+      topic: entry.topic ?? null,
+      legalDomain: entry.legalDomain ?? null,
+      pathwayCategory: entry.pathwayCategory ?? null
+    });
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+};
+
+export const buildConversationFlowRagSearchPlan = (input: {
+  intent: string;
+  detectedCategory?: ConversationFlowCategory;
+}): ConversationFlowRagSearchPlan[] => {
+  const topic = categoryToRagTopic(input.detectedCategory);
+  const legalDomain = categoryToRagLegalDomain(input.detectedCategory);
+  const pathwayCategory = categoryToRagPathwayCategory(input.detectedCategory);
+
+  const primaryPlan: ConversationFlowRagSearchPlan[] = [
+    { topic, legalDomain, pathwayCategory },
+    { topic, legalDomain },
+    { topic },
+    {}
+  ];
+
+  if (input.intent === 'rag_pathway_question') {
+    return dedupeConversationFlowRagPlan([
+      ...primaryPlan,
+      { sourceCategory: 'official_support_source', topic, legalDomain, pathwayCategory },
+      { sourceCategory: 'official_support_source', topic, legalDomain },
+      { sourceCategory: 'official_support_source', topic },
+      { sourceCategory: 'official_support_source' },
+      { sourceCategory: 'admin_content', topic, legalDomain, pathwayCategory },
+      { sourceCategory: 'admin_content', topic, legalDomain },
+      { sourceCategory: 'admin_content', topic },
+      { sourceCategory: 'admin_content' }
+    ]);
+  }
+
+  if (
+    input.intent === 'legal_general_information' ||
+    input.intent === 'legal_boundary_specific_case'
+  ) {
+    return dedupeConversationFlowRagPlan([
+      ...primaryPlan,
+      { sourceCategory: 'official_legal_source', topic, legalDomain },
+      { sourceCategory: 'official_legal_source', topic },
+      { sourceCategory: 'official_legal_source' },
+      { sourceCategory: 'admin_content', topic, legalDomain },
+      { sourceCategory: 'admin_content', topic },
+      { sourceCategory: 'admin_content' }
+    ]);
+  }
+
+  return dedupeConversationFlowRagPlan(primaryPlan);
+};
+
+const retrieveConversationFlowRag = async (input: {
+  context: Pick<ConversationFlowContext, 'owner' | 'ip' | 'userAgent'>;
+  query: string;
+  language: SupportedConversationLanguage;
+  jurisdiction:
+    | 'Cth'
+    | 'NSW'
+    | 'VIC'
+    | 'QLD'
+    | 'SA'
+    | 'WA'
+    | 'TAS'
+    | 'NT'
+    | 'ACT'
+    | 'AU'
+    | 'Global'
+    | 'Internal';
+  intent: string;
+  detectedCategory?: ConversationFlowCategory;
+}): Promise<Awaited<ReturnType<typeof searchRag>>> => {
+  const searchPlan = buildConversationFlowRagSearchPlan({
+    intent: input.intent,
+    detectedCategory: input.detectedCategory
+  });
+
+  for (const attempt of searchPlan) {
+    const results = await searchRag(input.context, {
+      query: input.query,
+      topK: 4,
+      language: input.language,
+      jurisdiction: input.jurisdiction,
+      ...(attempt.sourceCategory ? { sourceCategory: attempt.sourceCategory } : {}),
+      ...(attempt.topic ? { topic: attempt.topic } : {}),
+      ...(attempt.legalDomain ? { legalDomain: attempt.legalDomain } : {}),
+      ...(attempt.pathwayCategory ? { pathwayCategory: attempt.pathwayCategory } : {})
+    });
+
+    if (results.length > 0) {
+      return results;
+    }
+  }
+
+  return [];
+};
+
 const joinNaturalLanguageList = (items: string[]): string => {
   const filteredItems = items.map((item) => item.trim()).filter(Boolean);
 
@@ -4824,35 +4945,31 @@ export const appendConversationFlowMessage = async (
 
     if (ragRequired) {
       try {
-        const ragResults = await searchRag(
-          {
+        const ragResults = await retrieveConversationFlowRag({
+          context: {
             owner: context.owner,
             ip: context.ip,
             userAgent: context.userAgent
           },
-          {
-            query: input.content,
-            topK: 4,
-            language: assistantLanguage,
-            jurisdiction: (session.jurisdiction as
-              | 'Cth'
-              | 'NSW'
-              | 'VIC'
-              | 'QLD'
-              | 'SA'
-              | 'WA'
-              | 'TAS'
-              | 'NT'
-              | 'ACT'
-              | 'AU'
-              | 'Global'
-              | 'Internal'
-              | undefined) ?? 'AU',
-            topic: categoryToRagTopic(detectedCategory),
-            legalDomain: categoryToRagLegalDomain(detectedCategory),
-            pathwayCategory: categoryToRagPathwayCategory(detectedCategory)
-          }
-        );
+          query: input.content,
+          language: assistantLanguage,
+          jurisdiction: (session.jurisdiction as
+            | 'Cth'
+            | 'NSW'
+            | 'VIC'
+            | 'QLD'
+            | 'SA'
+            | 'WA'
+            | 'TAS'
+            | 'NT'
+            | 'ACT'
+            | 'AU'
+            | 'Global'
+            | 'Internal'
+            | undefined) ?? 'AU',
+          intent: selectedIntent,
+          detectedCategory
+        });
 
         ragContext = toRagSnippets(ragResults);
         ragStatus = ragContext.length > 0 ? 'retrieved' : 'required_but_no_sources_found';

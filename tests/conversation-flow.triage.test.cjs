@@ -17,6 +17,7 @@ const {
   buildTurnHandlingPlan,
   resolveAssistantFormatPreferenceUpdate,
   buildAssistantMessageMetadata,
+  buildConversationFlowRagSearchPlan,
   classifyResponseMode,
   detectAssistantLanguage,
   detectEvidenceUploadIntent,
@@ -432,6 +433,18 @@ test('general legal education classifies separately from specific legal advice',
     'legal_general_information'
   );
   assert.equal(
+    classifySafeSpeakIntent(
+      'Are family violence laws the same across all Australian states?'
+    ),
+    'legal_general_information'
+  );
+  assert.equal(
+    classifySafeSpeakIntent(
+      'What legal assistance services can help someone experiencing family violence?'
+    ),
+    'rag_pathway_question'
+  );
+  assert.equal(
     classifySafeSpeakIntent('Is this illegal? Can I sue them?'),
     'legal_boundary_specific_case'
   );
@@ -472,6 +485,48 @@ test('general legal information turn plan does not mutate triage', () => {
   assert.equal(plan.triageUpdated, false);
   assert.equal(plan.latestTurnRiskLevel, 'none');
   assert.equal(plan.activeIssueId, 'session-125c:issue-1');
+});
+
+test('rag pathway questions broaden retrieval from legal to support and admin sources', () => {
+  const plan = buildConversationFlowRagSearchPlan({
+    intent: 'rag_pathway_question',
+    detectedCategory: 'domestic_violence'
+  });
+
+  assert.deepEqual(plan[0], {
+    topic: 'dv',
+    legalDomain: 'domestic_family_violence',
+    pathwayCategory: 'domestic_family_violence'
+  });
+  assert.ok(
+    plan.some((entry) => entry.sourceCategory === 'official_support_source' && entry.topic === 'dv')
+  );
+  assert.ok(
+    plan.some((entry) => entry.sourceCategory === 'official_support_source' && !entry.topic)
+  );
+  assert.ok(
+    plan.some((entry) => entry.sourceCategory === 'admin_content' && entry.topic === 'dv')
+  );
+  assert.ok(
+    plan.some((entry) => entry.sourceCategory === 'admin_content' && !entry.legalDomain)
+  );
+});
+
+test('legal general information keeps official legal search but can widen to admin content', () => {
+  const plan = buildConversationFlowRagSearchPlan({
+    intent: 'legal_general_information',
+    detectedCategory: 'domestic_violence'
+  });
+
+  assert.deepEqual(plan[0], {
+    topic: 'dv',
+    legalDomain: 'domestic_family_violence',
+    pathwayCategory: 'domestic_family_violence'
+  });
+  assert.ok(
+    plan.some((entry) => entry.sourceCategory === 'official_legal_source' && entry.topic === 'dv')
+  );
+  assert.ok(plan.some((entry) => entry.sourceCategory === 'admin_content'));
 });
 
 test('minimal debug response keeps only the important conversation fields', () => {
