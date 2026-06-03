@@ -17,6 +17,7 @@ import type {
   SafeSpeakRagSnippet,
   SafeSpeakRagStatus
 } from './safespeak-context-builder';
+import type { SafeSpeakResponsePlan } from './safespeak-response-planner';
 
 type GuardrailStatus = 'passed' | 'regenerated' | 'fallback';
 type OpenAiResponseSource =
@@ -154,6 +155,7 @@ const buildBasePromptSections = (
           `Latest user message: ${input.latestUserMessage}`,
           `Detected language: ${input.context.detectedLanguage}`,
           `Format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
+          `Response plan: ${JSON.stringify(input.context.responsePlan)}`,
           `Key constraints: ${(input.context.constraints ?? []).join(' | ')}`,
           `RAG status: ${input.ragStatus ?? 'not_required'}`,
           buildRagPromptSection(input.ragContext ?? input.context.ragContext)
@@ -164,6 +166,7 @@ const buildBasePromptSections = (
           `Intent policy: ${JSON.stringify(input.context.intentPolicy)}`,
           `Latest user message: ${input.latestUserMessage}`,
           `Assistant format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
+          `Response plan: ${JSON.stringify(input.context.responsePlan)}`,
           `SafeSpeak context JSON: ${JSON.stringify(input.context)}`,
           `RAG status: ${input.ragStatus ?? 'not_required'}`,
           buildRagPromptSection(input.ragContext ?? input.context.ragContext)
@@ -185,8 +188,33 @@ const buildUserPrompt = (
         })
       : promptStyle === 'compact'
         ? 'Write one brief, natural SafeSpeak reply in plain text. Do not output JSON.'
-        : 'Write the final assistant reply naturally. Do not output JSON.'
+      : 'Write the final assistant reply naturally. Do not output JSON.'
   ].join('\n');
+
+const shouldPreferParagraphs = (input: GenerateSafeSpeakResponseInput): boolean => {
+  if (
+    input.intent === 'meta_feedback' ||
+    input.intent === 'general_conversation' ||
+    input.intent === 'language_or_translation' ||
+    input.intent === 'encoding_error'
+  ) {
+    return true;
+  }
+
+  if (input.context.assistantFormatPreference === 'bullets') {
+    return false;
+  }
+
+  if (
+    /\b(bullet points?|steps?|options?|red flags?|warning signs?|organize|organise|summary|explain more)\b/i.test(
+      input.latestUserMessage
+    )
+  ) {
+    return false;
+  }
+
+  return input.context.assistantFormatPreference === 'paragraphs';
+};
 
 const buildCompactRewritePrompt = (
   input: GenerateSafeSpeakResponseInput,
@@ -196,6 +224,31 @@ const buildCompactRewritePrompt = (
     ...buildBasePromptSections(input, 'compact'),
     `Previous answer: ${previousAnswer}`,
     buildCompactRetryInstruction()
+  ].join('\n');
+
+const shouldUseProgressiveDisclosureRepair = (plan: SafeSpeakResponsePlan, violations: string[]): boolean =>
+  plan.progressiveDisclosureStage === 'first_response' &&
+  violations.some((violation) =>
+    [
+      'over_answering',
+      'too_many_pathways',
+      'premature_documentation',
+      'premature_reporting',
+      'premature_legal_detail',
+      'too_many_next_steps'
+    ].includes(violation)
+  );
+
+const buildProgressiveDisclosureRewritePrompt = (
+  input: GenerateSafeSpeakResponseInput,
+  previousAnswer: string
+): string =>
+  [
+    ...buildBasePromptSections(input, 'compact'),
+    `Previous answer: ${previousAnswer}`,
+    'Rewrite using progressive disclosure. Keep only the immediate acknowledgement, the primary goal, and at most one next question.',
+    'Remove deferred reporting, documentation, legal, service-list, or safety-plan detail unless the user explicitly asked for it.',
+    'Keep the reply natural, calm, and specific. Do not output JSON.'
   ].join('\n');
 
 const getResponseSystemPrompt = (
@@ -349,6 +402,20 @@ const rewriteCompactOpenAI = async (
   });
 };
 
+const rewriteProgressiveDisclosureOpenAI = async (
+  input: GenerateSafeSpeakResponseInput,
+  previousAnswer: string
+): Promise<string> => {
+  const mode = input.mode ?? env.AI_RESPONSE_MODE;
+
+  return callOpenAiPrompt({
+    model: input.model ?? env.OPENAI_MODEL,
+    systemPrompt: getResponseSystemPrompt(input, mode),
+    userPrompt: buildProgressiveDisclosureRewritePrompt(input, previousAnswer),
+    temperature: mode === 'raw_dev' ? 0.7 : 0.4
+  });
+};
+
 const attemptModelCallTwice = async (operation: () => Promise<string>): Promise<string> => {
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -448,12 +515,7 @@ export const generateSafeSpeakResponse = async (
     url: item.url,
     lastUpdated: item.lastUpdated
   }));
-  const preferParagraphs =
-    input.context.assistantFormatPreference === 'paragraphs' ||
-    input.intent === 'meta_feedback' ||
-    input.intent === 'general_conversation' ||
-    input.intent === 'language_or_translation' ||
-    input.intent === 'encoding_error';
+  const preferParagraphs = shouldPreferParagraphs(input);
   const retryPromptStyle: PromptStyle =
     input.intent === 'meta_feedback' ||
     input.intent === 'general_conversation' ||
@@ -533,7 +595,8 @@ export const generateSafeSpeakResponse = async (
       jurisdiction: 'AU',
       allowMultipleQuestions: input.intent === 'safety_crisis',
       latestUserMessage: input.latestUserMessage,
-      preferParagraphs
+      preferParagraphs,
+      responsePlan: input.context.responsePlan
     });
     let { hard: hardViolations, soft: softViolations } = splitGuardrailViolations(
       validation.violations
@@ -550,7 +613,8 @@ export const generateSafeSpeakResponse = async (
         jurisdiction: 'AU',
         allowMultipleQuestions: input.intent === 'safety_crisis',
         latestUserMessage: input.latestUserMessage,
-        preferParagraphs
+        preferParagraphs,
+        responsePlan: input.context.responsePlan
       });
       ({ hard: hardViolations, soft: softViolations } = splitGuardrailViolations(validation.violations));
       if (hardViolations.length > 0) {
@@ -570,15 +634,21 @@ export const generateSafeSpeakResponse = async (
         softViolations.includes('missing_legal_boundary_disclaimer') ||
         softViolations.includes('evidence_legal_strategy') ||
         softViolations.includes('checklist_heavy_for_intent');
+      const requiresProgressiveDisclosureRepair = shouldUseProgressiveDisclosureRepair(
+        input.context.responsePlan,
+        softViolations
+      );
       const requiresCompactRetry =
         softViolations.includes('too_long_for_intent') ||
         softViolations.includes('too_many_paragraphs_for_intent') ||
         softViolations.includes('too_many_questions') ||
         softViolations.includes('bullet_heavy_non_actionable');
 
-      if (requiresStrictRepair || requiresCompactRetry) {
+      if (requiresStrictRepair || requiresCompactRetry || requiresProgressiveDisclosureRepair) {
         const rewrittenMessage = await attemptModelCallTwice(() =>
-          requiresStrictRepair
+          requiresProgressiveDisclosureRepair
+            ? rewriteProgressiveDisclosureOpenAI({ ...input, mode, model, ragContext, ragStatus }, assistantMessage)
+            : requiresStrictRepair
             ? callOpenAI({ ...input, mode, model, ragContext, ragStatus }, 'strict')
             : rewriteCompactOpenAI({ ...input, mode, model, ragContext, ragStatus }, assistantMessage)
         );
@@ -594,7 +664,8 @@ export const generateSafeSpeakResponse = async (
             jurisdiction: 'AU',
             allowMultipleQuestions: input.intent === 'safety_crisis',
             latestUserMessage: input.latestUserMessage,
-            preferParagraphs
+            preferParagraphs,
+            responsePlan: input.context.responsePlan
           });
           ({ hard: hardViolations, soft: softViolations } = splitGuardrailViolations(validation.violations));
         }
@@ -621,7 +692,8 @@ export const generateSafeSpeakResponse = async (
           jurisdiction: 'AU',
           allowMultipleQuestions: input.intent === 'safety_crisis',
           latestUserMessage: input.latestUserMessage,
-          preferParagraphs
+          preferParagraphs,
+          responsePlan: input.context.responsePlan
         });
         ({ hard: hardViolations, soft: softViolations } = splitGuardrailViolations(validation.violations));
       }

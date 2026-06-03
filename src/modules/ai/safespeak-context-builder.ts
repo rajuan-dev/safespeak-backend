@@ -9,6 +9,10 @@ import {
   getSafeSpeakIntentPolicy,
   type SafeSpeakIntentPolicy
 } from './safespeak-intent-policy';
+import {
+  buildSafeSpeakResponsePlan,
+  type SafeSpeakResponsePlan
+} from './safespeak-response-planner';
 
 export type SafeSpeakRagSnippet = {
   sourceTitle: string;
@@ -63,6 +67,7 @@ export type SafeSpeakModelContext = {
   ragContext: SafeSpeakRagSnippet[];
   userSelectedTopic?: string;
   constraints: string[];
+  responsePlan: SafeSpeakResponsePlan;
 };
 
 export type SafeSpeakContextBuilderInput = {
@@ -109,6 +114,21 @@ export const buildSafeSpeakContext = (
   const intent = input.intentClassification.intent;
   const ragStatus = input.ragStatus ?? (ragContext.length > 0 ? 'retrieved' : 'not_required');
   const intentPolicy = getSafeSpeakIntentPolicy(intent);
+  const responsePlan = buildSafeSpeakResponsePlan({
+    intent,
+    latestUserMessage: input.latestUserMessage,
+    conversationSummary: input.conversationSummary,
+    activeIncidentSummary: input.activeIncidentSummary,
+    assistantFormatPreference: input.assistantFormatPreference,
+    safetyContext: {
+      immediateDanger: input.safetyContext.immediateDanger,
+      threatsPresent: input.safetyContext.threatsPresent,
+      physicalHarm: input.safetyContext.physicalHarm,
+      domesticFamilyViolence: input.safetyContext.domesticFamilyViolence,
+      selfHarm: input.safetyContext.selfHarm,
+      childSafety: input.safetyContext.childSafety
+    }
+  });
 
   return {
     app: 'SafeSpeak',
@@ -135,20 +155,19 @@ export const buildSafeSpeakContext = (
     },
     ragContext,
     userSelectedTopic: input.userSelectedTopic,
+    responsePlan,
     constraints: [
       'Respond naturally to the latest user message.',
-      'Never sound scripted and never reuse fixed wording.',
+      'Use reasoning to infer what the user is actually asking and answer directly.',
+      'Be natural, specific, context-aware, and not scripted.',
       'Preserve user control and give options, not orders.',
-      'Format intelligently. Do not default to bullets or paragraphs blindly.',
-      'Prefer short natural paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
-      'Use concise bullets when listing options, steps, red flags, evidence tips, warning signs, or pathways.',
-      'Respect explicit formatting preferences, but do not make answers unhelpfully vague.',
+      'Choose the format that best helps: paragraphs for conversation, bullets for options, steps, red flags, or organized guidance.',
+      'Follow the response plan. Focus on the primary goal only and do not include deferred content unless the user asked for it.',
+      'Choose the next best response, not every possible response. If multiple pathways may apply, mention only the most immediate or useful one and defer the rest.',
       'Do not claim any upload, sharing, saving, syncing, or agency contact already happened unless confirmed by backend action.',
       'Use Australian emergency guidance only: 000.',
       'Ask at most one user-facing question.',
       'Keep legal content information-only and never invent citations.',
-      'For evidence messages, keep the answer short, low-pressure, consent-aware, and documentation-focused.',
-      'Avoid legal-strategy phrases like hard to dispute, prove your case, build your case, strong evidence, or use this against them.',
       ...intentPolicy.guidance
     ]
   };

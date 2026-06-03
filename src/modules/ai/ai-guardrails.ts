@@ -2,6 +2,7 @@ import {
   getAssistantLanguagePromptLabel,
   type SupportedAssistantLanguageCode
 } from './assistant-language';
+import type { SafeSpeakResponsePlan } from './safespeak-response-planner';
 
 const INFORMATION_ONLY_DISCLAIMER = 'This is information only, not legal advice.';
 
@@ -15,11 +16,7 @@ const LEGAL_ADVICE_RISK_PATTERNS = [
   /\bthat is definitely illegal\b/i,
   /\bthey broke the law\b/i,
   /\byou will win\b/i,
-  /\byou are entitled to compensation\b/i,
-  /\bcriminal matter\b/i,
-  /\bpolice handle this\b/i,
-  /\byou must\b/i,
-  /\byou need to\b/i
+  /\byou are entitled to compensation\b/i
 ];
 
 const CLINICAL_ADVICE_RISK_PATTERNS = [
@@ -130,6 +127,12 @@ export type SafeSpeakGuardrailViolationCode =
   | 'evidence_legal_strategy'
   | 'bullet_heavy_non_actionable'
   | 'checklist_heavy_for_intent'
+  | 'over_answering'
+  | 'too_many_pathways'
+  | 'premature_documentation'
+  | 'premature_reporting'
+  | 'premature_legal_detail'
+  | 'too_many_next_steps'
   | 'too_many_questions'
   | 'too_long_for_intent'
   | 'too_many_paragraphs_for_intent';
@@ -165,42 +168,16 @@ export const getSafeSpeakSystemPrompt = (language: string): string =>
     'You are SafeSpeak Guide, a multilingual, trauma-informed community safety and support navigation guide for Australia.',
     'You are not a lawyer, police officer, therapist, counsellor, emergency service, or case manager.',
     'Your role is to guide safely, explain pathways, support documentation, reduce confusion, and help users feel informed and in control.',
-    'Respond naturally and directly to the latest user message.',
-    'Do not sound scripted. Do not reuse fixed templates. Do not repeat the same wording unless necessary for safety.',
-    'Use calm, warm, neutral, professional, privacy-first language.',
-    'Give options, not orders. Preserve user control.',
     'For emergencies in Australia, direct users to call 000.',
     'For family, domestic, or sexual violence support, mention 1800RESPECT where relevant.',
     'Never suggest 911, 999, or 112 for Australia.',
     'For legal or reporting questions, provide information only, not legal advice.',
-    'Do not decide whether something is illegal. Do not say the user has a case. Do not tell the user to sue. Do not predict outcomes.',
-    'Use words like may, possible, option, and pathway.',
-    'For general conversation, reply briefly and naturally. Do not force triage or use trauma-informed language unless the user described harm.',
-    'For meta-feedback, acknowledge the feedback naturally, answer briefly, and do not turn it into a triage or safety exchange.',
-    'For format-preference questions, answer naturally and do not change preference unless the user explicitly requests a style.',
-    'For physical harm, keep the response short. Mention 000 only when immediate danger, serious injury, or urgent risk is relevant. Ask only one safety question. Do not give a long checklist unless the user asks.',
-    'For incident disclosure, acknowledge briefly, identify only a broad pathway when helpful, and ask one minimal clarifying question only if needed.',
-    'For evidence upload questions, explain consent, storage, cloud sync, retention, and agency sharing only as relevant.',
-    'Do not claim evidence has been uploaded, shared, synced, retained, or analysed unless a confirmed user action says that happened.',
-    'Keep evidence guidance short, low-pressure, consent-aware, and documentation-focused.',
-    'For evidence or photo messages, ask only one question and avoid legal-strategy framing.',
-    'Avoid legal-strategy phrasing like hard to dispute, strong evidence, prove your case, build your case, or use this against them.',
-    'For legal boundary questions about a specific situation, do not answer legality directly. Do not say you can sue, suing is an option, or that something is a criminal matter as a conclusion. State the information-only, not-legal-advice boundary and, if needed, ask one minimal jurisdiction or context question.',
-    'For general legal education, brief plain-language overviews are allowed if you do not apply the law to the user’s facts.',
-    'Use RAG when legal, source-grounded, or pathway-grounded information is available and needed. If RAG is unavailable, say the answer is general and not source-grounded when relevant.',
-    'Never invent citations or sources.',
-    'Do not push the user toward a complaint unless they asked about reporting or complaints.',
-    'For AI-analysis questions, clearly separate upload from AI processing.',
-    'Uploading a file does not automatically mean it is analysed unless the user chooses that AI step and consent allows it.',
-    'For normal conversation or feedback about the assistant, answer directly and naturally.',
-    'Triage early, not deeply. Collect only minimum safe understanding.',
-    'Format intelligently. Do not default to bullets or paragraphs blindly.',
-    'Prefer short paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
-    'Use concise bullets when listing options, steps, red flags, evidence tips, warning signs, or pathways.',
-    'Use numbered steps only when sequence matters.',
-    'Respect explicit formatting preferences, but do not make answers unhelpfully vague.',
-    'Do not force the user into incident triage.',
+    'Do not decide illegality, liability, guilt, outcomes, or whether the user can sue.',
+    'Do not claim evidence was uploaded, saved, shared, synced, retained, or analysed unless backend-confirmed.',
+    'Do not automatically report or share anything.',
     'Ask at most one user-facing question unless emergency safety requires otherwise.',
+    'Use your reasoning to infer what the user is actually asking. Answer directly and helpfully. Be natural, context-aware, and specific. Do not sound generic or scripted.',
+    'Choose the format that best helps: short paragraphs for conversation, bullets for options, steps, or red flags, and concise sections for explanations.',
     `Match the user language when clear and supported. Preferred language: ${getAssistantLanguagePromptLabel(
       language as SupportedAssistantLanguageCode
     )}.`
@@ -216,8 +193,8 @@ export const buildGuardrailRevisionInstruction = (input?: {
 }): string => {
   const instructions = [
     'Revise the answer to comply with SafeSpeak rules.',
-    'Remove prohibited legal conclusions, wrong emergency numbers, false action claims, legal-strategy evidence language, commanding language like "you must" or "you need to", extra questions, and unnecessary length.',
-    'Keep it brief, lower-pressure, information-only, and documentation-focused.'
+    'Remove prohibited legal conclusions, wrong emergency numbers, false action claims, unsafe crisis guidance, and role violations.',
+    'Keep the useful reasoning and specificity. Make it clear and concise, but do not make it vague.'
   ];
 
   if (input?.intent === 'legal_boundary_specific_case') {
@@ -259,7 +236,10 @@ export const buildGuardrailRevisionInstruction = (input?: {
 };
 
 export const buildCompactRetryInstruction = (): string =>
-  'Rewrite more briefly in SafeSpeak persona. Keep the meaning. Use short paragraphs. Ask at most one question. Do not add new claims. Keep it information-only and low-pressure.';
+  'Revise the answer to better match SafeSpeak. Keep the useful reasoning and specificity. Remove only unsafe, legal-advice, or false-action content. Make it clear and concise, but do not make it vague. Use the best format for the user’s request.';
+
+const countMatches = (text: string, patterns: RegExp[]): number =>
+  patterns.reduce((total, pattern) => total + (text.match(pattern) ?? []).length, 0);
 
 const hasChecklistHeavyPattern = (input: {
   text: string;
@@ -340,6 +320,7 @@ export const validateSafeSpeakResponse = (input: {
   allowMultipleQuestions?: boolean;
   latestUserMessage?: string;
   preferParagraphs?: boolean;
+  responsePlan?: SafeSpeakResponsePlan;
 }): SafeSpeakGuardrailResult => {
   const violations = new Set<SafeSpeakGuardrailViolationCode>();
   const normalizedJurisdiction = (input.jurisdiction ?? 'AU').toUpperCase();
@@ -446,39 +427,109 @@ export const validateSafeSpeakResponse = (input: {
     violations.add('bullet_heavy_non_actionable');
   }
 
+  const plan = input.responsePlan;
+  if (plan?.progressiveDisclosureStage === 'first_response') {
+    const text = input.text;
+    const latestUserMessageLower = latestUserMessage.toLowerCase();
+    const userAskedForDocumentation =
+      /\b(how can i|how do i|help me|can you help me|please help me)\b.*\b(document|documentation|evidence|photos?|screenshots?|timeline|organi[sz]e)\b/i.test(
+        latestUserMessage
+      ) || /\b(document it|organise it|organize it|help me document)\b/i.test(latestUserMessage);
+    const userAskedForReporting = /\b(report|reporting|police|agency|where can i report|options)\b/i.test(
+      latestUserMessage
+    );
+    const userAskedForLegal = /\b(legal|illegal|law|sue|rights|case)\b/i.test(latestUserMessage);
+    const reportingMentions = countMatches(text, [
+      /\bpolice\b/gi,
+      /\breport(?:ing)?\b/gi,
+      /\bagency\b/gi,
+      /\b1800respect\b/gi,
+      /\bfair work\b/gi,
+      /\besafety\b/gi,
+      /\boaic\b/gi
+    ]);
+    const documentationMentions = countMatches(text, [
+      /\bevidence\b/gi,
+      /\bphoto(?:s)?\b/gi,
+      /\bscreenshot(?:s)?\b/gi,
+      /\btimeline\b/gi,
+      /\bdocument(?:ation)?\b/gi,
+      /\brecord\b/gi
+    ]);
+    const legalMentions = countMatches(text, [
+      /\billegal\b/gi,
+      /\blegal\b/gi,
+      /\bsue\b/gi,
+      /\bcase\b/gi,
+      /\brights\b/gi,
+      /\bassault\b/gi,
+      /\bharassment\b/gi
+    ]);
+    const bulletCount = (text.match(BULLET_LINE_PATTERN) ?? []).length;
+    const pathSignals = [reportingMentions > 1, documentationMentions > 2, legalMentions > 1].filter(Boolean).length;
+
+    if (!userAskedForDocumentation && documentationMentions >= 3) {
+      violations.add('premature_documentation');
+    }
+
+    if (!userAskedForReporting && reportingMentions >= 2) {
+      violations.add('premature_reporting');
+    }
+
+    if (!userAskedForLegal && legalMentions >= 2) {
+      violations.add('premature_legal_detail');
+    }
+
+    if ((bulletCount >= 4 || countMatches(text, [/\bcan\b/gi, /\byou can\b/gi, /\byou could\b/gi]) >= 4) && latestUserMessageLower.length > 0) {
+      violations.add('too_many_next_steps');
+    }
+
+    if (pathSignals >= 2) {
+      violations.add('too_many_pathways');
+    }
+
+    if (
+      (violations.has('premature_documentation') && violations.has('premature_reporting')) ||
+      (violations.has('premature_reporting') && violations.has('premature_legal_detail')) ||
+      (violations.has('too_many_pathways') && violations.has('too_many_next_steps'))
+    ) {
+      violations.add('over_answering');
+    }
+  }
+
   const wordCount = input.text.trim().split(/\s+/).filter(Boolean).length;
   const maxWordsByIntent: Partial<Record<string, number>> = {
-    general_conversation: 45,
-    meta_feedback: 50,
-    format_preference_question: 45,
-    format_preference_set: 35,
-    physical_harm: 65,
-    evidence_upload: 60,
-    legal_boundary_specific_case: 70,
-    legal_general_information: 110,
-    scam_check: 70
+    general_conversation: 90,
+    meta_feedback: 90,
+    format_preference_question: 70,
+    format_preference_set: 55,
+    physical_harm: 90,
+    evidence_upload: 110,
+    legal_boundary_specific_case: 95,
+    legal_general_information: 170,
+    scam_check: 130
   };
   const maxParagraphsByIntent: Partial<Record<string, number>> = {
-    general_conversation: 3,
-    meta_feedback: 3,
-    format_preference_question: 3,
+    general_conversation: 4,
+    meta_feedback: 4,
+    format_preference_question: 4,
     format_preference_set: 2,
-    physical_harm: 3,
-    evidence_upload: 3,
-    legal_boundary_specific_case: 3,
-    legal_general_information: 4,
-    scam_check: 3
+    physical_harm: 4,
+    evidence_upload: 5,
+    legal_boundary_specific_case: 4,
+    legal_general_information: 5,
+    scam_check: 5
   };
   const softWordGraceByIntent: Partial<Record<string, number>> = {
-    general_conversation: 8,
-    meta_feedback: 8,
-    format_preference_question: 8,
-    format_preference_set: 6,
-    physical_harm: 10,
-    evidence_upload: 10,
-    legal_boundary_specific_case: 10,
-    legal_general_information: 20,
-    scam_check: 10
+    general_conversation: 20,
+    meta_feedback: 20,
+    format_preference_question: 15,
+    format_preference_set: 12,
+    physical_harm: 20,
+    evidence_upload: 25,
+    legal_boundary_specific_case: 20,
+    legal_general_information: 35,
+    scam_check: 25
   };
   const maxWords = input.intent ? maxWordsByIntent[input.intent] : undefined;
   const maxParagraphs = input.intent ? maxParagraphsByIntent[input.intent] : undefined;

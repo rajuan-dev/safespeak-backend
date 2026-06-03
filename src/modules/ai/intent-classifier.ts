@@ -97,7 +97,8 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
 
   const physicalHarmSignals = collectSignals(normalized, [
     { signal: 'physical_harm_phrase', pattern: /\b(someone hit me|some one hit me|hit me|punched me|slapped me|kicked me|assaulted me|attacked me|hurt me)\b/ },
-    { signal: 'incident_with_hit', pattern: /\b(i was|i am|someone|some one)\b.*\b(hit|punched|slapped|kicked|assaulted|attacked)\b/ }
+    { signal: 'incident_with_hit', pattern: /\b(i was|i am|someone|some one)\b.*\b(hit|punched|slapped|kicked|assaulted|attacked)\b/ },
+    { signal: 'physical_contact_hijab', pattern: /\b(pulled|grabbed|snatched|touched)\b.*\b(hijab|headscarf|veil)\b/ }
   ]);
   if (physicalHarmSignals.length > 0) {
     return {
@@ -123,8 +124,9 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
 
   const evidenceSignals = collectSignals(normalized, [
     { signal: 'evidence_upload_terms', pattern: /\b(upload|attach|share|add)\b.*\b(screenshot|screenshots|photo|photos|image|images|file|files|document|documents|evidence|proof)\b/ },
-    { signal: 'evidence_question', pattern: /\b(can i upload|can i attach|i have screenshots|i have proof)\b/ },
-    { signal: 'evidence_organisation', pattern: /\b(how can i|how do i|help me)\b.*\b(organi[sz]e|document|sort|label|arrange)\b.*\b(photo|photos|image|images|evidence|screenshots?)\b/ }
+    { signal: 'evidence_question', pattern: /\b(can i upload|can i attach|i have screenshots|i have proof|i have photos|i have photo)\b/ },
+    { signal: 'evidence_organisation', pattern: /\b(how can i|how do i|help me)\b.*\b(organi[sz]e|document|sort|label|arrange)\b.*\b(photo|photos|image|images|evidence|screenshots?)\b/ },
+    { signal: 'documentation_request', pattern: /\b(help me document|can you help me document|how should i document it|document it)\b/ }
   ]);
   if (evidenceSignals.length > 0) {
     return {
@@ -163,7 +165,7 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
 
   const ragPathwaySignals = collectSignals(normalized, [
     { signal: 'reporting_pathway_question', pattern: /\b(where can i report|reportcyber|scamwatch|esafety|fair work|anti discrimination|police report|what are my rights)\b/ },
-    { signal: 'agency_question', pattern: /\b(which agency|what pathway|who do i report to)\b/ }
+    { signal: 'agency_question', pattern: /\b(which agency|what pathway|who do i report to|what are my reporting options|reporting options)\b/ }
   ]);
   if (ragPathwaySignals.length > 0) {
     return {
@@ -192,7 +194,8 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
     { signal: 'incident_disclosure_term', pattern: /\b(happened|harassed|threatened|abused|followed me|touched me|they did this to me)\b/ },
     { signal: 'distress_context', pattern: /\b(scared|upset|someone followed me|someone touched me)\b/ },
     { signal: 'workplace_mocking_or_belonging', pattern: /\b(boss|manager|supervisor|coworker|co worker|colleague|work)\b.*\b(mock|mocking|laugh|accent|belong|do not belong|dont belong|humiliat|put me down)\b/ },
-    { signal: 'discrimination_phrase', pattern: /\b(accent|where i come from|do not belong here|dont belong here)\b/ }
+    { signal: 'discrimination_phrase', pattern: /\b(accent|where i come from|do not belong here|dont belong here)\b/ },
+    { signal: 'religious_harassment_contact', pattern: /\b(brother|someone|person)\b.*\b(pulled|grabbed|snatched|touched)\b.*\b(hijab|headscarf|veil)\b/ }
   ]);
   if (incidentSignals.length > 0) {
     return {
