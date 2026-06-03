@@ -4,7 +4,6 @@ import { Types, type HydratedDocument } from 'mongoose';
 import { ApiError } from '@common/errors/ApiError';
 import { classifySafeSpeakIntent } from '@modules/ai/intent-classifier';
 import { generateSafeSpeakModelResponse } from '@modules/ai/model-response.service';
-import { composeEvidenceUploadResponse } from '@modules/ai/response-composer';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
 import { MicroEducationModel } from '@modules/microeducation/microeducation.model';
@@ -4321,9 +4320,6 @@ export const appendConversationFlowMessage = async (
   });
   const triageHandoffIntent = responseMode === 'triage_handoff';
   const evidenceUploadIntent = responseMode === 'evidence_upload_intent';
-  const priorEvidenceUploadTurns = conversationForAssistant.filter(
-    (message) => message.role === 'user' && detectEvidenceUploadIntent(message.content)
-  ).length - (evidenceUploadIntent ? 1 : 0);
 
   let assistantPayload: Record<string, unknown>;
 
@@ -4334,28 +4330,26 @@ export const appendConversationFlowMessage = async (
     };
   } else if (evidenceUploadIntent) {
     const consent = await getCurrentConsent(context.owner);
-    assistantPayload = composeEvidenceUploadResponse({
+    assistantPayload = await generateSafeSpeakModelResponse({
+      intent: 'evidence_upload_intent',
       userMessage: input.content,
-      consent,
-      activeIncident: {
-        matchedFacts: supportFacts.originalFacts.matchedFacts,
-        platforms: supportFacts.platforms,
-        domesticViolence: supportFacts.domestic_family_context,
-        coerciveControl: supportFacts.coercive_control,
-        threatPresent: supportFacts.threat_present,
-        immediateDanger: supportFacts.immediate_danger
-      },
-      latestTurnRiskLevel: safetyOverride.safetyLevel,
-      activeIncidentRiskLevel: session.safetyRiskLevel,
+      conversationSummary: conversationForAssistant
+        .slice(-4)
+        .map((message) => `${message.role}: ${message.content}`)
+        .join('\n'),
+      consentSnapshot: consent,
       detectedLanguage: assistantLanguage,
-      conversationState: {
-        priorEvidenceUploadTurns,
-        latestAssistantMessage:
-          existingMessages
-            .slice()
-            .reverse()
-            .find((message) => message.role === 'assistant')?.content ?? undefined
-      }
+      safetyContext: {
+        safetyLevel: safetyOverride.safetyLevel,
+        safetyOverride: safetyOverride.safetyOverride
+      },
+      responseMode: 'evidence_consent',
+      previousAssistantMessage:
+        existingMessages
+          .slice()
+          .reverse()
+          .find((message) => message.role === 'assistant')?.content ?? undefined,
+      intentConfidence: 'high'
     });
   } else if (responseMode === 'meta_feedback') {
     assistantPayload = await generateSafeSpeakModelResponse({
@@ -4378,7 +4372,7 @@ export const appendConversationFlowMessage = async (
           .reverse()
           .find((message) => message.role === 'assistant')?.content ?? undefined
     });
-  } else if (responseMode !== 'legal_lookup') {
+  } else if (responseMode === 'emergency_safety') {
     assistantPayload = buildSupportReply({
       facts: supportFacts,
       responseMode,
@@ -4386,6 +4380,27 @@ export const appendConversationFlowMessage = async (
         selectedTopic: session.selectedTopic,
         language: assistantLanguage
       }
+    });
+  } else if (responseMode !== 'legal_lookup') {
+    assistantPayload = await generateSafeSpeakModelResponse({
+      intent: responseMode,
+      userMessage: input.content,
+      conversationSummary: conversationForAssistant
+        .slice(-6)
+        .map((message) => `${message.role}: ${message.content}`)
+        .join('\n'),
+      detectedLanguage: assistantLanguage,
+      safetyContext: {
+        safetyLevel: safetyOverride.safetyLevel,
+        safetyOverride: safetyOverride.safetyOverride
+      },
+      responseMode,
+      previousAssistantMessage:
+        existingMessages
+          .slice()
+          .reverse()
+          .find((message) => message.role === 'assistant')?.content ?? undefined,
+      intentConfidence: responseMode === 'clarification_needed' ? 'medium' : 'high'
     });
   } else {
     try {

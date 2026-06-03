@@ -16,6 +16,7 @@ type GenerateSafeSpeakModelResponseInput = {
   safetyContext?: Record<string, unknown>;
   responseMode: string;
   previousAssistantMessage?: string;
+  intentConfidence?: 'high' | 'medium' | 'low';
 };
 
 type GenerateSafeSpeakModelResponseOutput = {
@@ -39,6 +40,8 @@ type GenerateSafeSpeakModelResponseOutput = {
   guardrailStatus: GuardrailStatus;
   fallbackReason?: string;
   staticTemplateUsed: boolean;
+  consentSnapshot?: Record<string, unknown>;
+  intentConfidence?: 'high' | 'medium' | 'low';
 };
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -61,20 +64,6 @@ const extractOutputText = (payload: unknown): string => {
       .join('\n') ?? ''
   );
 };
-
-const buildSystemPrompt = (): string =>
-  [
-    'You are SafeSpeak Guide, a multilingual trauma-informed community safety navigation guide.',
-    'You are not a lawyer, therapist, police officer, counsellor, or emergency service.',
-    'Your job is to guide safely, explain pathways, reduce confusion, support documentation, and preserve user control.',
-    'Respond naturally and contextually. Do not use static templates. Do not repeat the same phrase unless necessary.',
-    'Use calm, plain language. Ask one question at a time.',
-    'For legal/pathway topics: information only, not legal advice. Do not decide legality, liability, guilt, outcomes, or whether someone has a case.',
-    'For evidence/upload topics: explain consent, storage, cloud sync, retention, and sharing only as relevant. Do not claim anything has been uploaded or shared.',
-    'For safety crisis: prioritise 000 or emergency support.',
-    'For meta-feedback or capability questions: answer the feedback directly and explain how SafeSpeak should behave.',
-    'Avoid: you should, you must, this proves, you have a case, definitely illegal, generic repeated trauma templates.'
-  ].join(' ');
 
 const validateGuardrails = (assistantMessage: string, nextQuestion: string): string | null => {
   const combined = `${assistantMessage} ${nextQuestion}`.trim();
@@ -121,7 +110,7 @@ export const buildMetaFeedbackFallbackResponse = (
   staticTemplateUsed: false
 });
 
-const callOpenAIForMetaFeedback = async (
+const callOpenAIForConversation = async (
   input: GenerateSafeSpeakModelResponseInput,
   strictRetry = false
 ): Promise<string> => {
@@ -136,22 +125,31 @@ const callOpenAIForMetaFeedback = async (
       input: [
         {
           role: 'system',
-          content: buildSystemPrompt()
+          content: [
+            'You are a helpful assistant.',
+            'Reply directly to the latest user message in natural plain text.',
+            'Do not wrap the reply in JSON, labels, or templates.',
+            'Use the user language when it is clear from the message.',
+            strictRetry ? 'Rewrite the reply more safely and concisely.' : 'Keep the reply natural and concise.'
+          ].join(' ')
         },
         {
           role: 'user',
           content: [
-            `Intent: ${input.intent}.`,
-            `Response mode: ${input.responseMode}.`,
-            `Language: ${input.detectedLanguage ?? 'en'}.`,
             input.conversationSummary ? `Conversation summary: ${input.conversationSummary}` : '',
             input.previousAssistantMessage
               ? `Previous assistant message: ${input.previousAssistantMessage}`
               : '',
+            input.intent ? `Detected intent: ${input.intent}.` : '',
+            input.responseMode ? `Conversation mode: ${input.responseMode}.` : '',
+            input.detectedLanguage ? `Detected language: ${input.detectedLanguage}.` : '',
+            input.consentSnapshot
+              ? `Consent snapshot: ${JSON.stringify(input.consentSnapshot)}`
+              : '',
             `Latest user message: ${input.userMessage}`,
             strictRetry
-              ? 'Rewrite the reply more safely. Keep it concise, natural, and ask at most one question.'
-              : 'Reply naturally, directly, and briefly. Acknowledge the feedback and explain that SafeSpeak should adapt to the actual question while keeping its safety boundaries.'
+              ? 'Rewrite the reply more safely. Keep it concise and natural.'
+              : 'Reply directly to the latest user message.'
           ]
             .filter(Boolean)
             .join('\n')
@@ -171,22 +169,18 @@ const callOpenAIForMetaFeedback = async (
 export const generateSafeSpeakModelResponse = async (
   input: GenerateSafeSpeakModelResponseInput
 ): Promise<GenerateSafeSpeakModelResponseOutput> => {
-  if (input.intent !== 'meta_feedback_or_capability_question') {
-    return buildMetaFeedbackFallbackResponse(input, 'unsupported_intent');
-  }
-
   if (!env.OPENAI_API_KEY) {
     return buildMetaFeedbackFallbackResponse(input, 'missing_openai_key');
   }
 
   try {
-    let assistantMessage = await callOpenAIForMetaFeedback(input);
+    let assistantMessage = await callOpenAIForConversation(input);
     let nextQuestion = '';
     let guardrailStatus: GuardrailStatus = 'passed';
     let guardrailFailure = validateGuardrails(assistantMessage, nextQuestion);
 
     if (guardrailFailure) {
-      assistantMessage = await callOpenAIForMetaFeedback(input, true);
+      assistantMessage = await callOpenAIForConversation(input, true);
       guardrailStatus = 'regenerated';
       guardrailFailure = validateGuardrails(assistantMessage, nextQuestion);
     }
@@ -214,7 +208,9 @@ export const generateSafeSpeakModelResponse = async (
       intent: input.intent,
       usedModelGeneration: true,
       guardrailStatus,
-      staticTemplateUsed: false
+      staticTemplateUsed: false,
+      consentSnapshot: input.consentSnapshot,
+      intentConfidence: input.intentConfidence
     };
   } catch (error) {
     return buildMetaFeedbackFallbackResponse(
