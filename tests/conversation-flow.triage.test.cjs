@@ -26,6 +26,7 @@ const {
   evaluateSafetyOverride,
   extractSupportFacts,
   extractStructuredTriageFacts,
+  buildContextualLegalFollowUpQuery,
   localizeKnownLegalLookupAnswer,
   shouldUseRagForIntent,
   shouldShowSources,
@@ -193,6 +194,24 @@ test('conversation flow uses rag-first retrieval for ordinary messages before mo
       responseMode: 'general_conversation'
     }),
     false
+  );
+});
+
+test('legal follow-up query keeps the previously named Act when the user says this Act', () => {
+  assert.equal(
+    buildContextualLegalFollowUpQuery({
+      query: 'Does this Act mention referendum pamphlets being translated?',
+      priorNamedLegislationReference: 'Referendum Legislation Amendment Act 1999'
+    }),
+    'Does this Act mention referendum pamphlets being translated? Referendum Legislation Amendment Act 1999'
+  );
+
+  assert.equal(
+    buildContextualLegalFollowUpQuery({
+      query: 'What did the Referendum Legislation Amendment Act 1999 change?',
+      priorNamedLegislationReference: 'Privacy Act 1988'
+    }),
+    'What did the Referendum Legislation Amendment Act 1999 change?'
   );
 });
 

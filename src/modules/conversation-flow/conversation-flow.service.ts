@@ -1729,7 +1729,12 @@ const retrieveConversationFlowRag = async (input: {
     | 'Internal';
   intent: string;
   detectedCategory?: ConversationFlowCategory;
+  priorNamedLegislationReference?: string;
 }): Promise<Awaited<ReturnType<typeof searchRag>>> => {
+  const effectiveQuery = buildContextualLegalFollowUpQuery({
+    query: input.query,
+    priorNamedLegislationReference: input.priorNamedLegislationReference
+  });
   const searchPlan = buildConversationFlowRagSearchPlan({
     intent: input.intent,
     detectedCategory: input.detectedCategory
@@ -1737,7 +1742,7 @@ const retrieveConversationFlowRag = async (input: {
 
   for (const attempt of searchPlan) {
     const results = await searchRag(input.context, {
-      query: input.query,
+      query: effectiveQuery,
       topK: 4,
       language: input.language,
       jurisdiction: input.jurisdiction,
@@ -1757,13 +1762,13 @@ const retrieveConversationFlowRag = async (input: {
     input.intent === 'legal_boundary_specific_case'
   ) {
     const targetedSourceIds = await findMatchingLegalSourceIdsForQuery({
-      query: input.query,
+      query: effectiveQuery,
       jurisdiction: input.jurisdiction
     });
 
     if (targetedSourceIds.length > 0) {
       return searchRag(input.context, {
-        query: input.query,
+        query: effectiveQuery,
         topK: 4,
         language: input.language,
         jurisdiction: input.jurisdiction,
@@ -1790,6 +1795,48 @@ const extractNamedLegislationReferences = (query: string): string[] =>
         .filter(Boolean)
     )
   );
+
+const hasContextualActReference = (query: string): boolean =>
+  /\b(this|that|the)\s+(act|regulation|code|charter|law|legislation)\b/i.test(query);
+
+export const buildContextualLegalFollowUpQuery = (input: {
+  query: string;
+  priorNamedLegislationReference?: string;
+}): string => {
+  const query = collapseWhitespace(input.query);
+
+  if (!query) {
+    return query;
+  }
+
+  if (extractNamedLegislationReferences(query).length > 0) {
+    return query;
+  }
+
+  if (!input.priorNamedLegislationReference || !hasContextualActReference(query)) {
+    return query;
+  }
+
+  return `${query} ${input.priorNamedLegislationReference}`.trim();
+};
+
+const resolvePriorNamedLegislationReference = (
+  messages: Array<{ role?: string; content?: string }>
+): string | undefined => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message.content !== 'string') {
+      continue;
+    }
+
+    const references = extractNamedLegislationReferences(message.content);
+    if (references.length > 0) {
+      return references[0];
+    }
+  }
+
+  return undefined;
+};
 
 const findMatchingLegalSourceIdsForQuery = async (input: {
   query: string;
@@ -5007,6 +5054,12 @@ export const appendConversationFlowMessage = async (
   } else {
     const consent = await getCurrentConsent(context.owner);
     currentConsentSnapshot = consent;
+    const priorNamedLegislationReference = resolvePriorNamedLegislationReference(
+      existingMessages.map((message) => ({
+        role: message.role,
+        content: message.content
+      }))
+    );
     const ragRequired = shouldUseRagForIntent({
       intent: selectedIntent,
       message: input.content,
@@ -5040,7 +5093,8 @@ export const appendConversationFlowMessage = async (
             | 'Internal'
             | undefined) ?? 'AU',
           intent: selectedIntent,
-          detectedCategory
+          detectedCategory,
+          priorNamedLegislationReference
         });
 
         ragContext = toRagSnippets(ragResults);
