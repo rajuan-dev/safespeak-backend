@@ -58,7 +58,7 @@ const envSchema = z
     MEDIA_ASSET_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(2097152),
     OPENAI_API_KEY: optionalString(z.string().min(1)),
     OPENAI_MODEL: z.string().min(1).default('gpt-5.2'),
-    AI_RESPONSE_MODE: z.enum(['safespeak_model', 'raw_dev']).default('safespeak_model'),
+    AI_RESPONSE_MODE: z.enum(['safespeak_model', 'natural']).default('safespeak_model'),
     OPENAI_EMBEDDING_MODEL: z.string().min(1).default('text-embedding-3-large'),
     OPENAI_TRANSCRIPTION_MODEL: z.string().min(1).default('gpt-4o-transcribe'),
     OPENAI_TTS_MODEL: z.string().min(1).default('gpt-4o-mini-tts'),

@@ -30,7 +30,7 @@ type OpenAiResponseSource =
   | 'model_empty_fallback';
 
 export type GenerateSafeSpeakResponseInput = {
-  mode?: 'safespeak_model' | 'raw_dev';
+  mode?: 'safespeak_model' | 'natural';
   model?: string;
   intent: string;
   intentConfidence?: 'high' | 'medium' | 'low';
@@ -69,7 +69,7 @@ export type GenerateSafeSpeakResponseOutput = {
   reviewStatus: string;
   responseMode:
     | 'safespeak_model'
-    | 'raw_dev'
+    | 'natural'
     | 'emergency_minimum_fallback'
     | 'guardrail_fallback'
     | 'model_empty_fallback';
@@ -142,6 +142,21 @@ const buildRagPromptSection = (ragContext: SafeSpeakRagSnippet[]): string =>
 
 type PromptStyle = 'default' | 'strict' | 'compact';
 
+const buildNaturalUserPrompt = (input: GenerateSafeSpeakResponseInput): string => {
+  const sections = [
+    `Conversation summary: ${input.context.conversationSummary || 'No prior context.'}`,
+    `Latest user message: ${input.latestUserMessage}`
+  ];
+
+  if (input.ragContext && input.ragContext.length > 0) {
+    sections.push(buildRagPromptSection(input.ragContext));
+  }
+
+  sections.push('Reply directly to the latest user message in plain text.');
+
+  return sections.join('\n');
+};
+
 const buildBasePromptSections = (
   input: GenerateSafeSpeakResponseInput,
   promptStyle: PromptStyle = 'default'
@@ -179,17 +194,19 @@ const buildUserPrompt = (
   input: GenerateSafeSpeakResponseInput,
   promptStyle: PromptStyle = 'default'
 ): string =>
-  [
-    ...buildBasePromptSections(input, promptStyle),
-    promptStyle === 'strict'
-      ? buildGuardrailRevisionInstruction({
-          intent: input.intent,
-          latestUserMessage: input.latestUserMessage
-        })
-      : promptStyle === 'compact'
-        ? 'Write one brief, natural SafeSpeak reply in plain text. Do not output JSON.'
-      : 'Write the final assistant reply naturally. Do not output JSON.'
-  ].join('\n');
+  (input.mode ?? env.AI_RESPONSE_MODE) === 'natural'
+    ? buildNaturalUserPrompt(input)
+    : [
+        ...buildBasePromptSections(input, promptStyle),
+        promptStyle === 'strict'
+          ? buildGuardrailRevisionInstruction({
+              intent: input.intent,
+              latestUserMessage: input.latestUserMessage
+            })
+          : promptStyle === 'compact'
+            ? 'Write one brief, natural SafeSpeak reply in plain text. Do not output JSON.'
+            : 'Write the final assistant reply naturally. Do not output JSON.'
+      ].join('\n');
 
 const shouldPreferParagraphs = (input: GenerateSafeSpeakResponseInput): boolean => {
   if (
@@ -255,7 +272,7 @@ const getResponseSystemPrompt = (
   input: GenerateSafeSpeakResponseInput,
   mode: GenerateSafeSpeakResponseInput['mode']
 ): string =>
-  mode === 'raw_dev'
+  mode === 'natural'
     ? buildRawDevSystemPrompt()
     : getSafeSpeakSystemPrompt(input.context.detectedLanguage);
 
@@ -384,7 +401,7 @@ const callOpenAI = async (
     model: input.model ?? env.OPENAI_MODEL,
     systemPrompt: getResponseSystemPrompt(input, mode),
     userPrompt: buildUserPrompt(input, promptStyle),
-    temperature: mode === 'raw_dev' ? 0.7 : 0.4
+    temperature: mode === 'natural' ? 0.7 : 0.4
   });
 };
 
@@ -398,7 +415,7 @@ const rewriteCompactOpenAI = async (
     model: input.model ?? env.OPENAI_MODEL,
     systemPrompt: getResponseSystemPrompt(input, mode),
     userPrompt: buildCompactRewritePrompt(input, previousAnswer),
-    temperature: mode === 'raw_dev' ? 0.7 : 0.4
+    temperature: mode === 'natural' ? 0.7 : 0.4
   });
 };
 
@@ -412,7 +429,7 @@ const rewriteProgressiveDisclosureOpenAI = async (
     model: input.model ?? env.OPENAI_MODEL,
     systemPrompt: getResponseSystemPrompt(input, mode),
     userPrompt: buildProgressiveDisclosureRewritePrompt(input, previousAnswer),
-    temperature: mode === 'raw_dev' ? 0.7 : 0.4
+    temperature: mode === 'natural' ? 0.7 : 0.4
   });
 };
 
@@ -524,7 +541,7 @@ export const generateSafeSpeakResponse = async (
       ? 'compact'
       : 'strict';
   const responseSourceBase: OpenAiResponseSource =
-    mode === 'raw_dev'
+    mode === 'natural'
       ? 'raw_openai_model'
       : ragStatus === 'retrieved'
         ? 'openai_model_with_rag'
@@ -585,6 +602,41 @@ export const generateSafeSpeakResponse = async (
         intentConfidence: input.intentConfidence,
         classifierSource: input.classifierSource
       });
+    }
+
+    if (mode === 'natural') {
+      const responseSource: OpenAiResponseSource = 'raw_openai_model';
+
+      return {
+        assistantMessage: normalizeAssistantContent(assistantMessage),
+        nextQuestion: '',
+        readyForSubmission: false,
+        confidence: 'medium',
+        disclaimer: buildInformationOnlyDisclaimer(),
+        citations,
+        showSources: ragStatus === 'retrieved',
+        sourceDisplayReason: ragStatus === 'retrieved' ? 'legal_lookup' : 'hidden_support_reply',
+        rag: {
+          used: ragContext.length > 0,
+          unavailable: ragStatus === 'required_but_no_sources_found',
+          resultCount: ragContext.length
+        },
+        reviewStatus: input.intent,
+        responseMode: mode,
+        intent: input.intent,
+        usedModelGeneration: true,
+        guardrailStatus: 'passed',
+        fallbackReason: undefined,
+        staticTemplateUsed: false,
+        consentSnapshot: input.context.consentSnapshot,
+        intentConfidence: input.intentConfidence,
+        classifierSource: input.classifierSource,
+        responseSource,
+        model,
+        jurisdiction: 'AU',
+        ragStatus,
+        selectedResponseSource: responseSource
+      };
     }
 
     let guardrailStatus: GuardrailStatus = 'passed';
@@ -715,9 +767,7 @@ export const generateSafeSpeakResponse = async (
     }
 
     const responseSource: OpenAiResponseSource =
-      guardrailStatus === 'regenerated' && mode !== 'raw_dev'
-        ? 'openai_model_regenerated'
-        : responseSourceBase;
+      guardrailStatus === 'regenerated' ? 'openai_model_regenerated' : responseSourceBase;
 
     return {
       assistantMessage: normalizeAssistantContent(assistantMessage),

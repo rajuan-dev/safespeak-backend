@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { env } = require('../src/config/env.ts');
 
 const {
   buildConversationFlowCategoryLabel,
@@ -60,6 +61,8 @@ const {
   resolveAssistantLanguage,
 } = require('../src/modules/ai/assistant-language.ts');
 
+env.AI_RESPONSE_MODE = 'safespeak_model';
+
 const LEGACY_RUNTIME_REPLY_PATTERNS = [
   /Thank you for telling me about this/i,
   /You do not need to explain everything at once/i,
@@ -77,7 +80,9 @@ const createModelContext = ({
   detectedLanguage = 'en',
   assistantFormatPreference = 'paragraphs',
   ragContext = [],
-  safetyContext = {}
+  safetyContext = {},
+  conversationSummary,
+  activeIncidentSummary = 'None recorded.'
 }) => ({
   app: 'SafeSpeak',
   persona: 'SafeSpeak Guide',
@@ -93,8 +98,8 @@ const createModelContext = ({
   },
   ragStatus: ragContext.length > 0 ? 'retrieved' : 'not_required',
   assistantFormatPreference,
-  conversationSummary: `user: ${latestUserMessage}`,
-  activeIncidentSummary: 'None recorded.',
+  conversationSummary: conversationSummary ?? `user: ${latestUserMessage}`,
+  activeIncidentSummary,
   consentSnapshot: {
     store_local: false,
     cloud_sync: false,
@@ -1357,6 +1362,7 @@ test('smart general answer gives a useful overview without role claims', async (
   }
 });
 
+
 test('ambiguous follow-up continues the prior explanation instead of re-asking the topic', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({
@@ -1840,6 +1846,85 @@ test('too-long model output uses compact retry prompt and returns regenerated mo
     assert.equal(reply.usedModelGeneration, true);
     assert.equal(reply.staticTemplateUsed, false);
     assert.notEqual(reply.responseMode, 'guardrail_fallback');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('natural mode uses a minimal raw prompt instead of SafeSpeak context bundles', async () => {
+  const originalFetch = global.fetch;
+  const requestBodies = [];
+  global.fetch = async (_url, options) => {
+    requestBodies.push(JSON.parse(options.body));
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text: 'Hey. How can I help?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      mode: 'natural',
+      intent: 'general_conversation',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'hi',
+      context: createModelContext({
+        latestUserMessage: 'hi',
+        intent: 'general_conversation',
+        conversationSummary: 'user: hi'
+      })
+    });
+
+    assert.equal(requestBodies.length, 1);
+    assert.match(requestBodies[0].input[0].content, /helpful assistant|Reply naturally and directly/i);
+    assert.match(requestBodies[0].input[1].content, /Conversation summary: user: hi/);
+    assert.match(requestBodies[0].input[1].content, /Latest user message: hi/);
+    assert.doesNotMatch(requestBodies[0].input[1].content, /SafeSpeak context JSON|Intent policy|Response plan/i);
+    assert.equal(reply.responseMode, 'natural');
+    assert.equal(reply.responseSource, 'raw_openai_model');
+    assert.equal(reply.guardrailStatus, 'passed');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('natural mode does not rewrite long answers through SafeSpeak guardrail repair', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          'You can start by putting the photos in date order, naming them clearly, keeping a short note about what each one shows, and storing them somewhere you control. If it helps, I can also suggest a simple folder structure and a naming pattern that makes them easier to review later without changing the originals.'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      mode: 'natural',
+      intent: 'evidence_upload',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'How can I organize photos as evidence?',
+      context: createModelContext({
+        latestUserMessage: 'How can I organize photos as evidence?',
+        intent: 'evidence_upload'
+      })
+    });
+
+    assert.equal(callCount, 1);
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.responseSource, 'raw_openai_model');
+    assert.equal(reply.guardrailStatus, 'passed');
+    assert.match(reply.assistantMessage, /folder structure|naming pattern/i);
   } finally {
     global.fetch = originalFetch;
   }
