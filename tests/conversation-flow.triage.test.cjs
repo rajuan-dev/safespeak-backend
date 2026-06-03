@@ -29,6 +29,13 @@ const {
   composeEvidenceUploadResponse,
 } = require('../src/modules/ai/response-composer.ts');
 const {
+  classifySafeSpeakIntent,
+  detectMetaFeedbackOrCapabilityQuestion,
+} = require('../src/modules/ai/intent-classifier.ts');
+const {
+  buildMetaFeedbackFallbackResponse,
+} = require('../src/modules/ai/model-response.service.ts');
+const {
   ASSISTANT_LANGUAGE_REGISTRY,
   resolveAssistantLanguage,
 } = require('../src/modules/ai/assistant-language.ts');
@@ -87,6 +94,38 @@ test('evidence upload intent is detected for screenshot upload questions', () =>
 
   assert.equal(detectEvidenceUploadIntent(message), true);
   assert.equal(responseMode, 'evidence_upload_intent');
+});
+
+test('meta feedback messages are not misclassified as incident support', () => {
+  const message = 'it is wrong. you should be smart exactly like chatgpt.';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(detectMetaFeedbackOrCapabilityQuestion(message), true);
+  assert.equal(classifySafeSpeakIntent(message), 'meta_feedback_or_capability_question');
+  assert.equal(responseMode, 'meta_feedback');
+});
+
+test('meta feedback fallback stays natural and avoids trauma-template wording', () => {
+  const reply = buildMetaFeedbackFallbackResponse({
+    intent: 'meta_feedback_or_capability_question',
+    userMessage: 'why are you repeating the same thing?',
+    responseMode: 'meta_feedback',
+    previousAssistantMessage:
+      'Thank you for telling me about this. You do not need to explain everything at once.'
+  });
+  const metadata = buildAssistantMessageMetadata(reply);
+  const combined = `${reply.assistantMessage} ${reply.nextQuestion}`.trim();
+
+  assert.match(reply.assistantMessage, /too scripted|respond to what you actually ask|actual question/i);
+  assert.doesNotMatch(combined, /Thank you for telling me about this|what happened/i);
+  assert.equal(metadata.responseMode, 'meta_feedback');
+  assert.equal(metadata.usedModelGeneration, false);
+  assert.equal(metadata.guardrailStatus, 'fallback');
+  assert.equal(metadata.staticTemplateUsed, false);
 });
 
 test('evidence upload consent reply is direct, privacy-first, and metadata-ready', () => {
@@ -287,7 +326,7 @@ test('ai analysis question explains ai consent only when asked', () => {
     }
   });
   const aiReply = composeEvidenceUploadResponse({
-    userMessage: 'Will AI analyse my screenshot?',
+    userMessage: 'Will AI analyse my screenshot if I upload it?',
     consent: {
       store_local: true,
       cloud_sync: false,
@@ -303,9 +342,77 @@ test('ai analysis question explains ai consent only when asked', () => {
       priorEvidenceUploadTurns: 0,
     }
   });
+  const aiMetadata = buildAssistantMessageMetadata(aiReply);
 
   assert.doesNotMatch(normalReply.assistantMessage, /AI processing is enabled|analyse/i);
-  assert.match(aiReply.assistantMessage, /AI processing is enabled|automatically trigger AI analysis|choose an AI step/i);
+  assert.match(aiReply.assistantMessage, /Only if you choose|should only analyse|does not automatically trigger AI analysis/i);
+  assert.match(aiReply.assistantMessage, /AI processing is enabled/i);
+  assert.match(aiReply.nextQuestion, /without AI analysis|decide about AI analysis later/i);
+  assert.doesNotMatch(aiReply.assistantMessage, /has been analys|was analysed/i);
+  assert.equal(aiReply.responseVariant, 'ai_analysis_question');
+  assert.equal(aiMetadata.subIntent, 'ai_analysis_question');
+  assert.equal(aiMetadata.consentSnapshot.process_with_ai, true);
+});
+
+test('ai analysis question with process_with_ai off keeps evidence separate from ai', () => {
+  const aiReply = composeEvidenceUploadResponse({
+    userMessage: 'Will AI analyze my screenshot if I upload it?',
+    consent: {
+      store_local: true,
+      cloud_sync: false,
+      share_with_agencies: false,
+      use_anonymised_analytics: false,
+      process_with_ai: false,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    conversationState: {
+      priorEvidenceUploadTurns: 0,
+    }
+  });
+  const combined = `${aiReply.assistantMessage} ${aiReply.nextQuestion}`;
+  const aiMetadata = buildAssistantMessageMetadata(aiReply);
+
+  assert.match(combined, /AI processing is off|do not allow AI processing|should not analyse/i);
+  assert.match(combined, /does not automatically trigger AI analysis|not automatically make SafeSpeak analyse/i);
+  assert.match(aiReply.nextQuestion, /evidence only/i);
+  assert.equal(aiMetadata.subIntent, 'ai_analysis_question');
+  assert.equal(aiMetadata.consentSnapshot.process_with_ai, false);
+});
+
+test('high-risk ai analysis question keeps ai choice question and adds short 000 reminder', () => {
+  const aiReply = composeEvidenceUploadResponse({
+    userMessage: 'If I upload it, will AI read my screenshot?',
+    consent: {
+      store_local: true,
+      cloud_sync: false,
+      share_with_agencies: false,
+      use_anonymised_analytics: false,
+      process_with_ai: true,
+      transcribe_audio: false,
+      translate_content: false,
+      retain_evidence: false,
+      warm_referral: false
+    },
+    activeIncident: {
+      matchedFacts: ['death threats'],
+      platforms: ['Facebook'],
+      threatPresent: true,
+      immediateDanger: true,
+    },
+    latestTurnRiskLevel: 'urgent',
+    activeIncidentRiskLevel: 'high',
+    conversationState: {
+      priorEvidenceUploadTurns: 0,
+    }
+  });
+
+  assert.match(aiReply.assistantMessage, /Only if you choose|should only analyse/i);
+  assert.match(aiReply.assistantMessage, /call 000/i);
+  assert.match(aiReply.nextQuestion, /without AI analysis|AI analysis later/i);
+  assert.equal((`${aiReply.assistantMessage} ${aiReply.nextQuestion}`.match(/\?/g) ?? []).length, 1);
 });
 
 test('dynamic support reply handles blackmail paraphrase without source footer', () => {

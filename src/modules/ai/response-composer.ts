@@ -11,6 +11,7 @@ export type EvidenceResponseVariant =
   | 'high_risk_context'
   | 'cloud_sync_on'
   | 'agency_sharing_on'
+  | 'ai_analysis_question'
   | 'generic_evidence';
 
 export type EvidenceComposerInput = {
@@ -50,6 +51,7 @@ type EvidenceComposerOutput = {
   reviewStatus: 'evidence_upload_intent';
   intent: 'evidence_upload_intent';
   responseMode: 'evidence_consent';
+  subIntent?: 'ai_analysis_question';
   intentConfidence: 'high';
   responseVariant: EvidenceResponseVariant;
   consentSnapshot: EvidenceConsentSnapshot;
@@ -113,9 +115,21 @@ const getObjectPronoun = (evidenceLabel: string): 'them' | 'it' =>
 const getSubjectPronoun = (evidenceLabel: string): 'they' | 'it' =>
   usesPluralPronoun(evidenceLabel) ? 'they' : 'it';
 
-const asksAboutAiAnalysis = (message: string): boolean =>
-  /\b(ai|artificial intelligence)\b/i.test(message) &&
-  /\b(analy[sz]e|process|read|look at|review|scan|check)\b/i.test(message);
+const asksAboutAiAnalysis = (message: string): boolean => {
+  const normalized = collapseWhitespace(message).toLowerCase();
+
+  return [
+    /\bwill ai analy[sz]e\b/,
+    /\bwill you analy[sz]e\b/,
+    /\bdoes ai check\b/,
+    /\bwill safespeak analy[sz]e\b/,
+    /\bif i upload (it|them|this).+will ai\b/,
+    /\bai read\b/,
+    /\bai process\b/,
+    /\b(ai|artificial intelligence)\b.*\b(analy[sz]e|process|read|look at|review|scan|check)\b/,
+    /\b(analy[sz]e|process|read|look at|review|scan|check)\b.*\b(ai|artificial intelligence|safespeak)\b/
+  ].some((pattern) => pattern.test(normalized));
+};
 
 const hasHighRiskContext = (input: EvidenceComposerInput): boolean => {
   const combinedRisk = [
@@ -134,6 +148,10 @@ const hasHighRiskContext = (input: EvidenceComposerInput): boolean => {
 };
 
 const getResponseVariant = (input: EvidenceComposerInput, consent: EvidenceConsentSnapshot) => {
+  if (asksAboutAiAnalysis(input.userMessage)) {
+    return 'ai_analysis_question' as const;
+  }
+
   if (hasHighRiskContext(input)) {
     return 'high_risk_context' as const;
   }
@@ -172,7 +190,7 @@ const getDirectAnswer = (
           [
             `Only if you choose to use an AI feature for ${objectPronoun}.`,
             `Not by default. SafeSpeak should only analyse ${objectPronoun} if you choose an AI step.`,
-            `Only when you choose that. Uploading ${objectPronoun} does not automatically trigger AI analysis.`
+            `Only if you choose that. Uploading ${objectPronoun} does not automatically trigger AI analysis.`
           ],
           seed
         )
@@ -322,6 +340,24 @@ const getQuestion = (
   const objectPronoun = getObjectPronoun(evidenceLabel);
   const seed = `${variant}|question|${userMessage}`;
 
+  if (asksAboutAiAnalysis(userMessage)) {
+    return consent.process_with_ai
+      ? pickFrom(
+          [
+            `Would you like to upload ${objectPronoun} without AI analysis for now?`,
+            `Would you like to keep ${objectPronoun} as evidence first and decide about AI analysis later?`
+          ],
+          seed
+        )
+      : pickFrom(
+          [
+            `Would you like to keep ${objectPronoun} as evidence only for now?`,
+            `Would you like to upload ${objectPronoun} without AI analysis and keep it as evidence only?`
+          ],
+          seed
+        );
+  }
+
   if (!consent.cloud_sync && consent.store_local) {
     return pickFrom(
       [
@@ -381,21 +417,22 @@ export const composeEvidenceUploadResponse = (
   const consentSnapshot = toConsentSnapshot(input.consent);
   const evidenceLabel = getEvidenceLabel(input.userMessage);
   const responseVariant = getResponseVariant(input, consentSnapshot);
+  const aiAnalysisQuestion = asksAboutAiAnalysis(input.userMessage);
   const parts = [
     getDirectAnswer(input, evidenceLabel, responseVariant),
     getSharingSentence(evidenceLabel, consentSnapshot, responseVariant, input.userMessage),
     getStorageSentence(evidenceLabel, consentSnapshot, responseVariant, input.userMessage)
   ];
 
-  if (!asksAboutAiAnalysis(input.userMessage) || !consentSnapshot.process_with_ai) {
+  if (!aiAnalysisQuestion || !consentSnapshot.process_with_ai) {
     parts.push(getRetentionSentence(evidenceLabel, consentSnapshot, responseVariant, input.userMessage));
   }
 
-  if (asksAboutAiAnalysis(input.userMessage)) {
+  if (aiAnalysisQuestion) {
     parts.push(
       consentSnapshot.process_with_ai
         ? 'AI processing is enabled in your settings, but SafeSpeak should still only analyse the file if you choose an AI step.'
-        : 'AI processing is off in your settings, so SafeSpeak should not analyse the file unless you enable that later.'
+        : 'Uploading the file should not automatically make SafeSpeak analyse it. AI processing is off in your settings, so SafeSpeak should not analyse the file unless you enable that later.'
     );
   }
 
@@ -431,6 +468,7 @@ export const composeEvidenceUploadResponse = (
     reviewStatus: 'evidence_upload_intent',
     intent: 'evidence_upload_intent',
     responseMode: 'evidence_consent',
+    subIntent: aiAnalysisQuestion ? 'ai_analysis_question' : undefined,
     intentConfidence: 'high',
     responseVariant,
     consentSnapshot

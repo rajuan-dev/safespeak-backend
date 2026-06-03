@@ -2,6 +2,8 @@ import { StatusCodes } from 'http-status-codes';
 import { Types, type HydratedDocument } from 'mongoose';
 
 import { ApiError } from '@common/errors/ApiError';
+import { classifySafeSpeakIntent } from '@modules/ai/intent-classifier';
+import { generateSafeSpeakModelResponse } from '@modules/ai/model-response.service';
 import { composeEvidenceUploadResponse } from '@modules/ai/response-composer';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
@@ -260,6 +262,7 @@ type ConversationAssistantResponseMode =
   | 'legal_lookup'
   | 'triage_handoff'
   | 'evidence_upload_intent'
+  | 'meta_feedback'
   | 'support_victim_style'
   | 'scamshield_style'
   | 'emergency_safety'
@@ -665,6 +668,10 @@ export const classifyResponseMode = (input: {
 
   if (detectEvidenceUploadIntent(input.message)) {
     return 'evidence_upload_intent';
+  }
+
+  if (classifySafeSpeakIntent(input.message) === 'meta_feedback_or_capability_question') {
+    return 'meta_feedback';
   }
 
   if (
@@ -1442,12 +1449,32 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
     metadata.responseMode = assistantPayload.responseMode;
   }
 
+  if (typeof assistantPayload.subIntent === 'string') {
+    metadata.subIntent = assistantPayload.subIntent;
+  }
+
   if (typeof assistantPayload.intentConfidence === 'string') {
     metadata.intentConfidence = assistantPayload.intentConfidence;
   }
 
   if (typeof assistantPayload.responseVariant === 'string') {
     metadata.responseVariant = assistantPayload.responseVariant;
+  }
+
+  if (typeof assistantPayload.usedModelGeneration === 'boolean') {
+    metadata.usedModelGeneration = assistantPayload.usedModelGeneration;
+  }
+
+  if (typeof assistantPayload.guardrailStatus === 'string') {
+    metadata.guardrailStatus = assistantPayload.guardrailStatus;
+  }
+
+  if (typeof assistantPayload.fallbackReason === 'string') {
+    metadata.fallbackReason = assistantPayload.fallbackReason;
+  }
+
+  if (typeof assistantPayload.staticTemplateUsed === 'boolean') {
+    metadata.staticTemplateUsed = assistantPayload.staticTemplateUsed;
   }
 
   if (
@@ -2571,6 +2598,32 @@ const buildFallbackAssistantResponse = (
         resultCount: 0
       },
       reviewStatus: 'fallback_local'
+    };
+  }
+
+  if (responseMode === 'meta_feedback') {
+    return {
+      assistantMessage:
+        'You are right — that sounded too scripted. SafeSpeak should respond to the actual question while still keeping the safety, privacy, consent, and legal boundaries in place.',
+      nextQuestion: 'Would you like to continue testing the chat behavior?',
+      readyForSubmission: false,
+      confidence: 'medium' as const,
+      disclaimer: 'This is information only, not legal advice.',
+      citations: [],
+      showSources: false,
+      sourceDisplayReason: 'hidden_support_reply',
+      rag: {
+        used: false,
+        unavailable: false,
+        resultCount: 0
+      },
+      reviewStatus: 'meta_feedback_or_capability_question',
+      intent: 'meta_feedback_or_capability_question',
+      responseMode: 'meta_feedback',
+      usedModelGeneration: false,
+      guardrailStatus: 'fallback',
+      fallbackReason: 'model_generation_unavailable',
+      staticTemplateUsed: false
     };
   }
 
@@ -4303,6 +4356,27 @@ export const appendConversationFlowMessage = async (
             .reverse()
             .find((message) => message.role === 'assistant')?.content ?? undefined
       }
+    });
+  } else if (responseMode === 'meta_feedback') {
+    assistantPayload = await generateSafeSpeakModelResponse({
+      intent: 'meta_feedback_or_capability_question',
+      userMessage: input.content,
+      conversationSummary: conversationForAssistant
+        .slice(-4)
+        .map((message) => `${message.role}: ${message.content}`)
+        .join('\n'),
+      consentSnapshot: await getCurrentConsent(context.owner),
+      detectedLanguage: assistantLanguage,
+      safetyContext: {
+        safetyLevel: safetyOverride.safetyLevel,
+        safetyOverride: safetyOverride.safetyOverride
+      },
+      responseMode: 'meta_feedback',
+      previousAssistantMessage:
+        existingMessages
+          .slice()
+          .reverse()
+          .find((message) => message.role === 'assistant')?.content ?? undefined
     });
   } else if (responseMode !== 'legal_lookup') {
     assistantPayload = buildSupportReply({
