@@ -5,6 +5,10 @@ import type {
   SafeSpeakIntent,
   SafeSpeakIntentClassification
 } from './intent-classifier';
+import {
+  getSafeSpeakIntentPolicy,
+  type SafeSpeakIntentPolicy
+} from './safespeak-intent-policy';
 
 export type SafeSpeakRagSnippet = {
   sourceTitle: string;
@@ -44,10 +48,13 @@ export type SafeSpeakConsentContext = Pick<
 
 export type SafeSpeakModelContext = {
   app: 'SafeSpeak';
+  persona: 'SafeSpeak Guide';
   jurisdiction: 'AU';
   latestUserMessage: string;
   detectedLanguage: string;
   intent: SafeSpeakIntent;
+  intentPolicy: SafeSpeakIntentPolicy;
+  ragStatus: SafeSpeakRagStatus;
   assistantFormatPreference?: 'paragraphs' | 'bullets' | 'mix';
   conversationSummary: string;
   activeIncidentSummary: string;
@@ -69,6 +76,7 @@ export type SafeSpeakContextBuilderInput = {
     relevantSupport?: string[];
   };
   ragContext?: SafeSpeakRagSnippet[];
+  ragStatus?: SafeSpeakRagStatus;
   userSelectedTopic?: string;
   assistantFormatPreference?: 'paragraphs' | 'bullets' | 'mix';
 };
@@ -94,65 +102,23 @@ const toConsentContext = (
   warm_referral: Boolean(input?.warm_referral)
 });
 
-const buildIntentSpecificConstraints = (
-  intent: SafeSpeakIntent,
-  input: SafeSpeakContextBuilderInput
-): string[] => {
-  switch (intent) {
-    case 'general_conversation':
-      return [
-        'General conversation: answer naturally and briefly.',
-        'Do not force triage.',
-        'Do not use trauma-informed harm language unless the user described harm.'
-      ];
-    case 'meta_feedback':
-      return [
-        'Meta-feedback: acknowledge the feedback naturally and briefly.',
-        'Do not trigger triage.',
-        'Do not sound defensive or technical.'
-      ];
-    case 'physical_harm':
-      return [
-        'Physical harm: keep the response short.',
-        'Mention 000 only if immediate danger, serious injury, or urgent risk is relevant in the context.',
-        'Ask only one safety question.',
-        'Do not give a long checklist unless the user asked for steps.'
-      ];
-    case 'evidence_upload':
-      return [
-        'Evidence upload: keep the response short.',
-        'Do not imply anything was automatically uploaded, saved, shared, sent, retained, or synced.',
-        'Mention consent only when relevant to the user question or current consent state.',
-        'Avoid legal-strategy wording.',
-        'Ask only one question.'
-      ];
-    case 'legal_boundary':
-      return [
-        'Legal boundary: do not answer legality directly.',
-        'Do not decide criminality, liability, or whether the user can sue.',
-        'Do not say "you can sue", "suing is an option", or "criminal matter" as a conclusion.',
-        'Include the concept that SafeSpeak provides information only, not legal advice.',
-        input.ragContext?.length
-          ? 'Use the available RAG context to explain information pathways cautiously.'
-          : 'If jurisdiction or legal context is missing, ask one minimal jurisdiction or context question.'
-      ];
-    default:
-      return [];
-  }
-};
-
 export const buildSafeSpeakContext = (
   input: SafeSpeakContextBuilderInput
 ): SafeSpeakModelContext => {
   const ragContext = input.ragContext ?? [];
   const intent = input.intentClassification.intent;
+  const ragStatus = input.ragStatus ?? (ragContext.length > 0 ? 'retrieved' : 'not_required');
+  const intentPolicy = getSafeSpeakIntentPolicy(intent);
 
   return {
     app: 'SafeSpeak',
+    persona: 'SafeSpeak Guide',
     jurisdiction: 'AU',
     latestUserMessage: input.latestUserMessage,
     detectedLanguage: input.detectedLanguage,
     intent,
+    intentPolicy,
+    ragStatus,
     assistantFormatPreference: input.assistantFormatPreference,
     conversationSummary: summarize(input.conversationSummary),
     activeIncidentSummary: summarize(input.activeIncidentSummary),
@@ -171,14 +137,17 @@ export const buildSafeSpeakContext = (
     userSelectedTopic: input.userSelectedTopic,
     constraints: [
       'Respond naturally to the latest user message.',
+      'Never sound scripted and never reuse fixed wording.',
+      'Preserve user control and give options, not orders.',
       'Use short natural paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
       'Use bullet points only when there are multiple concrete safety steps, evidence steps, or comparison options. Do not default to bullets.',
       'Do not claim any upload, sharing, saving, syncing, or agency contact already happened unless confirmed by backend action.',
       'Use Australian emergency guidance only: 000.',
       'Ask at most one user-facing question.',
+      'Keep legal content information-only and never invent citations.',
       'For evidence messages, keep the answer short, low-pressure, consent-aware, and documentation-focused.',
       'Avoid legal-strategy phrases like hard to dispute, prove your case, build your case, strong evidence, or use this against them.',
-      ...buildIntentSpecificConstraints(intent, { ...input, ragContext })
+      ...intentPolicy.guidance
     ]
   };
 };

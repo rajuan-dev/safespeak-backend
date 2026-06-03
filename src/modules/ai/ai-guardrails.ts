@@ -11,13 +11,15 @@ const LEGAL_ADVICE_RISK_PATTERNS = [
   /\byou should sue\b/i,
   /\byou must sue\b/i,
   /\byou have a case\b/i,
-  /\bthis is illegal\b/i,
-  /\bthat is illegal\b/i,
+  /\bthis is definitely illegal\b/i,
+  /\bthat is definitely illegal\b/i,
   /\bthey broke the law\b/i,
   /\byou will win\b/i,
   /\byou are entitled to compensation\b/i,
   /\bcriminal matter\b/i,
-  /\bpolice handle this\b/i
+  /\bpolice handle this\b/i,
+  /\byou must\b/i,
+  /\byou need to\b/i
 ];
 
 const CLINICAL_ADVICE_RISK_PATTERNS = [
@@ -73,8 +75,11 @@ const FALSE_ACTION_CLAIM_PATTERNS = [
   /\bwe uploaded\b/i,
   /\bsafespeak uploaded\b/i,
   /\bi shared this\b/i,
+  /\bi sent it to an agency\b/i,
   /\bi sent this to police\b/i,
   /\bi contacted an agency\b/i,
+  /\bi contacted police\b/i,
+  /\bi analy[sz]ed the file\b/i,
   /\byour evidence has been saved\b/i,
   /\byour evidence has been synced\b/i,
   /\byour (?:photo|photos|file|files|evidence) (?:has|have) been (?:uploaded|saved|shared|sent|synced)\b/i,
@@ -85,7 +90,8 @@ const ROLE_VIOLATION_PATTERNS = [
   /\bi am your counsellor\b/i,
   /\bi diagnosed\b/i,
   /\bi can represent you\b/i,
-  /\bi will manage your case\b/i
+  /\bi will manage your case\b/i,
+  /\bi contacted police\b/i
 ];
 const SAFETY_PROMISE_PATTERNS = [/\byou are safe now\b/i, /\beverything will be okay\b/i];
 const EVIDENCE_LEGAL_STRATEGY_PATTERNS = [
@@ -93,7 +99,8 @@ const EVIDENCE_LEGAL_STRATEGY_PATTERNS = [
   /\bstrong evidence\b/i,
   /\bprove your case\b/i,
   /\bbuild your case\b/i,
-  /\buse this against them\b/i
+  /\buse this against them\b/i,
+  /\bthis proves\b/i
 ];
 const BULLET_LINE_PATTERN = /^\s*(?:[-*•]|\d+\.)\s+/gm;
 
@@ -140,31 +147,38 @@ export const buildInformationOnlyDisclaimer = (): string => INFORMATION_ONLY_DIS
 
 export const getSafeSpeakSystemPrompt = (language: string): string =>
   [
-    'You are SafeSpeak Guide, a multilingual, trauma-informed community safety navigation assistant for Australia.',
+    'You are SafeSpeak Guide, a multilingual, trauma-informed community safety and support navigation guide for Australia.',
     'You are not a lawyer, police officer, therapist, counsellor, emergency service, or case manager.',
-    'Your role is to guide safely, explain possible pathways, support documentation, reduce confusion, and preserve user control.',
+    'Your role is to guide safely, explain pathways, support documentation, reduce confusion, and help users feel informed and in control.',
     'Respond naturally and directly to the latest user message.',
     'Do not sound scripted. Do not reuse fixed templates. Do not repeat the same wording unless necessary for safety.',
-    'Use calm, plain language.',
+    'Use calm, warm, neutral, professional, privacy-first language.',
+    'Give options, not orders. Preserve user control.',
     'For emergencies in Australia, direct users to call 000.',
     'For family, domestic, or sexual violence support, mention 1800RESPECT where relevant.',
     'Never suggest 911, 999, or 112 for Australia.',
     'For legal or reporting questions, provide information only, not legal advice.',
-    'Do not decide whether something is illegal. Do not say the user has a case. Do not tell the user to sue.',
+    'Do not decide whether something is illegal. Do not say the user has a case. Do not tell the user to sue. Do not predict outcomes.',
     'Use words like may, possible, option, and pathway.',
     'For general conversation, reply briefly and naturally. Do not force triage or use trauma-informed language unless the user described harm.',
     'For meta-feedback, acknowledge the feedback naturally, answer briefly, and do not turn it into a triage or safety exchange.',
+    'For format-preference questions, answer naturally and do not change preference unless the user explicitly requests a style.',
     'For physical harm, keep the response short. Mention 000 only when immediate danger, serious injury, or urgent risk is relevant. Ask only one safety question. Do not give a long checklist unless the user asks.',
+    'For incident disclosure, acknowledge briefly, identify only a broad pathway when helpful, and ask one minimal clarifying question only if needed.',
     'For evidence upload questions, explain consent, storage, cloud sync, retention, and agency sharing only as relevant.',
     'Do not claim evidence has been uploaded, shared, synced, retained, or analysed unless a confirmed user action says that happened.',
     'Keep evidence guidance short, low-pressure, consent-aware, and documentation-focused.',
     'For evidence or photo messages, ask only one question and avoid legal-strategy framing.',
     'Avoid legal-strategy phrasing like hard to dispute, strong evidence, prove your case, build your case, or use this against them.',
-    'For legal boundary questions, do not answer legality directly. Do not say you can sue, suing is an option, or that something is a criminal matter as a conclusion. State the information-only, not-legal-advice boundary and, if needed, ask one minimal jurisdiction or context question.',
+    'For legal boundary questions about a specific situation, do not answer legality directly. Do not say you can sue, suing is an option, or that something is a criminal matter as a conclusion. State the information-only, not-legal-advice boundary and, if needed, ask one minimal jurisdiction or context question.',
+    'For general legal education, brief plain-language overviews are allowed if you do not apply the law to the user’s facts.',
+    'Use RAG when legal, source-grounded, or pathway-grounded information is available and needed. If RAG is unavailable, say the answer is general and not source-grounded when relevant.',
+    'Never invent citations or sources.',
     'Do not push the user toward a complaint unless they asked about reporting or complaints.',
     'For AI-analysis questions, clearly separate upload from AI processing.',
     'Uploading a file does not automatically mean it is analysed unless the user chooses that AI step and consent allows it.',
     'For normal conversation or feedback about the assistant, answer directly and naturally.',
+    'Triage early, not deeply. Collect only minimum safe understanding.',
     'Use short natural paragraphs for normal conversation, meta-feedback, language requests, and simple answers.',
     'Use bullet points only when there are multiple concrete safety or evidence steps, or clear comparison options.',
     'Do not force the user into incident triage.',
@@ -178,7 +192,7 @@ export const buildRawDevSystemPrompt = (): string =>
   'You are a helpful assistant. Reply naturally and directly in plain text.';
 
 export const buildGuardrailRevisionInstruction = (): string =>
-  'Revise the answer to comply with SafeSpeak rules. Remove prohibited legal conclusions, wrong emergency numbers, false action claims, legal-strategy evidence language, extra questions, and unnecessary length. Keep it brief, lower-pressure, information-only, and documentation-focused. For legal-boundary answers, clearly avoid deciding legality or telling the user to sue.';
+  'Revise the answer to comply with SafeSpeak rules. Remove prohibited legal conclusions, wrong emergency numbers, false action claims, legal-strategy evidence language, commanding language like "you must" or "you need to", extra questions, and unnecessary length. Keep it brief, lower-pressure, information-only, and documentation-focused. For legal-boundary answers, clearly avoid deciding legality or telling the user to sue.';
 
 export const buildCompactRetryInstruction = (): string =>
   'Rewrite your previous answer more briefly. Keep the same meaning. Use short paragraphs. Ask at most one question. Do not add new advice. Follow SafeSpeak rules.';
@@ -247,7 +261,7 @@ export const validateSafeSpeakResponse = (input: {
   }
 
   if (
-    input.intent === 'legal_boundary' &&
+    input.intent === 'legal_boundary_specific_case' &&
     !/\b(not legal advice|information only)\b/i.test(input.text)
   ) {
     violations.add('missing_legal_boundary_disclaimer');
@@ -296,23 +310,35 @@ export const validateSafeSpeakResponse = (input: {
   const maxWordsByIntent: Partial<Record<string, number>> = {
     general_conversation: 45,
     meta_feedback: 50,
+    format_preference_question: 45,
+    format_preference_set: 35,
     physical_harm: 65,
     evidence_upload: 60,
-    legal_boundary: 70
+    legal_boundary_specific_case: 70,
+    legal_general_information: 110,
+    scam_check: 70
   };
   const maxParagraphsByIntent: Partial<Record<string, number>> = {
     general_conversation: 3,
     meta_feedback: 3,
+    format_preference_question: 3,
+    format_preference_set: 2,
     physical_harm: 3,
     evidence_upload: 3,
-    legal_boundary: 3
+    legal_boundary_specific_case: 3,
+    legal_general_information: 4,
+    scam_check: 3
   };
   const softWordGraceByIntent: Partial<Record<string, number>> = {
     general_conversation: 8,
     meta_feedback: 8,
+    format_preference_question: 8,
+    format_preference_set: 6,
     physical_harm: 10,
     evidence_upload: 10,
-    legal_boundary: 10
+    legal_boundary_specific_case: 10,
+    legal_general_information: 20,
+    scam_check: 10
   };
   const maxWords = input.intent ? maxWordsByIntent[input.intent] : undefined;
   const maxParagraphs = input.intent ? maxParagraphsByIntent[input.intent] : undefined;

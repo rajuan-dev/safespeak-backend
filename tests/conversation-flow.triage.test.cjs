@@ -72,10 +72,18 @@ const createModelContext = ({
   ragContext = []
 }) => ({
   app: 'SafeSpeak',
+  persona: 'SafeSpeak Guide',
   jurisdiction: 'AU',
   latestUserMessage,
   detectedLanguage,
   intent,
+  intentPolicy: {
+    intent,
+    useRagByDefault: false,
+    mutateTriage: false,
+    guidance: []
+  },
+  ragStatus: ragContext.length > 0 ? 'retrieved' : 'not_required',
   assistantFormatPreference,
   conversationSummary: `user: ${latestUserMessage}`,
   activeIncidentSummary: 'None recorded.',
@@ -193,7 +201,7 @@ test('meta feedback fallback stays minimal and avoids old scripted copy', () => 
 
   assert.equal(
     reply.assistantMessage,
-    'That reply did not come through clearly. Please ask again and I will keep it brief.'
+    "I'm sorry, I couldn't generate a reliable response just now. Please try again."
   );
   assert.doesNotMatch(combined, /too scripted|continue testing the chat behavior|Thank you for telling me about this|what happened/i);
   assert.equal(metadata.responseMode, 'guardrail_fallback');
@@ -230,7 +238,7 @@ test('physical harm fallback never reuses the old meta feedback text', () => {
 
   assert.equal(
     combined,
-    'I had trouble replying clearly just now. If you are in immediate danger in Australia, call 000. If you want, tell me whether you are hurt right now.'
+    "I'm sorry, I couldn't generate a reliable response just now. Please try again."
   );
   assert.doesNotMatch(combined, /too scripted|continue testing the chat behavior/i);
 });
@@ -352,6 +360,79 @@ test('bullet preference sets bullets explicitly', () => {
   assert.equal(resolution.assistantFormatPreference, 'bullets');
   assert.equal(resolution.formatPreferenceUpdated, true);
   assert.equal(resolution.subIntent, 'format_preference_set');
+});
+
+test('format preference question classifies as non-incident intent', () => {
+  const classification = classifySafeSpeakIntentDetails(
+    'are you answering with bullet points every time?'
+  );
+
+  assert.equal(classification.intent, 'format_preference_question');
+  assert.equal(classification.classifierSource, 'rule');
+});
+
+test('format preference set turn plan does not mutate triage', () => {
+  const plan = buildTurnHandlingPlan({
+    selectedIntent: 'format_preference_set',
+    responseMode: 'clarification_needed',
+    existingFacts: {
+      whatHappened: 'Someone sent threats.',
+    },
+    existingTimeline: {
+      what: 'Someone sent threats.'
+    },
+    sessionRiskLevel: 'high',
+    latestTurnRiskLevel: 'low',
+    sessionId: 'session-125b',
+    session: {
+      activeIssueId: 'session-125b:issue-1'
+    },
+    latestUserMessage: 'please answer in paragraphs'
+  });
+
+  assert.equal(plan.nonIncidentTurn, true);
+  assert.equal(plan.triageUpdated, false);
+  assert.equal(plan.activeIssueId, 'session-125b:issue-1');
+});
+
+test('general legal education classifies separately from specific legal advice', () => {
+  assert.equal(
+    classifySafeSpeakIntent('Can you briefly explain criminal law in Australia?'),
+    'legal_general_information'
+  );
+  assert.equal(
+    classifySafeSpeakIntent('about criminal law'),
+    'legal_general_information'
+  );
+  assert.equal(
+    classifySafeSpeakIntent('Is this illegal? Can I sue them?'),
+    'legal_boundary_specific_case'
+  );
+});
+
+test('general legal information turn plan does not mutate triage', () => {
+  const plan = buildTurnHandlingPlan({
+    selectedIntent: 'legal_general_information',
+    responseMode: 'clarification_needed',
+    existingFacts: {
+      whatHappened: 'Someone sent threats.'
+    },
+    existingTimeline: {
+      what: 'Someone sent threats.'
+    },
+    sessionRiskLevel: 'high',
+    latestTurnRiskLevel: 'low',
+    sessionId: 'session-125c',
+    session: {
+      activeIssueId: 'session-125c:issue-1'
+    },
+    latestUserMessage: 'Can you briefly explain criminal law in Australia?'
+  });
+
+  assert.equal(plan.nonIncidentTurn, true);
+  assert.equal(plan.triageUpdated, false);
+  assert.equal(plan.latestTurnRiskLevel, 'none');
+  assert.equal(plan.activeIssueId, 'session-125c:issue-1');
 });
 
 test('evidence upload without an active incident stays non-incident and does not create new triage facts', () => {
@@ -499,7 +580,7 @@ test('empty model output falls back to a technical retry message', async () => {
     assert.equal(reply.responseMode, 'model_empty_fallback');
     assert.equal(
       reply.assistantMessage,
-      'I had trouble replying clearly just now. Please send that again.'
+      "I'm sorry, I couldn't generate a reliable response just now. Please try again."
     );
   } finally {
     global.fetch = originalFetch;
@@ -938,7 +1019,7 @@ test('meta feedback does not technical fallback when the reply is long but repai
   }
 });
 
-test('legal boundary model response stays information-only and uses rag metadata when retrieved', async () => {
+test('legal boundary specific-case response stays information-only and uses rag metadata when retrieved', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({
     ok: true,
@@ -950,7 +1031,7 @@ test('legal boundary model response stays information-only and uses rag metadata
 
   try {
     const reply = await generateSafeSpeakResponse({
-      intent: 'legal_boundary',
+      intent: 'legal_boundary_specific_case',
       intentConfidence: 'high',
       classifierSource: 'rule',
       latestUserMessage: 'Is this illegal? Can I sue them?',
@@ -970,7 +1051,7 @@ test('legal boundary model response stays information-only and uses rag metadata
         jurisdiction: 'AU',
         latestUserMessage: 'Is this illegal? Can I sue them?',
         detectedLanguage: 'en',
-        intent: 'legal_boundary',
+        intent: 'legal_boundary_specific_case',
         conversationSummary: 'user asks about legal boundary',
         activeIncidentSummary: 'None recorded.',
         consentSnapshot: {
@@ -1005,6 +1086,70 @@ test('legal boundary model response stays information-only and uses rag metadata
     assert.equal(reply.responseSource, 'openai_model_with_rag');
     assert.match(reply.disclaimer, /information only, not legal advice/i);
     assert.doesNotMatch(reply.assistantMessage, /you should sue|you have a case|this is illegal|you can sue|suing is an option|criminal matter/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('general legal information gives a useful brief overview without over-refusing', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text:
+        'Criminal law generally deals with offences that the state can investigate and prosecute. In Australia, many offences are handled under state and territory laws, while some matters involve Commonwealth law. This is general information only, not legal advice.'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'legal_general_information',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'Can you briefly explain criminal law in Australia?',
+      context: createModelContext({
+        latestUserMessage: 'Can you briefly explain criminal law in Australia?',
+        intent: 'legal_general_information'
+      })
+    });
+
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.staticTemplateUsed, false);
+    assert.equal(reply.responseSource, 'openai_model');
+    assert.match(reply.assistantMessage, /criminal law generally deals with|state and territory laws/i);
+    assert.match(reply.assistantMessage, /information only|not legal advice/i);
+    assert.doesNotMatch(reply.assistantMessage, /you can sue|you have a case|this is illegal/i);
+    assert.equal(reply.showSources, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('general legal follow-up topic stays educational and does not over-refuse', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text:
+        'Criminal law generally deals with conduct the law treats as offences. Police may investigate suspected offences, and courts handle charges and outcomes. This is general information only, not legal advice.'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'legal_general_information',
+      intentConfidence: 'medium',
+      classifierSource: 'rule',
+      latestUserMessage: 'about criminal law',
+      context: createModelContext({
+        latestUserMessage: 'about criminal law',
+        intent: 'legal_general_information'
+      })
+    });
+
+    assert.equal(reply.usedModelGeneration, true);
+    assert.match(reply.assistantMessage, /criminal law generally deals with|police may investigate/i);
+    assert.doesNotMatch(reply.assistantMessage, /i can.t help with that|i cannot answer/i);
   } finally {
     global.fetch = originalFetch;
   }
@@ -1200,7 +1345,7 @@ test('too-long model output uses compact retry prompt and returns regenerated mo
   }
 });
 
-test('legal boundary outputs regenerate away from direct legal conclusions', async () => {
+test('legal boundary specific-case outputs regenerate away from direct legal conclusions', async () => {
   const originalFetch = global.fetch;
   let callCount = 0;
   global.fetch = async () => {
@@ -1219,13 +1364,13 @@ test('legal boundary outputs regenerate away from direct legal conclusions', asy
 
   try {
     const reply = await generateSafeSpeakResponse({
-      intent: 'legal_boundary',
+      intent: 'legal_boundary_specific_case',
       intentConfidence: 'high',
       classifierSource: 'rule',
       latestUserMessage: 'Is this illegal? Can I sue them?',
       context: createModelContext({
         latestUserMessage: 'Is this illegal? Can I sue them?',
-        intent: 'legal_boundary'
+        intent: 'legal_boundary_specific_case'
       })
     });
 
@@ -1270,7 +1415,7 @@ test('model-path replies do not reuse removed static assistant phrases', async (
     },
     {
       latestUserMessage: 'Is this illegal? Can I sue them?',
-      intent: 'legal_boundary',
+      intent: 'legal_boundary_specific_case',
       ragStatus: 'retrieved',
       ragContext: [
         {
@@ -1311,7 +1456,7 @@ test('model-path replies do not reuse removed static assistant phrases', async (
         assert.ok(countQuestions(reply.assistantMessage) <= 1);
         assert.ok(countWords(reply.assistantMessage) <= 30);
       }
-      if (testCase.intent === 'legal_boundary') {
+      if (testCase.intent === 'legal_boundary_specific_case') {
         assert.match(reply.assistantMessage, /information only|not legal advice/i);
         assert.doesNotMatch(reply.assistantMessage, /you can sue|suing is an option|criminal matter|this is illegal/i);
       }

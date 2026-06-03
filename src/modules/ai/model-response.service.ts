@@ -149,6 +149,8 @@ const buildBasePromptSections = (
     promptStyle === 'compact'
       ? [
           `Intent: ${input.intent}`,
+          `Persona: ${input.context.persona}`,
+          `Intent policy: ${JSON.stringify(input.context.intentPolicy)}`,
           `Latest user message: ${input.latestUserMessage}`,
           `Detected language: ${input.context.detectedLanguage}`,
           `Format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
@@ -158,6 +160,8 @@ const buildBasePromptSections = (
         ]
       : [
           `Intent: ${input.intent}`,
+          `Persona: ${input.context.persona}`,
+          `Intent policy: ${JSON.stringify(input.context.intentPolicy)}`,
           `Latest user message: ${input.latestUserMessage}`,
           `Assistant format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
           `SafeSpeak context JSON: ${JSON.stringify(input.context)}`,
@@ -237,29 +241,6 @@ const callOpenAiPrompt = async (options: {
 const TECHNICAL_FALLBACK_MESSAGE =
   "I'm sorry, I couldn't generate a reliable response just now. Please try again.";
 
-const buildIntentSpecificFallbackMessage = (intent: string): string => {
-  switch (intent) {
-    case 'general_conversation':
-      return 'I had trouble replying clearly just now. Please send that again.';
-    case 'meta_feedback':
-      return 'That reply did not come through clearly. Please ask again and I will keep it brief.';
-    case 'physical_harm':
-      return 'I had trouble replying clearly just now. If you are in immediate danger in Australia, call 000. If you want, tell me whether you are hurt right now.';
-    case 'evidence_upload':
-      return 'You can keep the files unchanged as part of your record. Nothing is automatically shared here. If you want, I can help you note what each file shows.';
-    case 'legal_boundary':
-      return 'SafeSpeak cannot decide whether it was illegal. This is information only, not legal advice. If you want, tell me your state or territory.';
-    case 'language_or_translation':
-      return 'I can try that again. Tell me which language you want to use, or paste the text again.';
-    case 'encoding_error':
-      return 'Some of that text may not have come through clearly. Please send it again, or paste a shorter part.';
-    case 'incident_disclosure':
-      return 'I am sorry this happened. If you want, send one short part of what happened and we can take it step by step.';
-    default:
-      return TECHNICAL_FALLBACK_MESSAGE;
-  }
-};
-
 const minimalFallback = (
   intent: string,
   responseSource: 'guardrail_fallback' | 'model_empty_fallback' = 'guardrail_fallback'
@@ -278,7 +259,7 @@ const minimalFallback = (
   }
 
   return {
-    assistantMessage: buildIntentSpecificFallbackMessage(intent),
+    assistantMessage: TECHNICAL_FALLBACK_MESSAGE,
     responseMode:
       responseSource === 'model_empty_fallback' ? 'model_empty_fallback' : 'guardrail_fallback',
     responseSource
@@ -382,16 +363,24 @@ const buildLengthTargets = (intent: string): { maxWords?: number; maxParagraphs?
   const maxWordsByIntent: Partial<Record<string, number>> = {
     general_conversation: 45,
     meta_feedback: 50,
+    format_preference_question: 45,
+    format_preference_set: 35,
     physical_harm: 65,
     evidence_upload: 60,
-    legal_boundary: 70
+    legal_boundary_specific_case: 70,
+    legal_general_information: 110,
+    scam_check: 70
   };
   const maxParagraphsByIntent: Partial<Record<string, number>> = {
     general_conversation: 3,
     meta_feedback: 3,
+    format_preference_question: 3,
+    format_preference_set: 2,
     physical_harm: 3,
     evidence_upload: 3,
-    legal_boundary: 3
+    legal_boundary_specific_case: 3,
+    legal_general_information: 4,
+    scam_check: 3
   };
 
   return {
@@ -463,7 +452,10 @@ export const generateSafeSpeakResponse = async (
     input.intent === 'language_or_translation' ||
     input.intent === 'encoding_error';
   const retryPromptStyle: PromptStyle =
-    input.intent === 'meta_feedback' || input.intent === 'general_conversation'
+    input.intent === 'meta_feedback' ||
+    input.intent === 'general_conversation' ||
+    input.intent === 'format_preference_question' ||
+    input.intent === 'format_preference_set'
       ? 'compact'
       : 'strict';
   const responseSourceBase: OpenAiResponseSource =

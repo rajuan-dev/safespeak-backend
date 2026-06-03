@@ -889,6 +889,10 @@ export const buildConversationAssistantResponseMeta = (input: {
         : 'guardrail_fallback',
     model:
       typeof input.assistantPayload.model === 'string' ? input.assistantPayload.model : undefined,
+    guardrailStatus:
+      typeof input.assistantPayload.guardrailStatus === 'string'
+        ? input.assistantPayload.guardrailStatus
+        : 'passed',
     ragStatus:
       typeof input.assistantPayload.ragStatus === 'string'
         ? input.assistantPayload.ragStatus
@@ -1324,6 +1328,14 @@ const resolveConversationIntent = (input: {
     return 'meta_feedback';
   }
 
+  if (input.detectedIntent === 'format_preference_question') {
+    return 'format_preference_question';
+  }
+
+  if (input.detectedIntent === 'format_preference_set') {
+    return 'format_preference_set';
+  }
+
   if (input.responseMode === 'evidence_upload_intent') {
     return 'evidence_upload';
   }
@@ -1333,7 +1345,7 @@ const resolveConversationIntent = (input: {
   }
 
   if (input.responseMode === 'legal_lookup') {
-    return 'legal_boundary';
+    return 'legal_boundary_specific_case';
   }
 
   if (input.detectedIntent !== 'unknown') {
@@ -1420,7 +1432,7 @@ const shouldUseRagForIntent = (input: {
     return true;
   }
 
-  if (input.intent === 'legal_boundary' || input.intent === 'rag_pathway_question') {
+  if (input.intent === 'legal_boundary_specific_case' || input.intent === 'rag_pathway_question') {
     return true;
   }
 
@@ -2938,7 +2950,10 @@ export const buildTurnHandlingPlan = (input: {
     input.selectedIntent === 'meta_feedback' ||
     input.selectedIntent === 'general_conversation' ||
     input.selectedIntent === 'language_or_translation' ||
-    input.selectedIntent === 'ai_analysis_question';
+    input.selectedIntent === 'ai_analysis_question' ||
+    input.selectedIntent === 'format_preference_question' ||
+    input.selectedIntent === 'format_preference_set' ||
+    input.selectedIntent === 'legal_general_information';
   const evidenceWithoutIncident =
     input.selectedIntent === 'evidence_upload' && !activeIncidentExists;
   const nonIncidentTurn = nonIncidentIntent || evidenceWithoutIncident;
@@ -4681,6 +4696,7 @@ export const appendConversationFlowMessage = async (
             : []
       },
       ragContext,
+      ragStatus,
       userSelectedTopic: session.selectedTopic,
       assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs'
     });

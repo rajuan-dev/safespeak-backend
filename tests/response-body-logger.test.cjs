@@ -1,0 +1,162 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const {
+  isConversationMessageAppendRoute,
+  summarizeResponseBodyForLogging,
+} = require('../src/common/middleware/response-body-logger.middleware.ts');
+
+test('conversation message append route detection matches only conversation message posts', () => {
+  assert.equal(
+    isConversationMessageAppendRoute({
+      method: 'POST',
+      originalUrl: '/api/v1/conversation-flow/sessions/abc123/messages'
+    }),
+    true
+  );
+  assert.equal(
+    isConversationMessageAppendRoute({
+      method: 'GET',
+      originalUrl: '/api/v1/conversation-flow/sessions/abc123/messages'
+    }),
+    false
+  );
+  assert.equal(
+    isConversationMessageAppendRoute({
+      method: 'POST',
+      originalUrl: '/api/v1/platform-settings'
+    }),
+    false
+  );
+});
+
+test('conversation message response body logging is summarized to important AI fields', () => {
+  const summary = summarizeResponseBodyForLogging({
+    request: {
+      method: 'POST',
+      originalUrl: '/api/v1/conversation-flow/sessions/6a1/messages'
+    },
+    body: {
+      success: true,
+      message: 'Conversation turn recorded',
+      timestamp: '2026-06-03T09:53:35.012Z',
+      requestId: 'req-1',
+      data: {
+        session: {
+          id: '6a1',
+          selectedTopic: 'general_assistant',
+          detectedLanguage: 'en',
+          status: 'active',
+          safetyRiskLevel: 'low',
+          latestTurnRiskLevel: 'none',
+          activeIncidentRiskLevel: 'none',
+          sessionHistoricalMaxRiskLevel: 'low',
+          assistantFormatPreference: 'paragraphs',
+          messageCount: 2,
+          userTurnCount: 1,
+          createdAt: 'keep-out',
+          updatedAt: 'keep-out'
+        },
+        userMessage: {
+          id: 'u1',
+          role: 'user',
+          content: 'hi',
+          turnNumber: 1,
+          metadata: {},
+          createdAt: 'keep-out'
+        },
+        assistantMessage: {
+          id: 'a1',
+          role: 'assistant',
+          content: 'Hi there.',
+          turnNumber: 2,
+          metadata: {
+            intent: 'general_conversation',
+            responseMode: 'safespeak_model',
+            intentConfidence: 'high',
+            usedModelGeneration: true,
+            staticTemplateUsed: false,
+            responseSource: 'openai_model',
+            selectedResponseSource: 'openai_model',
+            model: 'gpt-5.2',
+            guardrailStatus: 'passed',
+            ragStatus: 'not_required',
+            nonIncidentTurn: true,
+            triageUpdated: false,
+            latestTurnRiskLevel: 'none',
+            activeIncidentRiskLevel: 'none',
+            sessionHistoricalMaxRiskLevel: 'low',
+            assistantFormatPreference: 'paragraphs',
+            formatPreferenceUpdated: false,
+            encodingWarning: false,
+            classifierSource: 'rule',
+            matchedSignals: ['greeting'],
+            consentSnapshot: {
+              store_local: true
+            }
+          },
+          createdAt: 'keep-out'
+        },
+        factExtraction: {
+          shouldNot: 'appear'
+        },
+        triage: null,
+        transition: {
+          offerTriage: false
+        },
+        responseMeta: {
+          intent: 'general_conversation',
+          reviewStatus: 'general_conversation',
+          responseSource: 'openai_model',
+          selectedResponseSource: 'openai_model',
+          model: 'gpt-5.2',
+          ragStatus: 'not_required',
+          guardrailStatus: 'passed',
+          nonIncidentTurn: true,
+          triageUpdated: false,
+          assistantLanguage: 'en',
+          showSources: false,
+          sourceDisplayReason: 'hidden_support_reply',
+          citations: []
+        }
+      }
+    }
+  });
+
+  assert.equal(summary.success, true);
+  assert.equal(summary.data.session.id, '6a1');
+  assert.equal(summary.data.userMessage.content, 'hi');
+  assert.equal(summary.data.assistantMessage.content, 'Hi there.');
+  assert.equal(summary.data.assistantMessage.metadata.intent, 'general_conversation');
+  assert.equal(summary.data.responseMeta.responseSource, 'openai_model');
+  assert.deepEqual(summary.data.triageSummary, { exists: false });
+  assert.equal('factExtraction' in summary.data, false);
+  assert.equal('transition' in summary.data, false);
+  assert.equal('consentSnapshot' in summary.data.assistantMessage.metadata, false);
+});
+
+test('non-conversation response body logging remains unchanged', () => {
+  const original = {
+    success: true,
+    message: 'Platform settings retrieved',
+    data: {
+      platformSettings: {
+        settings: {
+          ai: {
+            disclaimerText: 'keep me'
+          }
+        }
+      }
+    }
+  };
+
+  const summary = summarizeResponseBodyForLogging({
+    request: {
+      method: 'GET',
+      originalUrl: '/api/v1/platform-settings'
+    },
+    body: original
+  });
+
+  assert.deepEqual(summary, original);
+});

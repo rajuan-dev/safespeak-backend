@@ -5,12 +5,15 @@ export type SafeSpeakIntent =
   | 'evidence_upload'
   | 'encoding_error'
   | 'ai_analysis_question'
-  | 'legal_boundary'
+  | 'legal_boundary_specific_case'
+  | 'legal_general_information'
   | 'rag_pathway_question'
   | 'scam_check'
   | 'language_or_translation'
   | 'meta_feedback'
   | 'general_conversation'
+  | 'format_preference_question'
+  | 'format_preference_set'
   | 'unknown';
 
 export type IntentConfidence = 'high' | 'medium' | 'low';
@@ -60,6 +63,33 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
       intent: 'unknown',
       confidence: 'low',
       matchedSignals: [],
+      classifierSource: 'rule'
+    };
+  }
+
+  if (
+    /\b(are you (answering|using)|why are you using|do you always answer with|every time)\b/.test(
+      normalized
+    ) &&
+    /\b(bullet point|bullet points|bullets)\b/.test(normalized)
+  ) {
+    return {
+      intent: 'format_preference_question',
+      confidence: 'high',
+      matchedSignals: ['format_preference_question'],
+      classifierSource: 'rule'
+    };
+  }
+
+  if (
+    /\b(please answer in paragraphs|answer in paragraphs|please use paragraphs|use paragraphs|not bullet points|don t use bullets|do not use bullets|stop using bullet points|without bullet points|not bullets|please use bullet points|use bullet points|answer in bullet points|give me bullet points|please use bullets|mix|mixed format|some bullets|both paragraphs and bullets)\b/.test(
+      normalized
+    )
+  ) {
+    return {
+      intent: 'format_preference_set',
+      confidence: 'high',
+      matchedSignals: ['format_preference_set'],
       classifierSource: 'rule'
     };
   }
@@ -117,15 +147,28 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
     };
   }
 
-  const legalSignals = collectSignals(normalized, [
-    { signal: 'legal_boundary_question', pattern: /\b(is this illegal|can i sue|what law applies|did they break the law|is that against the law)\b/ },
-    { signal: 'rights_question', pattern: /\b(my rights|legal options|legal advice|legal issue)\b/ }
+  const legalBoundarySignals = collectSignals(normalized, [
+    { signal: 'legal_boundary_question', pattern: /\b(is this illegal|can i sue|do i have a case|did they break the law|is that against the law|can police arrest them|is this criminal)\b/ },
+    { signal: 'case_specific_legal_question', pattern: /\b(what are my legal options|what are my rights here|can i take legal action)\b/ }
   ]);
-  if (legalSignals.length > 0) {
+  if (legalBoundarySignals.length > 0) {
     return {
-      intent: 'legal_boundary',
+      intent: 'legal_boundary_specific_case',
       confidence: 'high',
-      matchedSignals: legalSignals,
+      matchedSignals: legalBoundarySignals,
+      classifierSource: 'rule'
+    };
+  }
+
+  const legalGeneralSignals = collectSignals(normalized, [
+    { signal: 'general_legal_explainer', pattern: /\b(explain|tell me about|summary of|briefly explain|what does .* mean|give me a summary of)\b.*\b(criminal law|australian law|discrimination law|legal pathways|law generally)\b/ },
+    { signal: 'topic_only_legal_explainer', pattern: /\b(about )?(criminal law|australian criminal law|discrimination law|legal pathways)\b/ }
+  ]);
+  if (legalGeneralSignals.length > 0) {
+    return {
+      intent: 'legal_general_information',
+      confidence: normalized.split(' ').length <= 4 ? 'medium' : 'high',
+      matchedSignals: legalGeneralSignals,
       classifierSource: 'rule'
     };
   }
