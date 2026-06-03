@@ -556,6 +556,8 @@ const TRIAGE_HANDOFF_PHRASES = [
   'go to trige',
   'continue to triage',
   'continue to trige',
+  'contineue to triage',
+  'contineue to trige',
   'take me to triage',
   'take me to trige',
   'show recommended steps',
@@ -1585,39 +1587,14 @@ const logAssistantTurn = (input: {
   );
 };
 
-const shouldUseRagForIntent = (input: {
+export const shouldUseRagForIntent = (input: {
   intent: string;
   message: string;
   responseMode: ConversationAssistantResponseMode;
 }): boolean => {
-  if (input.responseMode === 'legal_lookup') {
-    return true;
-  }
-
-  if (input.intent === 'legal_boundary_specific_case' || input.intent === 'rag_pathway_question') {
-    return true;
-  }
-
-  if (input.intent === 'legal_general_information') {
-    return true;
-  }
-
-  if (
-    input.intent === 'scam_check' &&
-    /\b(report|reportcyber|scamwatch|rights|pathway|agency|police|esafety)\b/i.test(input.message)
-  ) {
-    return true;
-  }
-
-  if (
-    /\b(fair work|anti[- ]discrimination|discrimination complaint|workplace rights|esafety|online abuse|1800respect|police report|reporting pathway|support pathway|lawaccess|legal aid|what can i report this to|where can i report this|what can i use this for)\b/i.test(
-      input.message
-    )
-  ) {
-    return true;
-  }
-
-  return false;
+  // Conversation flow is RAG-first by default: every substantive message should
+  // attempt retrieval before falling back to model-only generation.
+  return input.message.trim().length > 0;
 };
 
 const buildConversationSummary = (

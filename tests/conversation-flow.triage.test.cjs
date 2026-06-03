@@ -27,6 +27,7 @@ const {
   extractSupportFacts,
   extractStructuredTriageFacts,
   localizeKnownLegalLookupAnswer,
+  shouldUseRagForIntent,
   shouldShowSources,
 } = require('../src/modules/conversation-flow/conversation-flow.service.ts');
 const {
@@ -156,6 +157,7 @@ test('explicit triage handoff phrases trigger the triage button intent', () => {
     'give me the trige button',
     'show recommended steps',
     'continue to next steps',
+    'contineue to trige',
     'support summary',
     'triage page',
     'continue trige page',
@@ -163,6 +165,35 @@ test('explicit triage handoff phrases trigger the triage button intent', () => {
   ].forEach((message) => {
     assert.equal(detectTriageHandoffIntent(message), true);
   });
+});
+
+test('conversation flow uses rag-first retrieval for ordinary messages before model fallback', () => {
+  assert.equal(
+    shouldUseRagForIntent({
+      intent: 'general_conversation',
+      message: 'Does this Act mention referendum pamphlets being translated?',
+      responseMode: 'general_conversation'
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldUseRagForIntent({
+      intent: 'meta_feedback',
+      message: 'your answer sounds too scripted',
+      responseMode: 'meta_feedback'
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldUseRagForIntent({
+      intent: 'unknown',
+      message: '   ',
+      responseMode: 'general_conversation'
+    }),
+    false
+  );
 });
 
 test('triage handoff response meta preserves the same session and hides sources', () => {
