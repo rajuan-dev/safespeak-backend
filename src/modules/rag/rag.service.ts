@@ -5487,7 +5487,7 @@ const looksLikeSourceBackedQuestion = (message: string): boolean => {
   const trimmedMessage = collapseWhitespace(message);
 
   return (
-    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|uploaded source|covered by the legislation|can you cite the source)\b/i.test(
+    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|this act|that act|the act|uploaded source|covered by the legislation|can you cite the source|what does this act say)\b/i.test(
       trimmedMessage
     ) &&
     (/\?/.test(trimmedMessage) || trimmedMessage.split(' ').length <= 8)

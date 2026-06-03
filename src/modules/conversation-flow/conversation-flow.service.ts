@@ -732,7 +732,7 @@ const looksLikeLegalLookupMessage = (message: string): boolean => {
   const trimmedMessage = collapseWhitespace(message);
 
   return (
-    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|uploaded source|covered by the legislation|can you cite the source|what does the act say|cite)\b/i.test(
+    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|this act|that act|the act|uploaded source|covered by the legislation|can you cite the source|what does the act say|what does this act say|cite)\b/i.test(
       trimmedMessage
     ) &&
     (/\?/.test(trimmedMessage) || trimmedMessage.split(' ').length <= 10)
@@ -1490,6 +1490,14 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
     metadata.consentSnapshot = assistantPayload.consentSnapshot;
   }
 
+  if (
+    assistantPayload.groundedLegalSource &&
+    typeof assistantPayload.groundedLegalSource === 'object' &&
+    !Array.isArray(assistantPayload.groundedLegalSource)
+  ) {
+    metadata.groundedLegalSource = assistantPayload.groundedLegalSource;
+  }
+
   return metadata;
 };
 
@@ -1606,12 +1614,15 @@ const buildConversationSummary = (
     .join('\n');
 
 const toRagSnippets = (results: Array<{
+  sourceId: string;
   title: string;
   sourceAuthority?: string;
+  sourceCategory?: string;
   jurisdiction: string;
   stateOrTerritory?: string;
   legalDomain?: string;
   pathwayCategory?: string;
+  legislationName?: string;
   sourceType: string;
   citationUrl?: string;
   sectionRef?: string;
@@ -1633,6 +1644,77 @@ const toRagSnippets = (results: Array<{
     sectionTitle: result.sectionTitle,
     relevantSnippet: result.text.replace(/\s+/g, ' ').trim().slice(0, 500)
   }));
+
+type GroundedLegalSource = {
+  sourceId: string;
+  title?: string;
+  legislationName?: string;
+  citationUrl?: string;
+};
+
+const normalizeGroundedLegalSource = (value: unknown): GroundedLegalSource | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.sourceId !== 'string' || record.sourceId.trim().length === 0) {
+    return undefined;
+  }
+
+  return {
+    sourceId: record.sourceId.trim(),
+    title: typeof record.title === 'string' ? record.title : undefined,
+    legislationName:
+      typeof record.legislationName === 'string' ? record.legislationName : undefined,
+    citationUrl: typeof record.citationUrl === 'string' ? record.citationUrl : undefined
+  };
+};
+
+const resolveGroundedLegalSourceFromResults = (
+  results: Array<{
+    sourceId: string;
+    title: string;
+    sourceCategory?: string;
+    legislationName?: string;
+    citationUrl?: string;
+  }>
+): GroundedLegalSource | undefined => {
+  const topLegalResult = results.find((result) => result.sourceCategory === 'official_legal_source');
+
+  if (!topLegalResult) {
+    return undefined;
+  }
+
+  return {
+    sourceId: topLegalResult.sourceId,
+    title: topLegalResult.title,
+    legislationName: topLegalResult.legislationName,
+    citationUrl: topLegalResult.citationUrl
+  };
+};
+
+export const resolvePriorGroundedLegalSource = (
+  messages: Array<{
+    role?: string;
+    content?: string;
+    metadata?: Record<string, unknown>;
+  }>
+): GroundedLegalSource | undefined => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message?.metadata) {
+      continue;
+    }
+
+    const groundedLegalSource = normalizeGroundedLegalSource(message.metadata.groundedLegalSource);
+    if (groundedLegalSource) {
+      return groundedLegalSource;
+    }
+  }
+
+  return undefined;
+};
 
 type ConversationFlowRagSearchPlan = {
   sourceCategory?: 'official_legal_source' | 'official_support_source' | 'admin_content';
@@ -1730,11 +1812,49 @@ const retrieveConversationFlowRag = async (input: {
   intent: string;
   detectedCategory?: ConversationFlowCategory;
   priorNamedLegislationReference?: string;
+  priorGroundedLegalSource?: GroundedLegalSource;
 }): Promise<Awaited<ReturnType<typeof searchRag>>> => {
   const effectiveQuery = buildContextualLegalFollowUpQuery({
     query: input.query,
     priorNamedLegislationReference: input.priorNamedLegislationReference
   });
+  const hasActFollowUp = hasContextualActReference(input.query);
+
+  if (hasActFollowUp && input.priorGroundedLegalSource?.sourceId) {
+    const pinnedReference =
+      input.priorGroundedLegalSource.legislationName ??
+      input.priorGroundedLegalSource.title ??
+      input.priorNamedLegislationReference;
+    const pinnedQueries = Array.from(
+      new Set(
+        [
+          effectiveQuery,
+          buildContextualLegalFollowUpQuery({
+            query: input.query,
+            priorNamedLegislationReference: pinnedReference
+          })
+        ].filter((query): query is string => query.trim().length > 0)
+      )
+    );
+
+    for (const pinnedQuery of pinnedQueries) {
+      const pinnedResults = await searchRag(input.context, {
+        query: pinnedQuery,
+        topK: 4,
+        language: input.language,
+        jurisdiction: input.jurisdiction,
+        sourceCategory: 'official_legal_source',
+        sourceIds: [input.priorGroundedLegalSource.sourceId]
+      });
+
+      if (pinnedResults.length > 0) {
+        return pinnedResults;
+      }
+    }
+
+    return [];
+  }
+
   const searchPlan = buildConversationFlowRagSearchPlan({
     intent: input.intent,
     detectedCategory: input.detectedCategory
@@ -1836,6 +1956,57 @@ const resolvePriorNamedLegislationReference = (
   }
 
   return undefined;
+};
+
+const buildUngroundedLegalFollowUpAssistantPayload = (input: {
+  message: string;
+  priorGroundedLegalSource?: GroundedLegalSource;
+  assistantLanguage: SupportedConversationLanguage;
+  intent: string;
+  consentSnapshot: Record<string, unknown>;
+  intentConfidence?: string;
+  classifierSource?: string;
+}) => {
+  const sourceName =
+    input.priorGroundedLegalSource?.legislationName ??
+    input.priorGroundedLegalSource?.title ??
+    'the previously referenced Act';
+  const assistantMessage =
+    input.assistantLanguage === 'en'
+      ? `I couldn't find a grounded answer in ${sourceName} for that question, so I don't want to answer without a citation. If you want, ask about a section or name the Act again and I can try to locate the exact part.`
+      : `I couldn't find a grounded answer in ${sourceName} for that question, so I don't want to answer without a citation.`;
+
+  return {
+    assistantMessage,
+    nextQuestion: '',
+    readyForSubmission: false,
+    confidence: 'medium' as const,
+    disclaimer: 'This is information only, not legal advice.',
+    citations: [],
+    showSources: false,
+    sourceDisplayReason: 'not_directly_grounded' as const,
+    rag: {
+      used: false,
+      unavailable: true,
+      resultCount: 0
+    },
+    reviewStatus: input.intent,
+    responseMode: 'guardrail_fallback' as const,
+    intent: input.intent,
+    usedModelGeneration: false,
+    guardrailStatus: 'fallback' as const,
+    fallbackReason: 'legal_rag_required_no_sources',
+    staticTemplateUsed: false,
+    consentSnapshot: input.consentSnapshot,
+    intentConfidence: input.intentConfidence,
+    classifierSource: input.classifierSource,
+    responseSource: 'guardrail_fallback',
+    model: env.OPENAI_MODEL,
+    jurisdiction: 'AU' as const,
+    ragStatus: 'required_but_no_sources_found' as const,
+    selectedResponseSource: 'guardrail_fallback',
+    groundedLegalSource: input.priorGroundedLegalSource
+  };
 };
 
 const findMatchingLegalSourceIdsForQuery = async (input: {
@@ -5054,6 +5225,16 @@ export const appendConversationFlowMessage = async (
   } else {
     const consent = await getCurrentConsent(context.owner);
     currentConsentSnapshot = consent;
+    const priorGroundedLegalSource = resolvePriorGroundedLegalSource(
+      existingMessages.map((message) => ({
+        role: message.role,
+        content: message.content,
+        metadata:
+          message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+            ? (message.metadata as Record<string, unknown>)
+            : {}
+      }))
+    );
     const priorNamedLegislationReference = resolvePriorNamedLegislationReference(
       existingMessages.map((message) => ({
         role: message.role,
@@ -5066,11 +5247,12 @@ export const appendConversationFlowMessage = async (
       responseMode
     });
     let ragContext: SafeSpeakRagSnippet[] = [];
+    let ragResults: Awaited<ReturnType<typeof retrieveConversationFlowRag>> = [];
     let ragStatus: SafeSpeakRagStatus = ragRequired ? 'required_but_no_sources_found' : 'not_required';
 
     if (ragRequired) {
       try {
-        const ragResults = await retrieveConversationFlowRag({
+        ragResults = await retrieveConversationFlowRag({
           context: {
             owner: context.owner,
             ip: context.ip,
@@ -5094,7 +5276,8 @@ export const appendConversationFlowMessage = async (
             | undefined) ?? 'AU',
           intent: selectedIntent,
           detectedCategory,
-          priorNamedLegislationReference
+          priorNamedLegislationReference,
+          priorGroundedLegalSource
         });
 
         ragContext = toRagSnippets(ragResults);
@@ -5104,46 +5287,63 @@ export const appendConversationFlowMessage = async (
       }
     }
 
-    const contextForModel = buildSafeSpeakContext({
-      latestUserMessage: input.content,
-      detectedLanguage: assistantLanguage,
-      intentClassification,
-      conversationSummary: buildConversationSummary(conversationForAssistant),
-      activeIncidentSummary: buildActiveIncidentSummary(existingFacts ?? {}),
-      consentSnapshot: consent,
-      safetyContext: {
-        latestTurnRiskLevel: turnHandlingPlan.latestTurnRiskLevel,
-        activeIncidentRiskLevel: turnHandlingPlan.activeIncidentRiskLevel,
-        sessionHistoricalMaxRiskLevel: turnHandlingPlan.sessionHistoricalMaxRiskLevel,
-        immediateDanger: latestTurnFacts.originalFacts.immediateDanger,
-        threatsPresent: latestTurnFacts.originalFacts.threatsPresent,
-        physicalHarm: latestTurnFacts.originalFacts.physicalViolence,
-        domesticFamilyViolence: latestTurnFacts.originalFacts.domesticViolence,
-        selfHarm: latestTurnFacts.originalFacts.selfHarmOrSuicidal,
-        childSafety: latestTurnFacts.originalFacts.childSafetyRisk,
-        relevantSupport:
-          latestTurnFacts.originalFacts.domesticViolence ||
-          latestTurnFacts.originalFacts.sexualViolenceRisk
-            ? ['1800RESPECT']
-            : []
-      },
-      ragContext,
-      ragStatus,
-      userSelectedTopic: session.selectedTopic,
-      assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs'
-    });
+    if (responseMode === 'legal_lookup' && ragStatus === 'required_but_no_sources_found') {
+      assistantPayload = buildUngroundedLegalFollowUpAssistantPayload({
+        message: input.content,
+        priorGroundedLegalSource,
+        assistantLanguage,
+        intent: selectedIntent,
+        consentSnapshot: currentConsentSnapshot,
+        intentConfidence: intentClassification.confidence,
+        classifierSource: intentClassification.classifierSource
+      });
+    } else {
+      const contextForModel = buildSafeSpeakContext({
+        latestUserMessage: input.content,
+        detectedLanguage: assistantLanguage,
+        intentClassification,
+        conversationSummary: buildConversationSummary(conversationForAssistant),
+        activeIncidentSummary: buildActiveIncidentSummary(existingFacts ?? {}),
+        consentSnapshot: consent,
+        safetyContext: {
+          latestTurnRiskLevel: turnHandlingPlan.latestTurnRiskLevel,
+          activeIncidentRiskLevel: turnHandlingPlan.activeIncidentRiskLevel,
+          sessionHistoricalMaxRiskLevel: turnHandlingPlan.sessionHistoricalMaxRiskLevel,
+          immediateDanger: latestTurnFacts.originalFacts.immediateDanger,
+          threatsPresent: latestTurnFacts.originalFacts.threatsPresent,
+          physicalHarm: latestTurnFacts.originalFacts.physicalViolence,
+          domesticFamilyViolence: latestTurnFacts.originalFacts.domesticViolence,
+          selfHarm: latestTurnFacts.originalFacts.selfHarmOrSuicidal,
+          childSafety: latestTurnFacts.originalFacts.childSafetyRisk,
+          relevantSupport:
+            latestTurnFacts.originalFacts.domesticViolence ||
+            latestTurnFacts.originalFacts.sexualViolenceRisk
+              ? ['1800RESPECT']
+              : []
+        },
+        ragContext,
+        ragStatus,
+        userSelectedTopic: session.selectedTopic,
+        assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs'
+      });
 
-    assistantPayload = await generateSafeSpeakModelResponse({
-      mode: env.AI_RESPONSE_MODE,
-      model: env.OPENAI_MODEL,
-      intent: selectedIntent,
-      intentConfidence: intentClassification.confidence,
-      classifierSource: intentClassification.classifierSource,
-      context: contextForModel,
-      ragContext,
-      ragStatus,
-      latestUserMessage: input.content
-    });
+      assistantPayload = await generateSafeSpeakModelResponse({
+        mode: env.AI_RESPONSE_MODE,
+        model: env.OPENAI_MODEL,
+        intent: selectedIntent,
+        intentConfidence: intentClassification.confidence,
+        classifierSource: intentClassification.classifierSource,
+        context: contextForModel,
+        ragContext,
+        ragStatus,
+        latestUserMessage: input.content
+      });
+    }
+
+    const groundedLegalSource = resolveGroundedLegalSourceFromResults(ragResults);
+    if (groundedLegalSource) {
+      assistantPayload.groundedLegalSource = groundedLegalSource;
+    }
     assistantPayload.matchedSignals = intentClassification.matchedSignals;
   }
 

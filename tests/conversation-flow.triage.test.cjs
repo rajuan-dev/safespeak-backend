@@ -27,6 +27,7 @@ const {
   extractSupportFacts,
   extractStructuredTriageFacts,
   buildContextualLegalFollowUpQuery,
+  resolvePriorGroundedLegalSource,
   localizeKnownLegalLookupAnswer,
   shouldUseRagForIntent,
   shouldShowSources,
@@ -213,6 +214,48 @@ test('legal follow-up query keeps the previously named Act when the user says th
     }),
     'What did the Referendum Legislation Amendment Act 1999 change?'
   );
+});
+
+test('this Act follow-up is classified as a legal lookup', () => {
+  const message = 'Does this Act mention referendum pamphlets being translated?';
+  const facts = extractSupportFacts({ message });
+
+  assert.equal(
+    classifyResponseMode({
+      message,
+      sessionFacts: facts.originalFacts
+    }),
+    'legal_lookup'
+  );
+});
+
+test('prior grounded legal source is recovered from assistant metadata', () => {
+  const groundedLegalSource = resolvePriorGroundedLegalSource([
+    {
+      role: 'assistant',
+      content: 'Here is a grounded answer with citations.',
+      metadata: {
+        groundedLegalSource: {
+          sourceId: 'source-123',
+          title: 'Referendum Legislation Amendment Act 1999',
+          legislationName: 'Referendum Legislation Amendment Act 1999',
+          citationUrl: 'https://example.com/act'
+        }
+      }
+    },
+    {
+      role: 'user',
+      content: 'Does this Act mention referendum pamphlets being translated?',
+      metadata: {}
+    }
+  ]);
+
+  assert.deepEqual(groundedLegalSource, {
+    sourceId: 'source-123',
+    title: 'Referendum Legislation Amendment Act 1999',
+    legislationName: 'Referendum Legislation Amendment Act 1999',
+    citationUrl: 'https://example.com/act'
+  });
 });
 
 test('triage handoff response meta preserves the same session and hides sources', () => {
