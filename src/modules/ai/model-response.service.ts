@@ -179,7 +179,10 @@ const buildUserPrompt = (
   [
     ...buildBasePromptSections(input, promptStyle),
     promptStyle === 'strict'
-      ? buildGuardrailRevisionInstruction()
+      ? buildGuardrailRevisionInstruction({
+          intent: input.intent,
+          latestUserMessage: input.latestUserMessage
+        })
       : promptStyle === 'compact'
         ? 'Write one brief, natural SafeSpeak reply in plain text. Do not output JSON.'
         : 'Write the final assistant reply naturally. Do not output JSON.'
@@ -563,15 +566,21 @@ export const generateSafeSpeakResponse = async (
     }
 
     if (softViolations.length > 0) {
+      const requiresStrictRepair =
+        softViolations.includes('missing_legal_boundary_disclaimer') ||
+        softViolations.includes('evidence_legal_strategy') ||
+        softViolations.includes('checklist_heavy_for_intent');
       const requiresCompactRetry =
         softViolations.includes('too_long_for_intent') ||
         softViolations.includes('too_many_paragraphs_for_intent') ||
         softViolations.includes('too_many_questions') ||
         softViolations.includes('bullet_heavy_non_actionable');
 
-      if (requiresCompactRetry) {
+      if (requiresStrictRepair || requiresCompactRetry) {
         const rewrittenMessage = await attemptModelCallTwice(() =>
-          rewriteCompactOpenAI({ ...input, mode, model, ragContext, ragStatus }, assistantMessage)
+          requiresStrictRepair
+            ? callOpenAI({ ...input, mode, model, ragContext, ragStatus }, 'strict')
+            : rewriteCompactOpenAI({ ...input, mode, model, ragContext, ragStatus }, assistantMessage)
         );
         if (rewrittenMessage.trim()) {
           assistantMessage = rewrittenMessage;

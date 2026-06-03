@@ -81,19 +81,6 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
     };
   }
 
-  if (
-    /\b(please answer in paragraphs|answer in paragraphs|please use paragraphs|use paragraphs|not bullet points|don t use bullets|do not use bullets|stop using bullet points|without bullet points|not bullets|please use bullet points|use bullet points|answer in bullet points|give me bullet points|please use bullets|mix|mixed format|some bullets|both paragraphs and bullets)\b/.test(
-      normalized
-    )
-  ) {
-    return {
-      intent: 'format_preference_set',
-      confidence: 'high',
-      matchedSignals: ['format_preference_set'],
-      classifierSource: 'rule'
-    };
-  }
-
   const safetySignals = collectSignals(normalized, [
     { signal: 'immediate_danger_phrase', pattern: /\b(right now|outside my house|still here|still outside|coming back|following me)\b/ },
     { signal: 'weapon_or_kill_threat', pattern: /\b(weapon|knife|gun|kill me|kill us|threatening me right now)\b/ },
@@ -136,7 +123,8 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
 
   const evidenceSignals = collectSignals(normalized, [
     { signal: 'evidence_upload_terms', pattern: /\b(upload|attach|share|add)\b.*\b(screenshot|screenshots|photo|photos|image|images|file|files|document|documents|evidence|proof)\b/ },
-    { signal: 'evidence_question', pattern: /\b(can i upload|can i attach|i have screenshots|i have proof)\b/ }
+    { signal: 'evidence_question', pattern: /\b(can i upload|can i attach|i have screenshots|i have proof)\b/ },
+    { signal: 'evidence_organisation', pattern: /\b(how can i|how do i|help me)\b.*\b(organi[sz]e|document|sort|label|arrange)\b.*\b(photo|photos|image|images|evidence|screenshots?)\b/ }
   ]);
   if (evidenceSignals.length > 0) {
     return {
@@ -188,7 +176,8 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
 
   const scamSignals = collectSignals(normalized, [
     { signal: 'scam_term', pattern: /\b(scam|fraud|phishing|fake link|otp|reportcyber|scamwatch)\b/ },
-    { signal: 'identity_or_bank_risk', pattern: /\b(bank details|identity theft|passport|credit card|account hacked)\b/ }
+    { signal: 'identity_or_bank_risk', pattern: /\b(bank details|identity theft|passport|credit card|account hacked)\b/ },
+    { signal: 'scam_warning_signs_request', pattern: /\b(warning signs|red flags)\b/ }
   ]);
   if (scamSignals.length > 0) {
     return {
@@ -201,7 +190,9 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
 
   const incidentSignals = collectSignals(normalized, [
     { signal: 'incident_disclosure_term', pattern: /\b(happened|harassed|threatened|abused|followed me|touched me|they did this to me)\b/ },
-    { signal: 'distress_context', pattern: /\b(scared|upset|someone followed me|someone touched me)\b/ }
+    { signal: 'distress_context', pattern: /\b(scared|upset|someone followed me|someone touched me)\b/ },
+    { signal: 'workplace_mocking_or_belonging', pattern: /\b(boss|manager|supervisor|coworker|co worker|colleague|work)\b.*\b(mock|mocking|laugh|accent|belong|do not belong|dont belong|humiliat|put me down)\b/ },
+    { signal: 'discrimination_phrase', pattern: /\b(accent|where i come from|do not belong here|dont belong here)\b/ }
   ]);
   if (incidentSignals.length > 0) {
     return {
@@ -242,6 +233,19 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
       intent: 'general_conversation',
       confidence: 'high',
       matchedSignals: generalSignals,
+      classifierSource: 'rule'
+    };
+  }
+
+  if (
+    /\b(please answer in paragraphs|answer in paragraphs|please use paragraphs|use paragraphs|not bullet points|don t use bullets|do not use bullets|stop using bullet points|without bullet points|not bullets|please use bullet points|use bullet points|answer in bullet points|give me bullet points|please use bullets|mix|mixed format|some bullets|both paragraphs and bullets)\b/.test(
+      normalized
+    )
+  ) {
+    return {
+      intent: 'format_preference_set',
+      confidence: 'high',
+      matchedSignals: ['format_preference_set'],
       classifierSource: 'rule'
     };
   }

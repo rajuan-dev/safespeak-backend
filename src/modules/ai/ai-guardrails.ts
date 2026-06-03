@@ -129,6 +129,7 @@ export type SafeSpeakGuardrailViolationCode =
   | 'safety_promise'
   | 'evidence_legal_strategy'
   | 'bullet_heavy_non_actionable'
+  | 'checklist_heavy_for_intent'
   | 'too_many_questions'
   | 'too_long_for_intent'
   | 'too_many_paragraphs_for_intent';
@@ -143,11 +144,9 @@ export type SafeSpeakGuardrailSeverity = 'hard' | 'soft';
 const HARD_GUARDRAIL_VIOLATIONS = new Set<SafeSpeakGuardrailViolationCode>([
   'wrong_au_emergency_number',
   'legal_conclusion',
-  'missing_legal_boundary_disclaimer',
   'false_action_claim',
   'role_violation',
-  'safety_promise',
-  'evidence_legal_strategy'
+  'safety_promise'
 ]);
 
 export const getSafeSpeakGuardrailSeverity = (
@@ -210,11 +209,79 @@ export const getSafeSpeakSystemPrompt = (language: string): string =>
 export const buildRawDevSystemPrompt = (): string =>
   'You are a helpful assistant. Reply naturally and directly in plain text.';
 
-export const buildGuardrailRevisionInstruction = (): string =>
-  'Revise the answer to comply with SafeSpeak rules. Remove prohibited legal conclusions, wrong emergency numbers, false action claims, legal-strategy evidence language, commanding language like "you must" or "you need to", extra questions, and unnecessary length. Keep it brief, lower-pressure, information-only, and documentation-focused. For legal-boundary answers, clearly avoid deciding legality or telling the user to sue.';
+export const buildGuardrailRevisionInstruction = (input?: {
+  intent?: string;
+  latestUserMessage?: string;
+  violations?: SafeSpeakGuardrailViolationCode[];
+}): string => {
+  const instructions = [
+    'Revise the answer to comply with SafeSpeak rules.',
+    'Remove prohibited legal conclusions, wrong emergency numbers, false action claims, legal-strategy evidence language, commanding language like "you must" or "you need to", extra questions, and unnecessary length.',
+    'Keep it brief, lower-pressure, information-only, and documentation-focused.'
+  ];
+
+  if (input?.intent === 'legal_boundary_specific_case') {
+    instructions.push(
+      'For this legal-boundary answer, clearly say this is information only, not legal advice.',
+      'Do not decide legality or tell the user they can sue or have a case.',
+      'Ask at most one minimal state or context question.'
+    );
+  }
+
+  if (input?.intent === 'scam_check') {
+    instructions.push(
+      'For this scam answer, practical warning signs and concise bullets are allowed when helpful.',
+      'Do not blame the user or claim certainty.'
+    );
+  }
+
+  if (input?.intent === 'evidence_upload') {
+    instructions.push(
+      'For this evidence answer, keep it short and organized.',
+      'Bullets or numbered steps are allowed when the user asks how to organize evidence.'
+    );
+  }
+
+  if (input?.intent === 'physical_harm') {
+    instructions.push(
+      'For this physical-harm answer, avoid a long checklist.',
+      'Keep it safety-aware, short, and ask only one question.'
+    );
+  }
+
+  if (input?.intent === 'incident_disclosure') {
+    instructions.push(
+      'For this incident disclosure, acknowledge calmly, mention only a broad pathway if helpful, and ask one question max.'
+    );
+  }
+
+  return instructions.join(' ');
+};
 
 export const buildCompactRetryInstruction = (): string =>
   'Rewrite more briefly in SafeSpeak persona. Keep the meaning. Use short paragraphs. Ask at most one question. Do not add new claims. Keep it information-only and low-pressure.';
+
+const hasChecklistHeavyPattern = (input: {
+  text: string;
+  intent?: string;
+}): boolean => {
+  const bulletCount = (input.text.match(BULLET_LINE_PATTERN) ?? []).length;
+  const checklistSignalCount = [
+    /\b(screenshot|screenshots|photo|photos|evidence|timeline|document|report|police|doctor|hospital|insurance)\b/gi
+  ]
+    .flatMap((pattern) => input.text.match(pattern) ?? [])
+    .length;
+
+  if (input.intent === 'physical_harm') {
+    return bulletCount > 1 || checklistSignalCount >= 4;
+  }
+
+  if (input.intent === 'evidence_upload') {
+    return bulletCount > 5;
+  }
+
+  return false;
+};
 
 const allowsStructuredBullets = (input: {
   intent?: string;
@@ -289,12 +356,36 @@ export const validateSafeSpeakResponse = (input: {
     violations.add('wrong_au_emergency_number');
   }
 
+  const hasAllowedLegalBoundaryLanguage =
+    /\b(?:cannot|can’t|can't)\s+(?:decide|say|tell|determine)\b/i.test(input.text) ||
+    /\binformation only\b/i.test(input.text) ||
+    /\bnot legal advice\b/i.test(input.text);
+  const hasProhibitedSuingConclusion =
+    /\byou can sue\b/i.test(input.text) &&
+    !/\bwhether you can sue\b/i.test(input.text) &&
+    !/\b(?:cannot|can’t|can't)\s+(?:decide|say|tell|determine).{0,80}\byou can sue\b/i.test(input.text);
+  const hasProhibitedCaseConclusion =
+    /\byou have a case\b/i.test(input.text) &&
+    !/\b(?:cannot|can’t|can't)\s+(?:decide|say|tell|determine).{0,80}\byou have a case\b/i.test(input.text);
+  const hasProhibitedIllegalConclusion =
+    (/\b(?:it|this|that) is illegal\b/i.test(input.text) ||
+      /\bthis is definitely illegal\b/i.test(input.text) ||
+      /\bthat is definitely illegal\b/i.test(input.text) ||
+      /\bthey broke the law\b/i.test(input.text)) &&
+    !hasAllowedLegalBoundaryLanguage;
   const hasDefinitiveIllegalConclusion =
     /\b(?:it|this|that) is illegal\b/i.test(input.text) &&
     !/\b(?:cannot|can’t|can't)\s+decide whether it is illegal\b/i.test(input.text) &&
     !/\bwhether it(?:'|’)s illegal depends\b/i.test(input.text);
 
-  if (LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(input.text)) || hasDefinitiveIllegalConclusion) {
+  if (
+    (LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(input.text)) &&
+      !hasAllowedLegalBoundaryLanguage) ||
+    hasProhibitedSuingConclusion ||
+    hasProhibitedCaseConclusion ||
+    hasProhibitedIllegalConclusion ||
+    hasDefinitiveIllegalConclusion
+  ) {
     violations.add('legal_conclusion');
   }
 
@@ -338,6 +429,10 @@ export const validateSafeSpeakResponse = (input: {
 
   if (!input.allowMultipleQuestions && (input.text.match(/\?/g) ?? []).length > 1) {
     violations.add('too_many_questions');
+  }
+
+  if (hasChecklistHeavyPattern({ text: input.text, intent: input.intent })) {
+    violations.add('checklist_heavy_for_intent');
   }
 
   if (

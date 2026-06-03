@@ -412,6 +412,18 @@ test('general legal education classifies separately from specific legal advice',
     classifySafeSpeakIntent('Is this illegal? Can I sue them?'),
     'legal_boundary_specific_case'
   );
+  assert.equal(
+    classifySafeSpeakIntent('Give me bullet points about scam warning signs'),
+    'scam_check'
+  );
+  assert.equal(
+    classifySafeSpeakIntent('How can I organize photos as evidence?'),
+    'evidence_upload'
+  );
+  assert.equal(
+    classifySafeSpeakIntent('My boss keeps mocking my accent and says I do not belong here.'),
+    'incident_disclosure'
+  );
 });
 
 test('general legal information turn plan does not mutate triage', () => {
@@ -1211,6 +1223,49 @@ test('legal boundary specific-case response stays information-only and uses rag 
   }
 });
 
+test('legal specific question regenerates instead of falling back when disclaimer is initially missing', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'I cannot decide that from here. Whether it is illegal depends on the facts and the state.'
+            : 'This is information only, not legal advice. I cannot decide whether it was illegal or whether a civil claim may be available from here. The next step usually depends on the state or territory and what happened. Which state or territory is this in?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'legal_boundary_specific_case',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'Is this illegal? Can I sue them?',
+      context: createModelContext({
+        latestUserMessage: 'Is this illegal? Can I sue them?',
+        intent: 'legal_boundary_specific_case'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.staticTemplateUsed, false);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.equal(reply.responseSource, 'openai_model_regenerated');
+    assert.notEqual(reply.responseMode, 'guardrail_fallback');
+    assert.match(reply.assistantMessage, /information only, not legal advice/i);
+    assert.doesNotMatch(reply.assistantMessage, /you can sue|you have a case|definitely illegal/i);
+    assert.ok(countQuestions(reply.assistantMessage) <= 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('general legal information gives a useful brief overview without over-refusing', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({
@@ -1240,6 +1295,44 @@ test('general legal information gives a useful brief overview without over-refus
     assert.match(reply.assistantMessage, /information only|not legal advice/i);
     assert.doesNotMatch(reply.assistantMessage, /you can sue|you have a case|this is illegal/i);
     assert.equal(reply.showSources, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('scam bullet request stays model-generated and keeps bullets without fallback', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text: [
+        '- Pressure to pay or act immediately',
+        '- A suspicious link or request for codes',
+        '- Contact details that do not match the real service',
+        '',
+        'If you want, I can help you check one message safely.'
+      ].join('\n')
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'scam_check',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'Give me bullet points about scam warning signs',
+      context: createModelContext({
+        latestUserMessage: 'Give me bullet points about scam warning signs',
+        intent: 'scam_check',
+        assistantFormatPreference: 'paragraphs'
+      })
+    });
+
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.staticTemplateUsed, false);
+    assert.notEqual(reply.responseMode, 'guardrail_fallback');
+    assert.match(reply.assistantMessage, /^\s*[-*•]/m);
+    assert.doesNotMatch(reply.assistantMessage, /you got scammed|definitely a scam/i);
   } finally {
     global.fetch = originalFetch;
   }
@@ -1306,6 +1399,38 @@ test('physical harm replies stay short and ask one question max', async () => {
   }
 });
 
+test('workplace accent mocking stays calm and does not fallback', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text:
+        'That sounds upsetting. It may fit a workplace bullying or discrimination pathway depending on the context. If you feel comfortable, was this happening at work with a manager or coworker?'
+    })
+  });
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'incident_disclosure',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'My boss keeps mocking my accent and says I do not belong here.',
+      context: createModelContext({
+        latestUserMessage: 'My boss keeps mocking my accent and says I do not belong here.',
+        intent: 'incident_disclosure'
+      })
+    });
+
+    assert.equal(reply.usedModelGeneration, true);
+    assert.notEqual(reply.responseMode, 'guardrail_fallback');
+    assert.match(reply.assistantMessage, /workplace bullying|discrimination/i);
+    assert.doesNotMatch(reply.assistantMessage, /definitely illegal|you can sue|you have a case/i);
+    assert.ok(countQuestions(reply.assistantMessage) <= 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('physical harm long reply regenerates instead of using technical fallback', async () => {
   const originalFetch = global.fetch;
   let callCount = 0;
@@ -1317,7 +1442,7 @@ test('physical harm long reply regenerates instead of using technical fallback',
       json: async () => ({
         output_text:
           callCount === 1
-            ? 'I’m sorry that happened. What you described sounds serious, and it can help to pause, check your surroundings, think about whether you are hurt, notice whether the person is still nearby, and consider whether you want to document the location, the time, and any witnesses before deciding what to do next. If you are injured you may want medical help, and if the person is still there you may want urgent support. Are you hurt right now?'
+            ? '- Check whether you are hurt.\n- Look around for witnesses.\n- Write down the location.\n- Save the time.\n- Take photos later if you can.\n- Think about reporting it.\nAre you hurt right now?'
             : 'I’m sorry that happened. Are you hurt or in any immediate danger right now?'
       })
     };
@@ -1373,6 +1498,49 @@ test('evidence replies stay short and avoid false upload or legal-strategy claim
     assert.ok(countQuestions(reply.assistantMessage) <= 1);
     assert.doesNotMatch(reply.assistantMessage, /hard to dispute|prove your case|strong evidence|build your case/i);
     assert.doesNotMatch(reply.assistantMessage, /uploaded for you|saved for you|shared for you|sent for you|synced for you/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('evidence organisation answer regenerates into a concise structured reply', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'You can organize the photos by making a folder for the event, keeping the original files, creating separate groups for before, during, and after, adding short notes about what each image shows, saving dates, locations, file names, and devices, keeping a separate note for anything you are unsure about, tracking who took each photo if that matters, and writing down how the images connect to the incident so you can come back to it later without losing context.'
+            : 'You can keep it simple:\n1. Keep the original files unchanged.\n2. Group photos by time or event.\n3. Add a short note about what each photo shows.\nWould you like a simple naming format?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'evidence_upload',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'How can I organize photos as evidence?',
+      context: createModelContext({
+        latestUserMessage: 'How can I organize photos as evidence?',
+        intent: 'evidence_upload'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.equal(reply.responseSource, 'openai_model_regenerated');
+    assert.match(reply.assistantMessage, /^\s*(?:[-*•]|\d+\.)/m);
+    assert.ok(countQuestions(reply.assistantMessage) <= 1);
+    assert.ok(countWords(reply.assistantMessage) <= 45);
+    assert.doesNotMatch(reply.assistantMessage, /uploaded for you|saved for you|shared for you|sent for you|synced for you/i);
+    assert.doesNotMatch(reply.assistantMessage, /prove your case|strong evidence|build your case|hard to dispute/i);
   } finally {
     global.fetch = originalFetch;
   }
