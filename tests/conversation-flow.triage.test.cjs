@@ -13,6 +13,7 @@ const {
   buildRelatedIssueTypes,
   buildSafetySteps,
   buildSupportReply,
+  buildTurnHandlingPlan,
   buildAssistantMessageMetadata,
   classifyResponseMode,
   detectAssistantLanguage,
@@ -36,6 +37,7 @@ const {
 const {
   buildSafeSpeakFallbackResponse,
   generateSafeSpeakResponse,
+  normalizeAssistantContent,
 } = require('../src/modules/ai/model-response.service.ts');
 const {
   ASSISTANT_LANGUAGE_REGISTRY,
@@ -176,6 +178,120 @@ test('sequential meta feedback then physical harm classification stays distinct'
   );
 });
 
+test('meta feedback turn plan does not mutate the active incident triage', () => {
+  const plan = buildTurnHandlingPlan({
+    selectedIntent: 'meta_feedback',
+    responseMode: 'meta_feedback',
+    existingFacts: {
+      whatHappened: 'Someone sent death threats on Facebook.',
+      evidenceMentioned: 'screenshots'
+    },
+    existingTimeline: {
+      what: 'Someone sent death threats on Facebook.',
+      evidence: 'screenshots'
+    },
+    sessionRiskLevel: 'high',
+    latestTurnRiskLevel: 'none',
+    sessionId: 'session-123',
+    session: {
+      activeIssueId: 'session-123:issue-1'
+    },
+    latestUserMessage: 'why are you replying the same thing every time?'
+  });
+
+  assert.equal(plan.nonIncidentTurn, true);
+  assert.equal(plan.triageUpdated, false);
+  assert.equal(plan.latestTurnRiskLevel, 'none');
+  assert.equal(plan.activeIncidentRiskLevel, 'high');
+  assert.equal(plan.sessionHistoricalMaxRiskLevel, 'high');
+  assert.equal(plan.activeIssueId, 'session-123:issue-1');
+});
+
+test('greeting turn plan stays general and does not mutate triage', () => {
+  const plan = buildTurnHandlingPlan({
+    selectedIntent: 'general_conversation',
+    responseMode: 'clarification_needed',
+    existingFacts: null,
+    existingTimeline: {},
+    sessionRiskLevel: 'low',
+    latestTurnRiskLevel: 'none',
+    sessionId: 'session-124',
+    session: {},
+    latestUserMessage: 'hi'
+  });
+
+  assert.equal(plan.nonIncidentTurn, true);
+  assert.equal(plan.triageUpdated, false);
+  assert.equal(plan.latestTurnRiskLevel, 'none');
+  assert.equal(plan.activeIncidentRiskLevel, 'none');
+});
+
+test('language request turn plan does not mutate triage', () => {
+  const plan = buildTurnHandlingPlan({
+    selectedIntent: 'language_or_translation',
+    responseMode: 'clarification_needed',
+    existingFacts: null,
+    existingTimeline: {},
+    sessionRiskLevel: 'low',
+    latestTurnRiskLevel: 'none',
+    sessionId: 'session-125',
+    session: {},
+    latestUserMessage: 'can you speak in bangla?'
+  });
+
+  assert.equal(plan.nonIncidentTurn, true);
+  assert.equal(plan.triageUpdated, false);
+  assert.equal(plan.latestTurnRiskLevel, 'none');
+  assert.equal(plan.activeIncidentRiskLevel, 'none');
+});
+
+test('evidence upload without an active incident stays non-incident and does not create new triage facts', () => {
+  const plan = buildTurnHandlingPlan({
+    selectedIntent: 'evidence_upload',
+    responseMode: 'evidence_upload_intent',
+    existingFacts: null,
+    existingTimeline: {},
+    sessionRiskLevel: 'low',
+    latestTurnRiskLevel: 'low',
+    sessionId: 'session-126',
+    session: {},
+    latestUserMessage: 'I have photos of what happened.'
+  });
+
+  assert.equal(plan.nonIncidentTurn, true);
+  assert.equal(plan.triageUpdated, false);
+  assert.equal(plan.evidenceOnlyUpdate, false);
+  assert.deepEqual(plan.nextTimeline, {});
+});
+
+test('active incident evidence follow-up stays on the same issue and adds evidence only', () => {
+  const plan = buildTurnHandlingPlan({
+    selectedIntent: 'evidence_upload',
+    responseMode: 'evidence_upload_intent',
+    existingFacts: {
+      whatHappened: 'Someone sent me death threats on Facebook.'
+    },
+    existingTimeline: {
+      what: 'Someone sent me death threats on Facebook.'
+    },
+    sessionRiskLevel: 'high',
+    latestTurnRiskLevel: 'low',
+    sessionId: 'session-127',
+    session: {
+      activeIssueId: 'session-127:issue-1'
+    },
+    latestUserMessage: 'I have screenshots.'
+  });
+
+  assert.equal(plan.nonIncidentTurn, false);
+  assert.equal(plan.triageUpdated, true);
+  assert.equal(plan.evidenceOnlyUpdate, true);
+  assert.equal(plan.activeIssueId, 'session-127:issue-1');
+  assert.equal(plan.latestTurnRiskLevel, 'low');
+  assert.equal(plan.activeIncidentRiskLevel, 'high');
+  assert.match(plan.nextTimeline.evidence, /screenshots/i);
+});
+
 test('model response path uses generation metadata for general conversation', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({
@@ -300,6 +416,137 @@ test('guardrail rewrites wrong emergency number for AU emergency context', async
     assert.equal(reply.guardrailStatus, 'regenerated');
     assert.match(reply.assistantMessage, /000/);
     assert.doesNotMatch(reply.assistantMessage, /\b911|999|112\b/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('utf8 repair preserves assistant punctuation through model output and json round-trip', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text: 'IΓÇÖm using a ΓÇ£safe defaultΓÇ¥ style ΓÇö IΓÇÖll keep it natural.'
+    })
+  });
+
+  try {
+    assert.equal(
+      normalizeAssistantContent('IΓÇÖm using a ΓÇ£safe defaultΓÇ¥ style ΓÇö IΓÇÖll keep it natural.'),
+      'I’m using a “safe default” style — I’ll keep it natural.'
+    );
+
+    const reply = await generateSafeSpeakResponse({
+      intent: 'meta_feedback',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'you sound scripted',
+      context: {
+        app: 'SafeSpeak',
+        jurisdiction: 'AU',
+        latestUserMessage: 'you sound scripted',
+        detectedLanguage: 'en',
+        intent: 'meta_feedback',
+        conversationSummary: 'user says the reply sounds scripted',
+        activeIncidentSummary: 'None recorded.',
+        consentSnapshot: {
+          store_local: false,
+          cloud_sync: false,
+          share_with_agencies: false,
+          retain_evidence: false,
+          process_with_ai: true,
+          translate_content: false,
+          warm_referral: false
+        },
+        safetyContext: {
+          latestTurnRiskLevel: 'none',
+          activeIncidentRiskLevel: 'none',
+          sessionHistoricalMaxRiskLevel: 'none',
+          immediateDanger: false,
+          threatsPresent: false,
+          physicalHarm: false,
+          domesticFamilyViolence: false,
+          selfHarm: false,
+          childSafety: false,
+          recommendedEmergencyNumber: '000',
+          relevantSupport: []
+        },
+        ragContext: [],
+        constraints: []
+      }
+    });
+    const apiJson = JSON.parse(JSON.stringify({ assistantMessage: reply.assistantMessage }));
+
+    assert.equal(reply.assistantMessage, 'I’m using a “safe default” style — I’ll keep it natural.');
+    assert.equal(apiJson.assistantMessage, 'I’m using a “safe default” style — I’ll keep it natural.');
+    assert.doesNotMatch(reply.assistantMessage, /ΓÇ|â€™|â€œ|â€\x9D|â€“|â€”/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('evidence response guardrail regenerates legal-strategy phrasing into lower-pressure guidance', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'You can keep the photos because they are hard to dispute and strong evidence for a complaint. Would you like help organising them?'
+            : 'You can keep the photos as part of your record if that feels comfortable. Try to keep the originals unchanged and note what each photo shows. Would you like help organising them into a simple timeline?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'evidence_upload',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'I have photos of what happened.',
+      context: {
+        app: 'SafeSpeak',
+        jurisdiction: 'AU',
+        latestUserMessage: 'I have photos of what happened.',
+        detectedLanguage: 'en',
+        intent: 'evidence_upload',
+        conversationSummary: 'user says they have photos',
+        activeIncidentSummary: 'None recorded.',
+        consentSnapshot: {
+          store_local: false,
+          cloud_sync: false,
+          share_with_agencies: false,
+          retain_evidence: false,
+          process_with_ai: true,
+          translate_content: false,
+          warm_referral: false
+        },
+        safetyContext: {
+          latestTurnRiskLevel: 'low',
+          activeIncidentRiskLevel: 'none',
+          sessionHistoricalMaxRiskLevel: 'none',
+          immediateDanger: false,
+          threatsPresent: false,
+          physicalHarm: false,
+          domesticFamilyViolence: false,
+          selfHarm: false,
+          childSafety: false,
+          recommendedEmergencyNumber: '000',
+          relevantSupport: []
+        },
+        ragContext: [],
+        constraints: []
+      }
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.doesNotMatch(reply.assistantMessage, /hard to dispute|strong evidence|prove your case|build your case|complaint/i);
+    assert.match(reply.assistantMessage, /part of your record|originals unchanged|photo shows/i);
   } finally {
     global.fetch = originalFetch;
   }

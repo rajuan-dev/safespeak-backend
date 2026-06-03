@@ -88,6 +88,24 @@ export type GenerateSafeSpeakResponseOutput = {
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 
+const COMMON_MOJIBAKE_REPAIRS: Array<[RegExp, string]> = [
+  [/ΓÇÖ/g, '’'],
+  [/ΓÇ£/g, '“'],
+  [/ΓÇ¥/g, '”'],
+  [/ΓÇô/g, '–'],
+  [/ΓÇö/g, '—'],
+  [/â€™/g, '’'],
+  [/â€œ/g, '“'],
+  [/â€\x9D/g, '”'],
+  [/â€“/g, '–'],
+  [/â€”/g, '—'],
+  [/â€˜/g, '‘'],
+  [/â€¦/g, '…']
+];
+
+export const normalizeAssistantContent = (value: string): string =>
+  COMMON_MOJIBAKE_REPAIRS.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), value);
+
 const extractOutputText = (payload: unknown): string => {
   const response = payload as {
     output_text?: string;
@@ -232,7 +250,7 @@ const callOpenAI = async (input: GenerateSafeSpeakResponseInput, strictRetry = f
     throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI response request failed');
   }
 
-  return extractOutputText(await response.json()).trim();
+  return normalizeAssistantContent(extractOutputText(await response.json()).trim());
 };
 
 export const generateSafeSpeakResponse = async (
@@ -291,7 +309,8 @@ export const generateSafeSpeakResponse = async (
     let validation = validateSafeSpeakResponse({
       text: assistantMessage,
       jurisdiction: 'AU',
-      allowMultipleQuestions: input.intent === 'safety_crisis'
+      allowMultipleQuestions: input.intent === 'safety_crisis',
+      latestUserMessage: input.latestUserMessage
     });
 
     if (!validation.passed) {
@@ -303,7 +322,8 @@ export const generateSafeSpeakResponse = async (
       validation = validateSafeSpeakResponse({
         text: assistantMessage,
         jurisdiction: 'AU',
-        allowMultipleQuestions: input.intent === 'safety_crisis'
+        allowMultipleQuestions: input.intent === 'safety_crisis',
+        latestUserMessage: input.latestUserMessage
       });
     }
 
@@ -350,7 +370,7 @@ export const generateSafeSpeakResponse = async (
           : 'openai_model';
 
     return {
-      assistantMessage,
+      assistantMessage: normalizeAssistantContent(assistantMessage),
       nextQuestion: '',
       readyForSubmission: false,
       confidence: 'medium',

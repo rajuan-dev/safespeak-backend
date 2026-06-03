@@ -80,6 +80,13 @@ const ROLE_VIOLATION_PATTERNS = [
   /\bi will manage your case\b/i
 ];
 const SAFETY_PROMISE_PATTERNS = [/\byou are safe now\b/i, /\beverything will be okay\b/i];
+const EVIDENCE_LEGAL_STRATEGY_PATTERNS = [
+  /\bhard to dispute\b/i,
+  /\bstrong evidence\b/i,
+  /\bprove your case\b/i,
+  /\bbuild your case\b/i,
+  /\buse this against them\b/i
+];
 
 export type SafeSpeakGuardrailViolationCode =
   | 'wrong_au_emergency_number'
@@ -87,6 +94,7 @@ export type SafeSpeakGuardrailViolationCode =
   | 'false_action_claim'
   | 'role_violation'
   | 'safety_promise'
+  | 'evidence_legal_strategy'
   | 'too_many_questions';
 
 export type SafeSpeakGuardrailResult = {
@@ -112,6 +120,9 @@ export const getSafeSpeakSystemPrompt = (language: string): string =>
     'Use words like may, possible, option, and pathway.',
     'For evidence upload questions, explain consent, storage, cloud sync, retention, and agency sharing only as relevant.',
     'Do not claim evidence has been uploaded, shared, synced, retained, or analysed unless a confirmed user action says that happened.',
+    'Keep evidence guidance short, low-pressure, consent-aware, and documentation-focused.',
+    'Avoid legal-strategy phrasing like hard to dispute, strong evidence, prove your case, build your case, or use this against them.',
+    'Do not push the user toward a complaint unless they asked about reporting or complaints.',
     'For AI-analysis questions, clearly separate upload from AI processing.',
     'Uploading a file does not automatically mean it is analysed unless the user chooses that AI step and consent allows it.',
     'For normal conversation or feedback about the assistant, answer directly and naturally.',
@@ -126,7 +137,7 @@ export const buildRawDevSystemPrompt = (): string =>
   'You are a helpful assistant. Reply naturally and directly in plain text.';
 
 export const buildGuardrailRevisionInstruction = (): string =>
-  'Revise the answer to comply with SafeSpeak rules. Remove prohibited legal conclusions, wrong emergency numbers, false action claims, and extra questions.';
+  'Revise the answer to comply with SafeSpeak rules. Remove prohibited legal conclusions, wrong emergency numbers, false action claims, legal-strategy evidence language, and extra questions. Make this lower-pressure, information-only, and documentation-focused.';
 
 export const detectLegalAdviceRisk = (text: string): boolean =>
   LEGAL_ADVICE_RISK_PATTERNS.some((pattern) => pattern.test(text));
@@ -163,9 +174,11 @@ export const validateSafeSpeakResponse = (input: {
   text: string;
   jurisdiction?: string;
   allowMultipleQuestions?: boolean;
+  latestUserMessage?: string;
 }): SafeSpeakGuardrailResult => {
   const violations = new Set<SafeSpeakGuardrailViolationCode>();
   const normalizedJurisdiction = (input.jurisdiction ?? 'AU').toUpperCase();
+  const latestUserMessage = input.latestUserMessage ?? '';
 
   if (
     normalizedJurisdiction === 'AU' &&
@@ -188,6 +201,16 @@ export const validateSafeSpeakResponse = (input: {
 
   if (SAFETY_PROMISE_PATTERNS.some((pattern) => pattern.test(input.text))) {
     violations.add('safety_promise');
+  }
+
+  if (
+    EVIDENCE_LEGAL_STRATEGY_PATTERNS.some((pattern) => pattern.test(input.text)) ||
+    (/\bcomplaint\b/i.test(input.text) &&
+      !/\b(complaint|complain|report|reporting|agency|police|oaic|esafety|fair work)\b/i.test(
+        latestUserMessage
+      ))
+  ) {
+    violations.add('evidence_legal_strategy');
   }
 
   if (!input.allowMultipleQuestions && (input.text.match(/\?/g) ?? []).length > 1) {

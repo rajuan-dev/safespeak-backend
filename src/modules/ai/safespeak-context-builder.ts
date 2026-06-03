@@ -119,7 +119,9 @@ export const buildSafeSpeakContext = (
     'Respond naturally to the latest user message.',
     'Do not claim any upload, sharing, saving, syncing, or agency contact already happened unless confirmed by backend action.',
     'Use Australian emergency guidance only: 000.',
-    'Ask at most one user-facing question.'
+    'Ask at most one user-facing question.',
+    'For evidence messages, keep the answer short, low-pressure, consent-aware, and documentation-focused.',
+    'Avoid legal-strategy phrases like hard to dispute, prove your case, build your case, strong evidence, or use this against them.'
   ]
 });
 

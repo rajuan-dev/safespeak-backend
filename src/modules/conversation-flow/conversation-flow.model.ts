@@ -38,6 +38,10 @@ export interface ConversationFlowSessionDocument {
   detectedLanguage?: SupportedConversationLanguage;
   status: ConversationFlowStatus;
   safetyRiskLevel: ConversationFlowRiskLevel;
+  activeIssueId?: string;
+  latestTurnRiskLevel?: string;
+  activeIncidentRiskLevel?: string;
+  sessionHistoricalMaxRiskLevel?: string;
   jurisdiction?: string;
   location?: string;
   messageCount: number;
@@ -128,6 +132,26 @@ const conversationFlowSessionSchema = new Schema<ConversationFlowSessionDocument
       default: 'low',
       required: true,
       index: true
+    },
+    activeIssueId: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    latestTurnRiskLevel: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    activeIncidentRiskLevel: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    sessionHistoricalMaxRiskLevel: {
+      type: String,
+      required: false,
+      trim: true
     },
     jurisdiction: {
       type: String,

@@ -8,7 +8,10 @@ import {
   classifySafeSpeakIntent,
   classifySafeSpeakIntentDetails
 } from '@modules/ai/intent-classifier';
-import { generateSafeSpeakModelResponse } from '@modules/ai/model-response.service';
+import {
+  generateSafeSpeakModelResponse,
+  normalizeAssistantContent
+} from '@modules/ai/model-response.service';
 import {
   buildActiveIncidentSummary,
   buildSafeSpeakContext,
@@ -1056,6 +1059,24 @@ export const buildConversationAssistantResponseMeta = (input: {
       typeof input.assistantPayload.ragStatus === 'string'
         ? input.assistantPayload.ragStatus
         : 'not_required',
+    nonIncidentTurn: Boolean(input.assistantPayload.nonIncidentTurn),
+    triageUpdated: Boolean(input.assistantPayload.triageUpdated),
+    latestTurnRiskLevel:
+      typeof input.assistantPayload.latestTurnRiskLevel === 'string'
+        ? input.assistantPayload.latestTurnRiskLevel
+        : 'none',
+    activeIncidentRiskLevel:
+      typeof input.assistantPayload.activeIncidentRiskLevel === 'string'
+        ? input.assistantPayload.activeIncidentRiskLevel
+        : 'none',
+    sessionHistoricalMaxRiskLevel:
+      typeof input.assistantPayload.sessionHistoricalMaxRiskLevel === 'string'
+        ? input.assistantPayload.sessionHistoricalMaxRiskLevel
+        : 'none',
+    activeIssueId:
+      typeof input.assistantPayload.activeIssueId === 'string'
+        ? input.assistantPayload.activeIssueId
+        : undefined,
     selectedResponseSource:
       typeof input.assistantPayload.selectedResponseSource === 'string'
         ? input.assistantPayload.selectedResponseSource
@@ -1565,6 +1586,30 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
     metadata.ragStatus = assistantPayload.ragStatus;
   }
 
+  if (typeof assistantPayload.nonIncidentTurn === 'boolean') {
+    metadata.nonIncidentTurn = assistantPayload.nonIncidentTurn;
+  }
+
+  if (typeof assistantPayload.triageUpdated === 'boolean') {
+    metadata.triageUpdated = assistantPayload.triageUpdated;
+  }
+
+  if (typeof assistantPayload.latestTurnRiskLevel === 'string') {
+    metadata.latestTurnRiskLevel = assistantPayload.latestTurnRiskLevel;
+  }
+
+  if (typeof assistantPayload.activeIncidentRiskLevel === 'string') {
+    metadata.activeIncidentRiskLevel = assistantPayload.activeIncidentRiskLevel;
+  }
+
+  if (typeof assistantPayload.sessionHistoricalMaxRiskLevel === 'string') {
+    metadata.sessionHistoricalMaxRiskLevel = assistantPayload.sessionHistoricalMaxRiskLevel;
+  }
+
+  if (typeof assistantPayload.activeIssueId === 'string') {
+    metadata.activeIssueId = assistantPayload.activeIssueId;
+  }
+
   if (typeof assistantPayload.classifierSource === 'string') {
     metadata.classifierSource = assistantPayload.classifierSource;
   }
@@ -1638,6 +1683,12 @@ const logAssistantTurn = (input: {
   model?: string;
   ragStatus?: string;
   guardrailStatus: string;
+  nonIncidentTurn: boolean;
+  triageUpdated: boolean;
+  latestTurnRiskLevel: string;
+  activeIncidentRiskLevel: string;
+  sessionHistoricalMaxRiskLevel: string;
+  selectedResponseSource: string;
   assistantMessageId?: string;
   assistantTurnNumber?: number;
   assistantMessageContent: string;
@@ -1647,16 +1698,24 @@ const logAssistantTurn = (input: {
       sessionId: input.conversationSessionId,
       turnNumber: input.assistantTurnNumber ?? input.userTurnNumber,
       userMessageId: input.userMessageId,
+      latestUserMessageContent: input.latestUserMessageContent,
       latestUserMessageFirst120: input.latestUserMessageContent.slice(0, 120),
       detectedIntent: input.detectedIntent,
       intentConfidence: input.intentConfidence,
       aiResponseMode: input.aiResponseMode,
+      responseMode: input.aiResponseMode,
       responseSource: input.responseSource,
       model: input.model,
       ragStatus: input.ragStatus,
       usedModelGeneration: input.usedModelGeneration,
       staticTemplateUsed: input.staticTemplateUsed,
       guardrailStatus: input.guardrailStatus,
+      nonIncidentTurn: input.nonIncidentTurn,
+      triageUpdated: input.triageUpdated,
+      latestTurnRiskLevel: input.latestTurnRiskLevel,
+      activeIncidentRiskLevel: input.activeIncidentRiskLevel,
+      sessionHistoricalMaxRiskLevel: input.sessionHistoricalMaxRiskLevel,
+      selectedResponseSource: input.selectedResponseSource,
       assistantMessageId: input.assistantMessageId,
       assistantResponseFirst120: input.assistantMessageContent.slice(0, 120)
     },
@@ -2689,6 +2748,10 @@ const toSessionRecord = (session: ConversationFlowSessionDocument) => ({
   detectedLanguage: session.detectedLanguage,
   status: session.status,
   safetyRiskLevel: session.safetyRiskLevel,
+  activeIssueId: session.activeIssueId,
+  latestTurnRiskLevel: session.latestTurnRiskLevel ?? 'none',
+  activeIncidentRiskLevel: session.activeIncidentRiskLevel ?? 'none',
+  sessionHistoricalMaxRiskLevel: session.sessionHistoricalMaxRiskLevel ?? 'none',
   jurisdiction: session.jurisdiction,
   location: session.location,
   messageCount: session.messageCount,
@@ -3077,6 +3140,168 @@ const toConversationSafetyRiskLevel = (
   }
 
   return fallback;
+};
+
+const conversationRiskLevelToSafetyOverrideLevel = (
+  riskLevel?: ConversationFlowRiskLevel
+): SafetyOverrideLevel => {
+  if (riskLevel === 'immediate') {
+    return 'urgent';
+  }
+
+  if (riskLevel === 'high' || riskLevel === 'medium' || riskLevel === 'low') {
+    return riskLevel;
+  }
+
+  return 'none';
+};
+
+const maxConversationRiskLevel = (
+  left?: ConversationFlowRiskLevel,
+  right?: ConversationFlowRiskLevel
+): ConversationFlowRiskLevel | undefined => {
+  const order: Record<ConversationFlowRiskLevel, number> = {
+    low: 1,
+    medium: 2,
+    high: 3,
+    immediate: 4
+  };
+
+  if (!left) {
+    return right;
+  }
+
+  if (!right) {
+    return left;
+  }
+
+  return order[left] >= order[right] ? left : right;
+};
+
+const hasNonEmptyValue = (value?: string): boolean => Boolean(value?.trim());
+
+const hasActiveIncidentContext = (input: {
+  facts?: Partial<ConversationFlowFactsDocument> | null;
+  timeline?: Record<string, string>;
+  sessionRiskLevel?: ConversationFlowRiskLevel;
+}): boolean =>
+  [
+    input.facts?.whatHappened,
+    input.facts?.whereHappened,
+    input.facts?.whenHappened,
+    input.facts?.peopleInvolved,
+    input.facts?.safetyConcerns,
+    input.facts?.evidenceMentioned,
+    input.timeline?.what,
+    input.timeline?.where,
+    input.timeline?.when,
+    input.timeline?.who,
+    input.timeline?.unsafe_now,
+    input.timeline?.threats
+  ].some((value) => hasNonEmptyValue(value)) || Boolean(input.sessionRiskLevel && input.sessionRiskLevel !== 'low');
+
+const buildActiveIssueId = (
+  sessionId: string,
+  timeline: Record<string, string>,
+  session: ConversationFlowSessionDocument
+): string => {
+  if (session.activeIssueId?.trim()) {
+    return session.activeIssueId;
+  }
+
+  const issueSeed = [
+    timeline.what,
+    timeline.where,
+    timeline.when,
+    timeline.who,
+    timeline.relationship
+  ]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.trim().toLowerCase())
+    .join('|');
+
+  return issueSeed ? `${sessionId}:${issueSeed}` : `${sessionId}:issue-1`;
+};
+
+const extractEvidenceMentionFromMessage = (message: string): string | undefined => {
+  const labels = [
+    { label: 'screenshots', pattern: /\bscreenshot(s)?\b/i },
+    { label: 'photos', pattern: /\bphoto(s)?\b/i },
+    { label: 'images', pattern: /\bimage(s)?\b/i },
+    { label: 'videos', pattern: /\bvideo(s)?\b/i },
+    { label: 'messages', pattern: /\bmessage(s)?\b/i },
+    { label: 'emails', pattern: /\bemail(s)?\b/i },
+    { label: 'recordings', pattern: /\brecording(s)?\b/i },
+    { label: 'documents', pattern: /\bdocument(s)?\b/i },
+    { label: 'files', pattern: /\bfile(s)?\b/i },
+    { label: 'links', pattern: /\b(link|links|url|urls)\b/i }
+  ]
+    .filter((entry) => entry.pattern.test(message))
+    .map((entry) => entry.label);
+
+  return labels.length > 0 ? Array.from(new Set(labels)).join(', ') : undefined;
+};
+
+export const buildTurnHandlingPlan = (input: {
+  selectedIntent: string;
+  responseMode: ConversationAssistantResponseMode;
+  existingFacts?: Partial<ConversationFlowFactsDocument> | null;
+  existingTimeline?: Record<string, string>;
+  sessionRiskLevel?: ConversationFlowRiskLevel;
+  latestTurnRiskLevel: SafetyOverrideLevel;
+  sessionId: string;
+  session: ConversationFlowSessionDocument;
+  latestUserMessage: string;
+}) => {
+  const activeIncidentExists = hasActiveIncidentContext({
+    facts: input.existingFacts,
+    timeline: input.existingTimeline,
+    sessionRiskLevel: input.sessionRiskLevel
+  });
+  const nonIncidentIntent =
+    input.selectedIntent === 'meta_feedback' ||
+    input.selectedIntent === 'general_conversation' ||
+    input.selectedIntent === 'language_or_translation' ||
+    input.selectedIntent === 'ai_analysis_question';
+  const evidenceWithoutIncident =
+    input.selectedIntent === 'evidence_upload' && !activeIncidentExists;
+  const nonIncidentTurn = nonIncidentIntent || evidenceWithoutIncident;
+  const triageUpdated = !nonIncidentTurn;
+  const evidenceOnlyUpdate = input.selectedIntent === 'evidence_upload' && activeIncidentExists;
+  const nextTimeline = { ...(input.existingTimeline ?? {}) };
+  const evidenceMention = extractEvidenceMentionFromMessage(input.latestUserMessage);
+
+  if (evidenceOnlyUpdate && evidenceMention) {
+    nextTimeline.evidence = nextTimeline.evidence?.trim()
+      ? Array.from(
+          new Set(
+            nextTimeline.evidence
+              .split(',')
+              .map((value) => value.trim())
+              .filter(Boolean)
+              .concat(evidenceMention.split(',').map((value) => value.trim()))
+          )
+        ).join(', ')
+      : evidenceMention;
+  }
+
+  return {
+    nonIncidentTurn,
+    triageUpdated,
+    evidenceOnlyUpdate,
+    nextTimeline,
+    activeIssueId:
+      triageUpdated || activeIncidentExists
+        ? buildActiveIssueId(input.sessionId, nextTimeline, input.session)
+        : undefined,
+    latestTurnRiskLevel: nonIncidentIntent ? 'none' : input.latestTurnRiskLevel,
+    activeIncidentRiskLevel: activeIncidentExists
+      ? conversationRiskLevelToSafetyOverrideLevel(input.sessionRiskLevel)
+      : triageUpdated
+        ? input.latestTurnRiskLevel
+        : 'none',
+    sessionHistoricalMaxRiskLevel: conversationRiskLevelToSafetyOverrideLevel(input.sessionRiskLevel)
+  };
 };
 
 const hasEnoughContextForTriageAssessment = (
@@ -4432,8 +4657,16 @@ const buildTriageForSession = async (
     { new: true, upsert: true }
   ).lean();
 
+  const previousSessionRiskLevel = session.safetyRiskLevel;
   session.detectedCategory = triage.likelyCategory;
   session.safetyRiskLevel = triage.safetyRiskLevel;
+  session.activeIncidentRiskLevel = conversationRiskLevelToSafetyOverrideLevel(triage.safetyRiskLevel);
+  session.sessionHistoricalMaxRiskLevel = conversationRiskLevelToSafetyOverrideLevel(
+    maxConversationRiskLevel(
+      triage.safetyRiskLevel,
+      previousSessionRiskLevel === 'low' ? undefined : previousSessionRiskLevel
+    )
+  );
   if (options.finalizeSession && canProceedToRecommendations) {
     session.status = 'triaged';
   }
@@ -4453,6 +4686,9 @@ export const createConversationFlowSession = async (
     location: input.location,
     status: 'active',
     safetyRiskLevel: 'low',
+    latestTurnRiskLevel: 'none',
+    activeIncidentRiskLevel: 'none',
+    sessionHistoricalMaxRiskLevel: 'none',
     messageCount: 0,
     userTurnCount: 0
   });
@@ -4530,15 +4766,18 @@ export const appendConversationFlowMessage = async (
     conversationSessionId: session._id
   }).lean();
   const existingTimeline = (existingFacts?.timeline ?? {}) as Record<string, string>;
-  const supportFacts = extractSupportFacts({
+  const activeIncidentExists = hasActiveIncidentContext({
+    facts: existingFacts,
+    timeline: existingTimeline,
+    sessionRiskLevel: session.safetyRiskLevel
+  });
+  const latestTurnFacts = extractSupportFacts({
     message: input.content,
-    sessionHistory: existingTimeline,
-    facts: existingFacts ?? undefined,
     jurisdiction: session.jurisdiction ?? undefined
   });
   const assistantLanguage = detectAssistantLanguage(input.content, input.language);
   session.detectedLanguage = assistantLanguage;
-  const safetyOverride = evaluateSafetyOverride(supportFacts);
+  const latestTurnSafetyOverride = evaluateSafetyOverride(latestTurnFacts);
   const detectedCategory = detectCategory({
     text: `${input.content}\n${JSON.stringify(existingTimeline)}`,
     selectedTopic: session.selectedTopic
@@ -4547,13 +4786,24 @@ export const appendConversationFlowMessage = async (
   const detectedIntent = intentClassification.intent;
   const responseMode = classifyResponseMode({
     message: input.content,
-    sessionFacts: supportFacts.originalFacts,
+    sessionFacts: latestTurnFacts.originalFacts,
     selectedTopic: session.selectedTopic
   });
   const selectedIntent = resolveConversationIntent({
     detectedIntent,
     responseMode,
-    sessionFacts: supportFacts.originalFacts
+    sessionFacts: latestTurnFacts.originalFacts
+  });
+  const turnHandlingPlan = buildTurnHandlingPlan({
+    selectedIntent,
+    responseMode,
+    existingFacts,
+    existingTimeline,
+    sessionRiskLevel: session.safetyRiskLevel,
+    latestTurnRiskLevel: latestTurnSafetyOverride.safetyLevel,
+    sessionId: session._id.toString(),
+    session,
+    latestUserMessage: input.content
   });
   const triageHandoffIntent = responseMode === 'triage_handoff';
 
@@ -4625,17 +4875,18 @@ export const appendConversationFlowMessage = async (
       activeIncidentSummary: buildActiveIncidentSummary(existingFacts ?? {}),
       consentSnapshot: consent,
       safetyContext: {
-        latestTurnRiskLevel: safetyOverride.safetyLevel,
-        activeIncidentRiskLevel: safetyOverride.safetyLevel,
-        sessionHistoricalMaxRiskLevel: session.safetyRiskLevel,
-        immediateDanger: supportFacts.originalFacts.immediateDanger,
-        threatsPresent: supportFacts.originalFacts.threatsPresent,
-        physicalHarm: supportFacts.originalFacts.physicalViolence,
-        domesticFamilyViolence: supportFacts.originalFacts.domesticViolence,
-        selfHarm: supportFacts.originalFacts.selfHarmOrSuicidal,
-        childSafety: supportFacts.originalFacts.childSafetyRisk,
+        latestTurnRiskLevel: turnHandlingPlan.latestTurnRiskLevel,
+        activeIncidentRiskLevel: turnHandlingPlan.activeIncidentRiskLevel,
+        sessionHistoricalMaxRiskLevel: turnHandlingPlan.sessionHistoricalMaxRiskLevel,
+        immediateDanger: latestTurnFacts.originalFacts.immediateDanger,
+        threatsPresent: latestTurnFacts.originalFacts.threatsPresent,
+        physicalHarm: latestTurnFacts.originalFacts.physicalViolence,
+        domesticFamilyViolence: latestTurnFacts.originalFacts.domesticViolence,
+        selfHarm: latestTurnFacts.originalFacts.selfHarmOrSuicidal,
+        childSafety: latestTurnFacts.originalFacts.childSafetyRisk,
         relevantSupport:
-          supportFacts.originalFacts.domesticViolence || supportFacts.originalFacts.sexualViolenceRisk
+          latestTurnFacts.originalFacts.domesticViolence ||
+          latestTurnFacts.originalFacts.sexualViolenceRisk
             ? ['1800RESPECT']
             : []
       },
@@ -4681,15 +4932,23 @@ export const appendConversationFlowMessage = async (
       typeof assistantPayload.selectedResponseSource === 'string'
         ? assistantPayload.selectedResponseSource
         : 'support_reply_builder',
+    nonIncidentTurn: turnHandlingPlan.nonIncidentTurn,
+    triageUpdated: turnHandlingPlan.triageUpdated,
+    latestTurnRiskLevel: turnHandlingPlan.latestTurnRiskLevel,
+    activeIncidentRiskLevel: turnHandlingPlan.activeIncidentRiskLevel,
+    sessionHistoricalMaxRiskLevel: turnHandlingPlan.sessionHistoricalMaxRiskLevel,
+    activeIssueId: turnHandlingPlan.activeIssueId,
     assistantLanguage,
-    safetyOverride: safetyOverride.safetyOverride || Boolean(assistantPayload.safetyOverride),
+    safetyOverride:
+      latestTurnSafetyOverride.safetyOverride || Boolean(assistantPayload.safetyOverride),
     safetyLevel:
       assistantPayload.safetyLevel ??
-      safetyOverride.safetyLevel,
+      turnHandlingPlan.latestTurnRiskLevel,
     safetyReasons:
-      assistantPayload.safetyReasons ?? safetyOverride.safetyReasons,
+      assistantPayload.safetyReasons ?? latestTurnSafetyOverride.safetyReasons,
     recommendedImmediateActions:
-      assistantPayload.recommendedImmediateActions ?? safetyOverride.recommendedImmediateActions,
+      assistantPayload.recommendedImmediateActions ??
+      latestTurnSafetyOverride.recommendedImmediateActions,
     showSources:
       responseMode === 'legal_lookup'
         ? assistantPayload.showSources
@@ -4698,9 +4957,11 @@ export const appendConversationFlowMessage = async (
 
   const assistantMessageContent = [
     typeof assistantPayload.assistantMessage === 'string'
-      ? assistantPayload.assistantMessage.trim()
+      ? normalizeAssistantContent(assistantPayload.assistantMessage.trim())
       : '',
-    typeof assistantPayload.nextQuestion === 'string' ? assistantPayload.nextQuestion.trim() : ''
+    typeof assistantPayload.nextQuestion === 'string'
+      ? normalizeAssistantContent(assistantPayload.nextQuestion.trim())
+      : ''
   ]
     .filter(Boolean)
     .join(' ');
@@ -4739,28 +5000,72 @@ export const appendConversationFlowMessage = async (
       typeof assistantPayload.guardrailStatus === 'string'
         ? assistantPayload.guardrailStatus
         : 'passed',
+    nonIncidentTurn: Boolean(assistantPayload.nonIncidentTurn),
+    triageUpdated: Boolean(assistantPayload.triageUpdated),
+    latestTurnRiskLevel:
+      typeof assistantPayload.latestTurnRiskLevel === 'string'
+        ? assistantPayload.latestTurnRiskLevel
+        : 'none',
+    activeIncidentRiskLevel:
+      typeof assistantPayload.activeIncidentRiskLevel === 'string'
+        ? assistantPayload.activeIncidentRiskLevel
+        : 'none',
+    sessionHistoricalMaxRiskLevel:
+      typeof assistantPayload.sessionHistoricalMaxRiskLevel === 'string'
+        ? assistantPayload.sessionHistoricalMaxRiskLevel
+        : 'none',
+    selectedResponseSource:
+      typeof assistantPayload.selectedResponseSource === 'string'
+        ? assistantPayload.selectedResponseSource
+        : 'unknown',
     assistantMessageId: assistantMessage._id.toString(),
     assistantTurnNumber: assistantMessage.turnNumber,
     assistantMessageContent: assistantMessage.content
   });
 
   session.messageCount += 1;
+  session.latestTurnRiskLevel = turnHandlingPlan.latestTurnRiskLevel;
+  session.activeIncidentRiskLevel = turnHandlingPlan.activeIncidentRiskLevel;
+  session.sessionHistoricalMaxRiskLevel =
+    turnHandlingPlan.sessionHistoricalMaxRiskLevel === 'none'
+      ? session.sessionHistoricalMaxRiskLevel ?? 'none'
+      : turnHandlingPlan.sessionHistoricalMaxRiskLevel;
+  if (turnHandlingPlan.activeIssueId) {
+    session.activeIssueId = turnHandlingPlan.activeIssueId;
+  }
 
   const nextTimeline =
     assistantPayload.timeline &&
     typeof assistantPayload.timeline === 'object' &&
     !Array.isArray(assistantPayload.timeline)
       ? (assistantPayload.timeline as Record<string, unknown>)
-      : existingTimeline;
+      : turnHandlingPlan.nextTimeline;
   const normalizedTimeline = toStringRecord(nextTimeline);
-  const facts = await upsertFacts(session._id.toString(), normalizedTimeline);
-  const enoughContextForTriageAssessment = hasEnoughContextForTriageAssessment(
-    session,
-    normalizedTimeline
-  );
-  const triage = enoughContextForTriageAssessment ? await buildTriageForSession(session) : null;
+  const shouldPersistFacts =
+    turnHandlingPlan.triageUpdated || (turnHandlingPlan.evidenceOnlyUpdate && activeIncidentExists);
+  const facts = shouldPersistFacts
+    ? await upsertFacts(session._id.toString(), normalizedTimeline)
+    : existingFacts ?? null;
+  const enoughContextForTriageAssessment =
+    turnHandlingPlan.triageUpdated && hasEnoughContextForTriageAssessment(session, normalizedTimeline);
+  const triage =
+    enoughContextForTriageAssessment && turnHandlingPlan.triageUpdated
+      ? await buildTriageForSession(session)
+      : (await ConversationFlowTriageModel.findOne({
+          conversationSessionId: session._id
+        }).lean()) ?? null;
+  if (triage?.safetyRiskLevel) {
+    session.activeIncidentRiskLevel = conversationRiskLevelToSafetyOverrideLevel(triage.safetyRiskLevel);
+    session.sessionHistoricalMaxRiskLevel = conversationRiskLevelToSafetyOverrideLevel(
+      maxConversationRiskLevel(
+        triage.safetyRiskLevel,
+        session.safetyRiskLevel === 'low' ? undefined : session.safetyRiskLevel
+      )
+    );
+  }
   const offerTriage =
-    triageHandoffIntent || Boolean(triage && !shouldBlockTriage(triage));
+    triageHandoffIntent ||
+    Boolean(turnHandlingPlan.triageUpdated && triage && !shouldBlockTriage(triage));
 
   if (offerTriage && !session.triageOfferedAt) {
     session.triageOfferedAt = new Date();
