@@ -16,6 +16,7 @@ import type {
   RagIndexSyncStatus,
   RagJurisdiction,
   RagLegalDomain,
+  RagOcrProgress,
   RagPathwayCategory,
   RagSourceCategory,
   RagIngestionStatus,
@@ -43,7 +44,25 @@ export interface RagKnowledgeSourceMetadata {
   detectedConstitutionalMentions?: string[];
   detectedCourts?: string[];
   extractedPageCount?: number;
+  extractionMethod?: 'text' | 'ocr' | 'manual' | 'url';
   extractionStatus?: string;
+  ocrProvider?: string;
+  ocrAverageConfidence?: number;
+  ocrPageCount?: number;
+  ocrWarnings?: string[];
+  ocrReviewRequired?: boolean;
+  ocrReviewedAt?: string;
+  ocrReviewedBy?: string;
+  ocrStatus?:
+    | 'not_required'
+    | 'required'
+    | 'running'
+    | 'completed'
+    | 'low_confidence'
+    | 'failed'
+    | 'pending_review'
+    | 'reviewed';
+  ocrProgress?: RagOcrProgress;
   processingStage?: string;
   processingError?: string;
   pineconeIndexedAt?: string;
@@ -77,6 +96,12 @@ export interface RagChunkMetadata {
   schedule?: string;
   pageStart?: number;
   pageEnd?: number;
+  extractionMethod?: 'text' | 'ocr' | 'manual' | 'url';
+  pageNumber?: number;
+  ocrConfidence?: number;
+  ocrProvider?: string;
+  processingTimeMs?: number;
+  ocrPageStatus?: 'completed' | 'failed' | 'skipped' | 'low_confidence';
   constitutionalBasis?: string;
   legislationTags?: string[];
   pineconeVectorId?: string;
@@ -128,7 +153,27 @@ export interface RagKnowledgeSourceDocument {
   sha256Hash?: string;
   version: number;
   active: boolean;
+  extractionMethod?: 'text' | 'ocr' | 'manual' | 'url';
+  ocrProvider?: string;
+  ocrAverageConfidence?: number;
+  ocrPageCount?: number;
+  ocrWarnings?: string[];
+  ocrReviewRequired?: boolean;
+  ocrReviewedAt?: Date;
+  ocrReviewedBy?: Types.ObjectId;
+  ocrStatus?:
+    | 'not_required'
+    | 'required'
+    | 'running'
+    | 'completed'
+    | 'low_confidence'
+    | 'failed'
+    | 'pending_review'
+    | 'reviewed';
   sourceReliability: RagSourceReliability;
+  embeddingModel?: string;
+  pineconeIndex?: string;
+  pineconeNamespace?: string;
   rawText?: string;
   metadata: RagKnowledgeSourceMetadata;
   createdBy?: Types.ObjectId;
@@ -171,6 +216,10 @@ export interface RagChunkDocument {
   pineconeVectorId?: string;
   legalReviewed: boolean;
   active: boolean;
+  extractionMethod?: 'text' | 'ocr' | 'manual' | 'url';
+  pageNumber?: number;
+  ocrConfidence?: number;
+  ocrProvider?: string;
   tokenCount: number;
   citationLabel: string;
   citationUrl?: string;
@@ -246,6 +295,35 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
     sha256Hash: { type: String, required: false, index: true },
     version: { type: Number, required: true, default: 1 },
     active: { type: Boolean, required: true, default: true, index: true },
+    extractionMethod: {
+      type: String,
+      enum: ['text', 'ocr', 'manual', 'url'],
+      required: false,
+      default: 'text'
+    },
+    ocrProvider: { type: String, required: false, trim: true },
+    ocrAverageConfidence: { type: Number, required: false, min: 0, max: 1 },
+    ocrPageCount: { type: Number, required: false, min: 0 },
+    ocrWarnings: { type: [String], required: false, default: undefined },
+    ocrReviewRequired: { type: Boolean, required: false, default: false, index: true },
+    ocrReviewedAt: { type: Date, required: false },
+    ocrReviewedBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
+    ocrStatus: {
+      type: String,
+      enum: [
+        'not_required',
+        'required',
+        'running',
+        'completed',
+        'low_confidence',
+        'failed',
+        'pending_review',
+        'reviewed'
+      ],
+      required: false,
+      default: 'not_required',
+      index: true
+    },
     sourceReliability: {
       type: String,
       enum: RAG_SOURCE_RELIABILITIES,
@@ -253,6 +331,9 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
       default: 'unknown',
       index: true
     },
+    embeddingModel: { type: String, required: false, trim: true },
+    pineconeIndex: { type: String, required: false, trim: true },
+    pineconeNamespace: { type: String, required: false, trim: true },
     rawText: { type: String, required: false },
     metadata: { type: Schema.Types.Mixed, default: {} },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
@@ -318,6 +399,16 @@ const ragChunkSchema = new Schema<RagChunkDocument>(
     pineconeVectorId: { type: String, required: false, trim: true, index: true },
     legalReviewed: { type: Boolean, required: true, default: false, index: true },
     active: { type: Boolean, required: true, default: true, index: true },
+    extractionMethod: {
+      type: String,
+      enum: ['text', 'ocr', 'manual', 'url'],
+      required: false,
+      default: 'text',
+      index: true
+    },
+    pageNumber: { type: Number, required: false, min: 1, index: true },
+    ocrConfidence: { type: Number, required: false, min: 0, max: 1 },
+    ocrProvider: { type: String, required: false, trim: true, index: true },
     tokenCount: { type: Number, required: true, min: 0 },
     citationLabel: { type: String, required: true, trim: true },
     citationUrl: { type: String, required: false, trim: true },

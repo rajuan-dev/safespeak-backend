@@ -65,6 +65,16 @@ const envSchema = z
     OPENAI_TTS_VOICE: z.string().min(1).default('alloy'),
     RAG_VECTOR_PROVIDER: z.enum(['pinecone', 'mongo', 'hybrid']).default('pinecone'),
     RAG_ENABLE_OCR: booleanFromString.default(false),
+    OCR_PROVIDER: z
+      .enum(['tesseract', 'google_vision', 'aws_textract', 'azure_document_intelligence', 'none'])
+      .default('tesseract'),
+    OCR_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.85),
+    OCR_MAX_PAGES: z.coerce.number().int().min(0).max(100000).default(100),
+    OCR_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(5),
+    OCR_PAGE_TIMEOUT_MS: z.coerce.number().int().min(1).max(3600000).default(60000),
+    OCR_JOB_TIMEOUT_MS: z.coerce.number().int().min(0).max(86400000).default(0),
+    OCR_LANGUAGE: z.string().min(2).max(32).default('eng'),
+    OCR_REVIEW_REQUIRED: booleanFromString.default(true),
     PINECONE_API_KEY: optionalString(z.string().min(1)),
     PINECONE_INDEX_NAME: z.string().min(1).default('safespeak-legislation-dev'),
     PINECONE_NAMESPACE: z.string().min(1).default('dev'),
@@ -120,7 +130,7 @@ const envSchema = z
     }
   });
 
-const parsedEnv = envSchema.safeParse(process.env);
+export const parsedEnv = envSchema.safeParse(process.env);
 
 if (!parsedEnv.success) {
   throw new Error(`Invalid environment configuration: ${parsedEnv.error.message}`);
@@ -129,3 +139,4 @@ if (!parsedEnv.success) {
 export const env = parsedEnv.data;
 
 export type Env = typeof env;
+export { envSchema };

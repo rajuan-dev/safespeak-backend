@@ -73,6 +73,20 @@ const stateOrTerritorySchema = z.enum(RAG_STATE_OR_TERRITORIES).optional();
 const legalDomainSchema = z.enum(RAG_LEGAL_DOMAINS).optional();
 const pathwayCategorySchema = z.enum(RAG_PATHWAY_CATEGORIES).optional();
 const sourceReliabilitySchema = z.enum(RAG_SOURCE_RELIABILITIES).default('unknown');
+const ocrReviewApprovalSchema = z.object({
+  legalReviewed: z.boolean().default(true)
+});
+const ocrPreviewQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(20).default(5)
+});
+const runOcrKnowledgeSourceSchema = z.object({
+  maxPages: z.coerce.number().int().min(0).optional(),
+  batchSize: z.coerce.number().int().min(1).optional(),
+  pageTimeoutMs: z.coerce.number().int().min(1).optional(),
+  jobTimeoutMs: z.coerce.number().int().min(0).optional(),
+  force: z.boolean().default(false)
+});
 
 export const ragParamsSchema = z.object({ id: objectIdSchema });
 export const knowledgeSourceChunkQuerySchema = z.object({
@@ -178,6 +192,10 @@ export const rejectKnowledgeSourceSchema = z.object({
   reason: z.string().trim().min(1).max(1000)
 });
 
+export const approveOcrKnowledgeSourceSchema = ocrReviewApprovalSchema;
+export const runOcrKnowledgeSourceRequestSchema = runOcrKnowledgeSourceSchema;
+export const knowledgeSourceOcrPreviewQuerySchema = ocrPreviewQuerySchema;
+
 export type RagSearchInput = z.infer<typeof ragSearchSchema>;
 export type RagAnswerInput = z.infer<typeof ragAnswerSchema>;
 export type RagTimelineAssistantInput = z.infer<typeof ragTimelineAssistantSchema>;
@@ -188,3 +206,6 @@ export type RefreshKnowledgeSourceInput = z.infer<typeof refreshKnowledgeSourceS
 export type RejectKnowledgeSourceInput = z.infer<typeof rejectKnowledgeSourceSchema>;
 export type KnowledgeSourceChunkQueryInput = z.infer<typeof knowledgeSourceChunkQuerySchema>;
 export type RagDebugRetrieveInput = z.infer<typeof ragDebugRetrieveSchema>;
+export type ApproveOcrKnowledgeSourceInput = z.infer<typeof approveOcrKnowledgeSourceSchema>;
+export type RunOcrKnowledgeSourceInput = z.infer<typeof runOcrKnowledgeSourceRequestSchema>;
+export type KnowledgeSourceOcrPreviewQueryInput = z.infer<typeof knowledgeSourceOcrPreviewQuerySchema>;

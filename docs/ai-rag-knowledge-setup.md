@@ -37,6 +37,92 @@ RAG works only after sources are ingested, chunked, embedded, stored, indexed, a
 5. Official legal/support sources must include `publisher`, `licenseStatus`, `lastUpdated`, and `nextRefreshAt` before approval.
 6. Only approved official legal sources with `legalReviewed=true` and a future `nextRefreshAt` are used in public legal RAG answers.
 
+## OCR ingestion
+
+SafeSpeak now supports OCR-gated ingestion for scanned PDFs and image uploads, but it is intentionally conservative.
+
+Required env:
+
+- `RAG_ENABLE_OCR=true|false`
+- `OCR_PROVIDER=tesseract|google_vision|aws_textract|azure_document_intelligence|none`
+- `OCR_MIN_CONFIDENCE=0.85`
+- `OCR_MAX_PAGES=100`
+- `OCR_BATCH_SIZE=5`
+- `OCR_PAGE_TIMEOUT_MS=60000`
+- `OCR_JOB_TIMEOUT_MS=0`
+- `OCR_LANGUAGE=eng`
+- `OCR_REVIEW_REQUIRED=true`
+
+Recommended local dev default:
+
+- `RAG_ENABLE_OCR=true`
+- `OCR_PROVIDER=tesseract`
+- `OCR_MAX_PAGES=0` for no fixed page-count limit
+- `OCR_BATCH_SIZE=5`
+- `OCR_PAGE_TIMEOUT_MS=60000`
+- `OCR_JOB_TIMEOUT_MS=0`
+
+Local Tesseract path:
+
+1. Install Node dependency support: already included via `tesseract.js`.
+2. For image OCR, no extra SafeSpeak code changes are needed.
+3. For PDF OCR with the local Tesseract provider, install Poppler so `pdftoppm` is available on `PATH`.
+4. Optional but useful: install `pdfinfo` as part of Poppler so page-count warnings are more accurate.
+
+Current OCR behavior:
+
+- Text PDFs still use normal text extraction and bypass OCR when the extracted text quality is good.
+- Scanned or image-only PDFs can go through OCR when `RAG_ENABLE_OCR=true`.
+- `OCR_MAX_PAGES=0` means SafeSpeak will not apply a fixed page-count cap.
+- Large scanned PDFs are processed in batches instead of loading every page into memory at once.
+- `OCR_BATCH_SIZE` controls how many PDF pages are rendered and OCR-processed in each batch.
+- `OCR_PAGE_TIMEOUT_MS` applies to each page OCR attempt.
+- `OCR_JOB_TIMEOUT_MS=0` means no total OCR job timeout, but per-page timeout still applies.
+- PNG/JPG/JPEG/TIFF uploads can go through OCR.
+- OCR output is blocked from indexing when confidence is too low, the text is too short, too many pages fail, or the result looks like symbol-heavy garbage.
+- Official legal OCR sources are not retrievable until OCR review is completed.
+- OCR review metadata is stored on the source and chunk records.
+
+Admin OCR endpoints:
+
+- `POST /api/v1/rag/knowledge-sources/:id/run-ocr`
+- `POST /api/v1/rag/knowledge-sources/:id/approve-ocr`
+- `GET /api/v1/rag/knowledge-sources/:id/ocr-preview`
+- `GET /api/v1/rag/knowledge-sources/:id/status`
+
+Runtime OCR request overrides:
+
+```json
+{
+  "maxPages": 0,
+  "batchSize": 5,
+  "pageTimeoutMs": 60000,
+  "jobTimeoutMs": 0,
+  "force": false
+}
+```
+
+Preview pagination:
+
+- `GET /api/v1/rag/knowledge-sources/:id/ocr-preview?page=1&pageSize=5`
+
+Review workflow:
+
+1. Upload the document.
+2. If normal extraction is weak and OCR is disabled, the source becomes `requires_ocr`.
+3. If OCR is enabled, run OCR automatically during ingestion or manually with `run-ocr`.
+4. If OCR confidence is too low, the source becomes `ocr_low_confidence` or `ocr_failed` and is not indexed.
+5. If OCR succeeds, the source becomes `pending_ocr_review` when review is required.
+6. Approve OCR with `approve-ocr` before relying on legal OCR content in retrieval.
+7. After OCR approval, the source can be chunked and indexed through the same legal-aware ingestion path.
+
+Limitations:
+
+- The local Tesseract provider needs a PDF renderer for scanned PDFs. Without Poppler and `pdftoppm`, PDF OCR fails loudly instead of silently indexing bad text.
+- Batched scanned-PDF OCR also needs `pdfinfo` from Poppler so SafeSpeak can determine total page count and track progress safely.
+- Cloud OCR providers are stubbed for clean future integration but are not fully implemented in this task.
+- OCR is for ingestion only; it does not change SafeSpeak’s chat policy or legal-answer behavior by itself.
+
 ## Approval workflow
 
 - Only admin endpoints can approve/reject sources.
@@ -69,6 +155,10 @@ Use `npm run rag:readiness -- --fail-on-not-ready` in release checks when the de
 - `GET /api/v1/rag/knowledge-sources`
 - `GET /api/v1/rag/knowledge-sources/readiness`
 - `POST /api/v1/rag/knowledge-sources/:id/approve`
+- `POST /api/v1/rag/knowledge-sources/:id/run-ocr`
+- `POST /api/v1/rag/knowledge-sources/:id/approve-ocr`
+- `GET /api/v1/rag/knowledge-sources/:id/ocr-preview`
+- `GET /api/v1/rag/knowledge-sources/:id/status`
 - `POST /api/v1/rag/knowledge-sources/:id/reject`
 
 ## What not to ingest

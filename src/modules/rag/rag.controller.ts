@@ -8,10 +8,13 @@ import { canAccessAdmin } from '@modules/rbac/rbac.utils';
 import {
   answerRag,
   approveKnowledgeSource,
+  approveOcrKnowledgeSource,
   createKnowledgeSource,
   deleteKnowledgeSource,
   debugRetrieveRag,
   getPineconeHealth,
+  getKnowledgeSourceOcrPreview,
+  getKnowledgeSourceStatus,
   ingestKnowledgeSource,
   getKnowledgeSourceReadiness,
   listKnowledgeSourceChunks,
@@ -19,6 +22,7 @@ import {
   rejectKnowledgeSource,
   reindexKnowledgeSource,
   refreshKnowledgeSource,
+  runKnowledgeSourceOcr,
   runTimelineAssistant,
   searchRag,
   uploadKnowledgeSourceDocument,
@@ -27,6 +31,8 @@ import {
 import type { RagServiceContext } from './rag.types';
 import type {
   CreateKnowledgeSourceInput,
+  ApproveOcrKnowledgeSourceInput,
+  KnowledgeSourceOcrPreviewQueryInput,
   KnowledgeSourceChunkQueryInput,
   IngestKnowledgeSourceInput,
   RagAnswerInput,
@@ -35,6 +41,7 @@ import type {
   RagTimelineAssistantInput,
   RefreshKnowledgeSourceInput,
   RejectKnowledgeSourceInput,
+  RunOcrKnowledgeSourceInput,
   UpdateKnowledgeSourceInput
 } from './rag.schema';
 
@@ -195,6 +202,54 @@ export const approveKnowledgeSourceController = asyncHandler(
     const source = await approveKnowledgeSource(getContext(req), req.params.id);
 
     res.status(StatusCodes.OK).json(successResponse('Knowledge source approved', { source }));
+  }
+);
+
+export const runKnowledgeSourceOcrController = asyncHandler(async (req: Request, res: Response) => {
+  const result = await runKnowledgeSourceOcr(
+    getContext(req),
+    req.params.id,
+    req.body as RunOcrKnowledgeSourceInput
+  );
+
+  res
+    .status(StatusCodes.OK)
+    .json(successResponse('Knowledge source OCR completed', { result }, { informationOnly: true }));
+});
+
+export const approveOcrKnowledgeSourceController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const source = await approveOcrKnowledgeSource(
+      getContext(req),
+      req.params.id,
+      req.body as ApproveOcrKnowledgeSourceInput
+    );
+
+    res.status(StatusCodes.OK).json(successResponse('Knowledge source OCR approved', { source }));
+  }
+);
+
+export const getKnowledgeSourceOcrPreviewController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const preview = await getKnowledgeSourceOcrPreview(
+      getContext(req),
+      req.params.id,
+      req.query as unknown as KnowledgeSourceOcrPreviewQueryInput
+    );
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Knowledge source OCR preview retrieved', { preview }));
+  }
+);
+
+export const getKnowledgeSourceStatusController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const status = await getKnowledgeSourceStatus(getContext(req), req.params.id);
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Knowledge source status retrieved', { status }));
   }
 );
 

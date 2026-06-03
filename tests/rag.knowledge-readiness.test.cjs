@@ -4,6 +4,7 @@ const test = require('node:test');
 const {
   getKnowledgeSourceApprovalBlocker
 } = require('../src/modules/rag/rag.service.ts');
+const { RAG_OFFICIAL_SOURCE_HOSTS } = require('../src/modules/rag/rag.constants.ts');
 
 test('official legal knowledge sources require legal review before approval', () => {
   const blocker = getKnowledgeSourceApprovalBlocker({
@@ -63,4 +64,9 @@ test('failed or partially indexed knowledge sources cannot be approved', () => {
   assert.equal(failedBlocker?.statusCode, 409);
   assert.equal(partialBlocker?.code, 'ingestion_failed');
   assert.equal(partialBlocker?.statusCode, 409);
+});
+
+test('trusted public legal aid hosts remain allow-listed for official source ingestion', () => {
+  assert.equal(RAG_OFFICIAL_SOURCE_HOSTS.includes('familyviolencelaw.gov.au'), true);
+  assert.equal(RAG_OFFICIAL_SOURCE_HOSTS.includes('aihw.gov.au'), true);
 });

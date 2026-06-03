@@ -47,6 +47,8 @@ import {
   type RagChunkDocument,
   type RagKnowledgeSourceDocument
 } from './rag.model';
+import { getOcrProvider } from './ocr/ocr-provider.factory';
+import type { RagOcrExtractResult, RagOcrPageResult } from './ocr/ocr-provider.interface';
 import {
   getExpectedEmbeddingDimension,
   getPineconeIndexName,
@@ -59,7 +61,9 @@ import {
   normalizeKnowledgeSourceMetadata
 } from './rag.normalization';
 import type {
+  ApproveOcrKnowledgeSourceInput,
   CreateKnowledgeSourceInput,
+  KnowledgeSourceOcrPreviewQueryInput,
   KnowledgeSourceChunkQueryInput,
   IngestKnowledgeSourceInput,
   RagAnswerInput,
@@ -81,6 +85,8 @@ import type {
   RagSearchResult,
   RagServiceContext,
   RagKnowledgeSourceReadiness,
+  RagOcrProgress,
+  RagOcrStatus,
   RagSourceCategory,
   RagStateOrTerritory,
   RagTopic,
@@ -121,12 +127,20 @@ const LARGE_DOCUMENT_PAGE_WARNING_THRESHOLD = 100;
 const LARGE_DOCUMENT_CHUNK_WARNING_THRESHOLD = 1000;
 const MAX_BATCH_ATTEMPTS = 2;
 const SEARCH_READINESS_DELAY_MS = 30000;
+const OCR_MIN_TEXT_LENGTH = 120;
+const OCR_PAGE_FAILURE_RATIO_LIMIT = 0.4;
+const OCR_SYMBOL_HEAVY_RATIO_LIMIT = 0.45;
 const PINECONE_SEARCH_CANDIDATE_MULTIPLIER = 5;
 const PINECONE_SEARCH_MIN_CANDIDATES = 20;
 const KNOWLEDGE_DOCUMENT_ALLOWED_EXTENSIONS = new Set([
   '.pdf',
   '.doc',
   '.docx',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.tif',
+  '.tiff',
   '.txt',
   '.md',
   '.html',
@@ -138,6 +152,10 @@ const KNOWLEDGE_DOCUMENT_ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/tiff',
   'text/plain',
   'text/markdown',
   'text/html',
@@ -401,6 +419,7 @@ const isDateExpired = (value?: Date): boolean => Boolean(value && value.getTime(
 export type RagKnowledgeSourceApprovalBlockerCode =
   | 'source_not_approvable'
   | 'ingestion_failed'
+  | 'ocr_review_pending'
   | 'legal_review_missing'
   | 'review_expired'
   | 'refresh_expired';
@@ -416,6 +435,8 @@ type ApprovalSourceSnapshot = Pick<
   | 'sourceCategory'
   | 'ingestionStatus'
   | 'legalReviewed'
+  | 'ocrReviewRequired'
+  | 'ocrStatus'
   | 'nextReviewAt'
   | 'nextRefreshAt'
   | 'status'
@@ -438,6 +459,14 @@ export const getKnowledgeSourceApprovalBlocker = (
       code: 'ingestion_failed',
       statusCode: StatusCodes.CONFLICT,
       message: 'Failed or partially indexed knowledge sources cannot be approved'
+    };
+  }
+
+  if (source.ocrReviewRequired && source.ocrStatus !== 'reviewed') {
+    return {
+      code: 'ocr_review_pending',
+      statusCode: StatusCodes.CONFLICT,
+      message: 'OCR-derived knowledge sources must be reviewed before approval'
     };
   }
 
@@ -908,6 +937,7 @@ const resolveKnowledgeSourceText = async (
   input: KnowledgeSourceTextInput
 ): Promise<{
   text: string;
+  extracted?: ExtractedDocumentResult;
   metadata?: Record<string, unknown>;
   contentType?: string;
   contentLength?: number;
@@ -932,20 +962,40 @@ const resolveKnowledgeSourceText = async (
   const extracted = await extractTextFromUploadedDocument(storedDocument);
   const sourceMetadata = toMetadataRecord(source.metadata);
 
+  let resolvedExtracted = extracted;
+
+  if (
+    env.RAG_ENABLE_OCR &&
+    shouldRequireOcrForExtraction({
+      text: extracted.text,
+      extractor: extracted.extractor,
+      mimeType: storedDocument.mimetype,
+      fileName: storedDocument.originalname
+    })
+  ) {
+    resolvedExtracted = await runOcrForStoredDocument(source);
+  }
+
   return {
-    text: extracted.text,
+    text: resolvedExtracted.text,
+    extracted: resolvedExtracted,
     contentType: storedDocument.mimetype,
     contentLength: storedDocument.size,
     metadata: {
       uploadedFile: sourceMetadata.uploadedFile,
-      extractedPageCount: extracted.pageCount,
-      extractionQualityScore: extracted.qualityScore,
+      extractedPageCount: resolvedExtracted.pageCount,
+      extractionMethod: resolvedExtracted.extractionMethod,
+      extractionQualityScore: resolvedExtracted.qualityScore,
       extractionStatus: 'extracted',
+      ocrProvider: resolvedExtracted.ocrProvider,
+      ocrAverageConfidence: resolvedExtracted.ocrAverageConfidence,
+      ocrWarnings: resolvedExtracted.ocrWarnings,
+      ocrPages: resolvedExtracted.pages,
       processingStage: 'indexing',
       processingError: undefined,
       ingestionPipeline: {
         ...toMetadataRecord(sourceMetadata.ingestionPipeline),
-        extractor: extracted.extractor
+        extractor: resolvedExtracted.extractor
       }
     }
   };
@@ -1077,6 +1127,36 @@ type UploadedKnowledgeDocument = Pick<
   'originalname' | 'mimetype' | 'size' | 'buffer'
 >;
 
+type ExtractedDocumentResult = {
+  text: string;
+  extractor: string;
+  pageCount?: number;
+  totalPages?: number;
+  qualityScore: number;
+  extractionMethod: 'text' | 'ocr' | 'manual' | 'url';
+  ocrProvider?: string;
+  ocrAverageConfidence?: number;
+  ocrWarnings?: string[];
+  pages?: Array<{
+    pageNumber: number;
+    text: string;
+    confidence: number;
+    warnings: string[];
+    processingTimeMs?: number;
+    status?: 'completed' | 'failed' | 'skipped' | 'low_confidence';
+  }>;
+  ocrProgress?: RagOcrProgress;
+};
+
+type OcrQualityAssessment = {
+  passed: boolean;
+  status: RagOcrStatus;
+  reason?: string;
+  warnings: string[];
+  failedPageCount: number;
+  garbageLikely: boolean;
+};
+
 const getDocumentExtension = (fileName: string): string => path.extname(fileName).toLowerCase();
 
 const isSupportedKnowledgeDocument = (file: UploadedKnowledgeDocument): boolean => {
@@ -1153,6 +1233,16 @@ const readStoredKnowledgeDocument = async (
   };
 };
 
+const getStoredKnowledgeDocumentPath = (
+  source: Pick<RagKnowledgeSourceDocument, 'metadata'>
+): string | null => {
+  const sourceMetadata = toMetadataRecord(source.metadata);
+  const uploadedFile = toMetadataRecord(sourceMetadata.uploadedFile);
+  const storageKey = metadataString(uploadedFile, 'storageKey');
+
+  return storageKey ? getKnowledgeDocumentStoragePath(storageKey) : null;
+};
+
 const buildDerivedSourceFields = (input: {
   title?: string;
   sourceTitle?: string;
@@ -1214,20 +1304,235 @@ const estimateExtractionQuality = (text: string): number => {
   );
 };
 
-const shouldRequireOcr = (input: { text: string; extractor: string; mimeType?: string }): boolean => {
+const looksLikePdfOrImage = (mimeType?: string, extractor?: string, fileName?: string): boolean => {
+  const extension = fileName ? getDocumentExtension(fileName) : '';
+  const normalizedMimeType = (mimeType ?? '').toLowerCase();
+
+  return (
+    /pdf|image\//i.test(normalizedMimeType) ||
+    extractor === 'pdf-parse' ||
+    ['.pdf', '.png', '.jpg', '.jpeg', '.tif', '.tiff'].includes(extension)
+  );
+};
+
+export const shouldRequireOcrForExtraction = (input: {
+  text: string;
+  extractor: string;
+  mimeType?: string;
+  fileName?: string;
+}): boolean => {
+  const qualityScore = estimateExtractionQuality(input.text);
+  const looksLikeDocumentForOcr = looksLikePdfOrImage(input.mimeType, input.extractor, input.fileName);
+
+  return (
+    looksLikeDocumentForOcr &&
+    (input.text.trim().length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH || qualityScore < 0.3)
+  );
+};
+
+const shouldRequireOcr = (input: {
+  text: string;
+  extractor: string;
+  mimeType?: string;
+  fileName?: string;
+}): boolean => {
   if (env.RAG_ENABLE_OCR) {
     return false;
   }
 
-  const qualityScore = estimateExtractionQuality(input.text);
-  const looksLikePdf = /pdf/i.test(input.mimeType ?? '') || input.extractor === 'pdf-parse';
+  return shouldRequireOcrForExtraction(input);
+};
 
-  return looksLikePdf && (input.text.trim().length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH || qualityScore < 0.3);
+const looksLikeMostlySymbols = (text: string): boolean => {
+  const compact = text.replace(/\s+/g, '');
+
+  if (!compact) {
+    return true;
+  }
+
+  const symbolCount = (compact.match(/[^A-Za-z0-9]/g) ?? []).length;
+  return symbolCount / compact.length >= OCR_SYMBOL_HEAVY_RATIO_LIMIT;
+};
+
+const countGarbagePages = (result: RagOcrExtractResult): number =>
+  result.pages.filter((page) => !page.text.trim() || looksLikeMostlySymbols(page.text)).length;
+
+export const assessOcrOutputQuality = (result: RagOcrExtractResult): OcrQualityAssessment => {
+  const warnings = [...result.warnings];
+  const textLength = result.text.trim().length;
+  const failedPageCount = countGarbagePages(result);
+  const garbageLikely = looksLikeMostlySymbols(result.text);
+  const failedPageRatio = result.pageCount > 0 ? failedPageCount / result.pageCount : 1;
+
+  if (result.averageConfidence < env.OCR_MIN_CONFIDENCE) {
+    warnings.push(
+      `Average OCR confidence ${result.averageConfidence.toFixed(3)} is below the configured minimum ${env.OCR_MIN_CONFIDENCE.toFixed(3)}.`
+    );
+
+    return {
+      passed: false,
+      status: 'low_confidence',
+      reason: warnings[warnings.length - 1],
+      warnings,
+      failedPageCount,
+      garbageLikely
+    };
+  }
+
+  if (textLength < OCR_MIN_TEXT_LENGTH) {
+    warnings.push('OCR output was too short to index safely.');
+    return {
+      passed: false,
+      status: 'low_confidence',
+      reason: warnings[warnings.length - 1],
+      warnings,
+      failedPageCount,
+      garbageLikely
+    };
+  }
+
+  if (failedPageRatio > OCR_PAGE_FAILURE_RATIO_LIMIT) {
+    warnings.push('Too many OCR pages were blank or unreadable.');
+    return {
+      passed: false,
+      status: 'failed',
+      reason: warnings[warnings.length - 1],
+      warnings,
+      failedPageCount,
+      garbageLikely
+    };
+  }
+
+  if (garbageLikely) {
+    warnings.push('OCR output appears to contain mostly symbols or mojibake.');
+    return {
+      passed: false,
+      status: 'failed',
+      reason: warnings[warnings.length - 1],
+      warnings,
+      failedPageCount,
+      garbageLikely
+    };
+  }
+
+  return {
+    passed: true,
+    status: 'completed',
+    warnings,
+    failedPageCount,
+    garbageLikely
+  };
+};
+
+export const isOcrSourceRetrievable = (input: {
+  extractionMethod?: string;
+  ocrReviewRequired?: boolean;
+  ocrStatus?: string;
+  ocrAverageConfidence?: number;
+}): boolean => {
+  if (input.extractionMethod !== 'ocr') {
+    return true;
+  }
+
+  if ((input.ocrAverageConfidence ?? 0) < env.OCR_MIN_CONFIDENCE) {
+    return false;
+  }
+
+  if (input.ocrReviewRequired && input.ocrStatus !== 'reviewed') {
+    return false;
+  }
+
+  return true;
+};
+
+export const normalizeOcrExecutionOptions = (input?: {
+  maxPages?: number;
+  batchSize?: number;
+  pageTimeoutMs?: number;
+  jobTimeoutMs?: number;
+}): Required<NonNullable<typeof input>> => ({
+  maxPages: input?.maxPages ?? env.OCR_MAX_PAGES,
+  batchSize: input?.batchSize ?? env.OCR_BATCH_SIZE,
+  pageTimeoutMs: input?.pageTimeoutMs ?? env.OCR_PAGE_TIMEOUT_MS,
+  jobTimeoutMs: input?.jobTimeoutMs ?? env.OCR_JOB_TIMEOUT_MS
+});
+
+export const buildOcrStatusSummary = (
+  source: Pick<
+    RagKnowledgeSourceDocument,
+    | '_id'
+    | 'title'
+    | 'sourceTitle'
+    | 'ingestionStatus'
+    | 'active'
+    | 'legalReviewed'
+    | 'extractionMethod'
+    | 'ocrStatus'
+    | 'ocrAverageConfidence'
+    | 'ocrPageCount'
+    | 'ocrProvider'
+    | 'ocrWarnings'
+    | 'embeddingModel'
+    | 'pineconeIndex'
+    | 'pineconeNamespace'
+    | 'metadata'
+  >
+): Record<string, unknown> => {
+  const metadata = toMetadataRecord(source.metadata);
+
+  return {
+    id: source._id.toString(),
+    sourceTitle: source.sourceTitle ?? source.title,
+    ingestionStatus: source.ingestionStatus,
+    active: source.active,
+    legalReviewed: source.legalReviewed,
+    extractionMethod: source.extractionMethod,
+    ocrStatus: source.ocrStatus,
+    ocrProgress: metadata.ocrProgress,
+    ocrAverageConfidence: source.ocrAverageConfidence,
+    ocrPageCount: source.ocrPageCount,
+    ocrProvider: source.ocrProvider,
+    ocrWarnings: source.ocrWarnings ?? [],
+    embeddingModel: source.embeddingModel,
+    pineconeIndex: source.pineconeIndex,
+    pineconeNamespace: source.pineconeNamespace,
+    indexSyncStatus: metadata.indexSyncStatus,
+    mongoChunkCount: metadata.mongoChunkCount,
+    pineconeVectorCount: metadata.pineconeVectorCount,
+    lastIndexedAt: metadata.lastIndexedAt,
+    indexSyncError: metadata.indexSyncError
+  };
+};
+
+export const paginateOcrPages = (
+  pages: unknown[],
+  page: number,
+  pageSize: number
+): { page: number; pageSize: number; totalPages: number; pages: unknown[] } => {
+  const totalPages = pages.length;
+  const start = (page - 1) * pageSize;
+
+  return {
+    page,
+    pageSize,
+    totalPages,
+    pages: pages.slice(start, start + pageSize)
+  };
+};
+
+const clearSourceIndexArtifacts = async (
+  source: Pick<RagKnowledgeSourceDocument, '_id'>
+): Promise<void> => {
+  if (shouldUsePineconeProvider() && isPineconeConfigured()) {
+    await pineconeVectorStore.deleteBySource(source._id.toString());
+  }
+
+  await RagChunkModel.deleteMany({ sourceId: source._id });
 };
 
 const extractTextFromUploadedDocument = async (
   file: UploadedKnowledgeDocument
-): Promise<{ text: string; extractor: string; pageCount?: number; qualityScore: number }> => {
+): Promise<ExtractedDocumentResult> => {
   const extension = getDocumentExtension(file.originalname);
   const mimeType = file.mimetype.toLowerCase();
 
@@ -1242,7 +1547,8 @@ const extractTextFromUploadedDocument = async (
         text: parsed.text.trim(),
         extractor: 'pdf-parse',
         pageCount: typeof parsedPageCount === 'number' ? parsedPageCount : undefined,
-        qualityScore: estimateExtractionQuality(parsed.text)
+        qualityScore: estimateExtractionQuality(parsed.text),
+        extractionMethod: 'text'
       };
     } finally {
       await parser.destroy();
@@ -1258,7 +1564,8 @@ const extractTextFromUploadedDocument = async (
     return {
       text: parsed.value.trim(),
       extractor: 'mammoth',
-      qualityScore: estimateExtractionQuality(parsed.value)
+      qualityScore: estimateExtractionQuality(parsed.value),
+      extractionMethod: 'text'
     };
   }
 
@@ -1273,12 +1580,147 @@ const extractTextFromUploadedDocument = async (
 
   if (extension === '.html' || extension === '.htm' || /html/i.test(file.mimetype)) {
     const text = htmlToText(rawText);
-    return { text, extractor: 'html-to-text', qualityScore: estimateExtractionQuality(text) };
+    return {
+      text,
+      extractor: 'html-to-text',
+      qualityScore: estimateExtractionQuality(text),
+      extractionMethod: 'text'
+    };
+  }
+
+  if (['.png', '.jpg', '.jpeg', '.tif', '.tiff'].includes(extension) || /^image\//i.test(mimeType)) {
+    return {
+      text: '',
+      extractor: 'image-upload',
+      qualityScore: 0,
+      extractionMethod: 'text'
+    };
   }
 
   const text = rawText.trim();
-  return { text, extractor: 'plain-text', qualityScore: estimateExtractionQuality(text) };
+  return {
+    text,
+    extractor: 'plain-text',
+    qualityScore: estimateExtractionQuality(text),
+    extractionMethod: 'text'
+  };
 };
+
+const mapOcrResultToExtractedDocument = (ocrResult: RagOcrExtractResult): ExtractedDocumentResult => ({
+  text: ocrResult.text,
+  extractor: `${ocrResult.provider}-ocr`,
+  pageCount: ocrResult.pageCount,
+  totalPages: ocrResult.totalPages,
+  qualityScore: estimateExtractionQuality(ocrResult.text),
+  extractionMethod: 'ocr',
+  ocrProvider: ocrResult.provider,
+  ocrAverageConfidence: ocrResult.averageConfidence,
+  ocrWarnings: ocrResult.warnings,
+  pages: ocrResult.pages,
+  ocrProgress: ocrResult.progress
+});
+
+type RunOcrOptions = {
+  maxPages?: number;
+  batchSize?: number;
+  pageTimeoutMs?: number;
+  jobTimeoutMs?: number;
+  onProgress?: (progress: RagOcrProgress, extracted?: ExtractedDocumentResult) => Promise<void> | void;
+};
+
+const runOcrForStoredDocument = async (
+  source: Pick<RagKnowledgeSourceDocument, 'metadata'>,
+  input?: RunOcrOptions
+): Promise<ExtractedDocumentResult> => {
+  const absolutePath = getStoredKnowledgeDocumentPath(source);
+
+  if (!absolutePath) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'No uploaded document is available for OCR.');
+  }
+
+  const uploadedFile = toMetadataRecord(toMetadataRecord(source.metadata).uploadedFile);
+  const originalFileName = metadataString(uploadedFile, 'originalFileName') ?? absolutePath;
+  const mimeType = metadataString(uploadedFile, 'mimeType') ?? 'application/octet-stream';
+  const extension = getDocumentExtension(originalFileName);
+  const ocrProvider = getOcrProvider();
+  const options = {
+    language: env.OCR_LANGUAGE,
+    maxPages: input?.maxPages ?? env.OCR_MAX_PAGES,
+    batchSize: input?.batchSize ?? env.OCR_BATCH_SIZE,
+    pageTimeoutMs: input?.pageTimeoutMs ?? env.OCR_PAGE_TIMEOUT_MS,
+    jobTimeoutMs: input?.jobTimeoutMs ?? env.OCR_JOB_TIMEOUT_MS,
+    minConfidence: env.OCR_MIN_CONFIDENCE,
+    onProgress: async (progress: RagOcrProgress, page?: RagOcrPageResult) => {
+      if (!input?.onProgress) {
+        return;
+      }
+
+      await input.onProgress(progress, {
+        text: page?.text ?? '',
+        extractor: `${ocrProvider.providerName}-ocr`,
+        pageCount: progress.processedPages,
+        totalPages: progress.totalPages,
+        qualityScore: estimateExtractionQuality(page?.text ?? ''),
+        extractionMethod: 'ocr',
+        ocrProvider: ocrProvider.providerName,
+        ocrAverageConfidence: undefined,
+        ocrWarnings: page?.warnings ?? [],
+        pages: page ? [page] : [],
+        ocrProgress: progress
+      });
+    }
+  };
+
+  if (extension === '.pdf' || /pdf/i.test(mimeType)) {
+    return mapOcrResultToExtractedDocument(await ocrProvider.extractTextFromPdf(absolutePath, options));
+  }
+
+  if (['.png', '.jpg', '.jpeg', '.tif', '.tiff'].includes(extension) || /^image\//i.test(mimeType)) {
+    return mapOcrResultToExtractedDocument(
+      await ocrProvider.extractTextFromImage(absolutePath, options)
+    );
+  }
+
+  throw new ApiError(
+    StatusCodes.BAD_REQUEST,
+    'OCR is only supported for uploaded PDF and image documents.'
+  );
+};
+
+const shouldAutoReviewOcrForAdmin = (
+  context: Pick<RagServiceContext, 'actorType' | 'owner'>
+): boolean => context.actorType === 'admin' && Boolean(context.owner.userId);
+
+const getOcrReviewRequired = (
+  source: Pick<RagKnowledgeSourceDocument, 'sourceCategory'>,
+  options?: { autoReview?: boolean }
+): boolean => {
+  if (options?.autoReview) {
+    return false;
+  }
+
+  return source.sourceCategory === 'official_legal_source' ? true : env.OCR_REVIEW_REQUIRED;
+};
+
+const buildOcrMetadata = (
+  extracted: ExtractedDocumentResult,
+  assessment: OcrQualityAssessment,
+  options?: { reviewedAt?: string; reviewedBy?: string; reviewRequired?: boolean }
+): Record<string, unknown> => ({
+  extractionMethod: extracted.extractionMethod,
+  extractedPageCount: extracted.pageCount,
+  extractionQualityScore: extracted.qualityScore,
+  ocrProvider: extracted.ocrProvider,
+  ocrAverageConfidence: extracted.ocrAverageConfidence,
+  ocrPageCount: extracted.pageCount,
+  ocrWarnings: assessment.warnings,
+  ocrReviewRequired: options?.reviewedAt ? false : (options?.reviewRequired ?? env.OCR_REVIEW_REQUIRED),
+  ocrReviewedAt: options?.reviewedAt,
+  ocrReviewedBy: options?.reviewedBy,
+  ocrStatus: options?.reviewedAt ? 'reviewed' : assessment.status,
+  ocrProgress: extracted.ocrProgress,
+  ocrPages: extracted.pages
+});
 
 const fetchOfficialSourceText = async (rawUrl: string): Promise<OfficialFetchResult> => {
   const controller = new AbortController();
@@ -1469,6 +1911,18 @@ const serializeKnowledgeSourceForAdmin = (
     legislationName?: string;
     active?: boolean;
     sourceReliability?: string;
+    embeddingModel?: string;
+    pineconeIndex?: string;
+    pineconeNamespace?: string;
+    extractionMethod?: string;
+    ocrProvider?: string;
+    ocrAverageConfidence?: number;
+    ocrPageCount?: number;
+    ocrWarnings?: string[];
+    ocrReviewRequired?: boolean;
+    ocrReviewedAt?: unknown;
+    ocrReviewedBy?: unknown;
+    ocrStatus?: string;
   }
 ): Record<string, unknown> => {
   const { _id, rawText, metadata, ingestionError, ...rest } = source;
@@ -1480,6 +1934,12 @@ const serializeKnowledgeSourceForAdmin = (
     ...rest,
     _id: id,
     id,
+    ocrProgress: sanitizedMetadata.ocrProgress,
+    indexSyncStatus: sanitizedMetadata.indexSyncStatus,
+    mongoChunkCount: sanitizedMetadata.mongoChunkCount,
+    pineconeVectorCount: sanitizedMetadata.pineconeVectorCount,
+    lastIndexedAt: sanitizedMetadata.lastIndexedAt,
+    indexSyncError: sanitizedMetadata.indexSyncError,
     ingestionError: truncateTextForAdmin(
       ingestionError,
       KNOWLEDGE_SOURCE_ADMIN_ERROR_PREVIEW_CHARS
@@ -1792,6 +2252,7 @@ const upsertChunksToPinecone = async (
           filter: { _id: chunk._id },
           update: {
             $set: {
+              pineconeVectorId: buildPineconeVectorId(source._id.toString(), chunk._id.toString()),
               'metadata.pineconeVectorId': buildPineconeVectorId(
                 source._id.toString(),
                 chunk._id.toString()
@@ -1946,6 +2407,11 @@ const embedKnowledgeSourceText = async (
         pineconeNamespace: shouldUsePineconeProvider() ? getPineconeNamespace() : undefined,
         legalReviewed: source.legalReviewed,
         active: source.active,
+        extractionMethod: source.extractionMethod ?? 'text',
+        pageNumber: chunk.pageStart,
+        ocrConfidence:
+          source.extractionMethod === 'ocr' ? source.ocrAverageConfidence : undefined,
+        ocrProvider: source.ocrProvider,
         tokenCount: chunk.tokenCount,
         citationLabel: chunk.citationLabel,
         citationUrl: source.officialUrl ?? source.url,
@@ -1979,6 +2445,11 @@ const embedKnowledgeSourceText = async (
           schedule: chunk.schedule,
           pageStart: chunk.pageStart,
           pageEnd: chunk.pageEnd,
+          extractionMethod: source.extractionMethod ?? 'text',
+          pageNumber: chunk.pageStart,
+          ocrConfidence:
+            source.extractionMethod === 'ocr' ? source.ocrAverageConfidence : undefined,
+          ocrProvider: source.ocrProvider,
           constitutionalBasis: metadataString(sourceMetadata, 'constitutionalBasis'),
           legislationTags: metadataStringArray(sourceMetadata, 'legislationTags'),
           embeddingStatus: shouldUsePineconeProvider() ? ('pending' as const) : ('indexed' as const),
@@ -2018,6 +2489,11 @@ const embedKnowledgeSourceText = async (
 
   source.sha256Hash = sha256Hash;
   source.rawText = text;
+  source.embeddingModel = env.OPENAI_EMBEDDING_MODEL;
+  source.pineconeIndex =
+    shouldUsePineconeProvider() && isPineconeConfigured() ? getPineconeIndexName() : undefined;
+  source.pineconeNamespace =
+    shouldUsePineconeProvider() && isPineconeConfigured() ? getPineconeNamespace() : undefined;
   const nextRefreshAt =
     options.nextRefreshAt ??
     (isGovernedKnowledgeSource(source.sourceCategory)
@@ -2059,11 +2535,19 @@ const embedKnowledgeSourceText = async (
   const indexingFailed = Boolean(pineconeIndexing.indexingError);
   const partiallyIndexed = indexingFailed && pineconeIndexing.indexedChunkCount > 0;
   const searchableAt = indexingFailed ? undefined : getSearchableAt(verificationDate);
+  const preserveOcrReviewStatus =
+    !indexingFailed &&
+    source.extractionMethod === 'ocr' &&
+    (source.ocrReviewRequired || source.ocrStatus === 'reviewed');
   source.ingestionStatus = partiallyIndexed
     ? 'partial_index_failed'
     : indexingFailed
       ? 'failed'
-      : 'embedded';
+      : preserveOcrReviewStatus
+        ? source.ocrReviewRequired
+          ? 'pending_ocr_review'
+          : 'ocr_completed'
+        : 'embedded';
   source.ingestionError = pineconeIndexing.indexingError;
 
   source.metadata = withSearchReadiness(
@@ -2099,8 +2583,19 @@ const embedKnowledgeSourceText = async (
         shouldUsePineconeProvider() && isPineconeConfigured() ? getPineconeNamespace() : undefined,
       pineconeIndexName:
         shouldUsePineconeProvider() && isPineconeConfigured() ? getPineconeIndexName() : undefined,
+      pineconeIndex:
+        shouldUsePineconeProvider() && isPineconeConfigured() ? getPineconeIndexName() : undefined,
       indexingError: pineconeIndexing.indexingError,
       extractionStatus: 'extracted',
+      extractionMethod: source.extractionMethod ?? metadataString(sourceMetadata, 'extractionMethod') ?? 'text',
+      ocrProvider: source.ocrProvider,
+      ocrAverageConfidence: source.ocrAverageConfidence,
+      ocrPageCount: source.ocrPageCount,
+      ocrWarnings: source.ocrWarnings,
+      ocrReviewRequired: source.ocrReviewRequired,
+      ocrReviewedAt: source.ocrReviewedAt?.toISOString(),
+      ocrReviewedBy: source.ocrReviewedBy?.toString(),
+      ocrStatus: source.ocrStatus ?? 'not_required',
       processingStage: indexingFailed
         ? partiallyIndexed
           ? 'partial_index_failed'
@@ -2760,11 +3255,12 @@ export const uploadKnowledgeSourceDocument = async (
   }
 
   try {
-    const extracted = await extractTextFromUploadedDocument(file);
+    let extracted = await extractTextFromUploadedDocument(file);
     const requiresOcr = shouldRequireOcr({
       text: extracted.text,
       extractor: extracted.extractor,
-      mimeType: file.mimetype
+      mimeType: file.mimetype,
+      fileName: file.originalname
     });
 
     if (requiresOcr) {
@@ -2775,8 +3271,10 @@ export const uploadKnowledgeSourceDocument = async (
         ...toMetadataRecord(source.metadata),
         uploadedFile: documentMetadata,
         extractedPageCount: extracted.pageCount,
+        extractionMethod: extracted.extractionMethod,
         extractionQualityScore: extracted.qualityScore,
         extractionStatus: 'requires_ocr',
+        ocrStatus: 'required',
         processingStage: 'requires_ocr',
         processingError: source.ingestionError,
         ingestionPipeline: {
@@ -2796,19 +3294,118 @@ export const uploadKnowledgeSourceDocument = async (
       };
     }
 
+    if (
+      env.RAG_ENABLE_OCR &&
+      shouldRequireOcrForExtraction({
+        text: extracted.text,
+        extractor: extracted.extractor,
+        mimeType: file.mimetype,
+        fileName: file.originalname
+      })
+    ) {
+      extracted = await runOcrForStoredDocument(source);
+      const assessment = assessOcrOutputQuality({
+        text: extracted.text,
+        pageCount: extracted.pageCount ?? 0,
+        pages: extracted.pages ?? [],
+        averageConfidence: extracted.ocrAverageConfidence ?? 0,
+        provider: (extracted.ocrProvider as RagOcrExtractResult['provider']) ?? 'tesseract',
+        language: env.OCR_LANGUAGE,
+        extractionMethod: 'ocr',
+        warnings: extracted.ocrWarnings ?? []
+      });
+
+      if (!assessment.passed) {
+        source.ingestionStatus = assessment.status === 'failed' ? 'ocr_failed' : 'ocr_low_confidence';
+        source.ingestionError = assessment.reason ?? 'OCR output did not meet SafeSpeak quality thresholds.';
+        source.metadata = withSearchReadiness(
+          {
+            ...toMetadataRecord(source.metadata),
+            uploadedFile: documentMetadata,
+            ...buildOcrMetadata(extracted, assessment, {
+              reviewRequired: getOcrReviewRequired(source)
+            }),
+            extractionStatus: source.ingestionStatus,
+            processingStage: source.ingestionStatus,
+            processingError: source.ingestionError,
+            ingestionPipeline: {
+              status: source.ingestionStatus,
+              extractor: extracted.extractor,
+              updatedAt: new Date().toISOString(),
+              error: source.ingestionError
+            }
+          },
+          'not_indexed'
+        );
+        source.extractionMethod = 'ocr';
+        source.ocrProvider = extracted.ocrProvider;
+        source.ocrAverageConfidence = extracted.ocrAverageConfidence;
+        source.ocrPageCount = extracted.pageCount;
+        source.ocrWarnings = assessment.warnings;
+        source.ocrReviewRequired = getOcrReviewRequired(source);
+        source.ocrStatus = assessment.status;
+        await source.save();
+
+        return {
+          source: serializeKnowledgeSourceForAdmin(source.toObject()),
+          uploadedFile: documentMetadata,
+          ingestionStatus: source.ingestionStatus,
+          warning: source.ingestionError
+        };
+      }
+    }
+
     if (extracted.text.length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH) {
       throw new ApiError(
         StatusCodes.UNPROCESSABLE_ENTITY,
-        'Extracted document text was too short to index safely. The PDF may be scanned or image-only; OCR is not supported yet.'
+        'Extracted document text was too short to index safely.'
       );
+    }
+
+    const autoReviewOcr =
+      extracted.extractionMethod === 'ocr' && shouldAutoReviewOcrForAdmin(context);
+    const ocrReviewedAt = autoReviewOcr ? new Date() : undefined;
+    const ocrReviewedBy = autoReviewOcr ? context.owner.userId : undefined;
+    const ocrReviewRequired =
+      extracted.extractionMethod === 'ocr'
+        ? getOcrReviewRequired(source, { autoReview: autoReviewOcr })
+        : false;
+    const postOcrIngestionStatus = extracted.extractionMethod === 'ocr'
+      ? ocrReviewRequired
+        ? 'pending_ocr_review'
+        : 'embedded'
+      : 'embedded';
+
+    if (
+      extracted.extractionMethod === 'ocr' &&
+      source.sourceCategory === 'official_legal_source' &&
+      !autoReviewOcr
+    ) {
+      clearLegalReviewState(source);
     }
 
     const result = await embedKnowledgeSourceText(source, extracted.text, {
       metadata: {
         uploadedFile: documentMetadata,
         extractedPageCount: extracted.pageCount,
+        extractionMethod: extracted.extractionMethod,
         extractionQualityScore: extracted.qualityScore,
         extractionStatus: 'extracted',
+        ...(
+          extracted.extractionMethod === 'ocr'
+            ? buildOcrMetadata(extracted, {
+                passed: true,
+                status: ocrReviewRequired ? 'completed' : 'reviewed',
+                warnings: extracted.ocrWarnings ?? [],
+                failedPageCount: 0,
+                garbageLikely: false
+              }, {
+                reviewRequired: ocrReviewRequired,
+                reviewedAt: ocrReviewedAt?.toISOString(),
+                reviewedBy: ocrReviewedBy
+              })
+            : {}
+        ),
         processingStage: 'indexing',
         processingError: undefined,
         ingestionPipeline: {
@@ -2821,12 +3418,29 @@ export const uploadKnowledgeSourceDocument = async (
       contentType: file.mimetype,
       contentLength: file.size
     });
+    source.extractionMethod = extracted.extractionMethod;
+    source.ocrProvider = extracted.ocrProvider;
+    source.ocrAverageConfidence = extracted.ocrAverageConfidence;
+    source.ocrPageCount = extracted.pageCount;
+    source.ocrWarnings = extracted.ocrWarnings;
+    source.ocrReviewedAt = ocrReviewedAt;
+    source.ocrReviewedBy = ocrReviewedBy as never;
+    source.ocrReviewRequired = ocrReviewRequired;
+    source.ocrStatus =
+      extracted.extractionMethod === 'ocr'
+        ? ocrReviewRequired
+          ? 'completed'
+          : 'reviewed'
+        : 'not_required';
+    source.ingestionStatus = postOcrIngestionStatus;
+    await source.save();
 
     await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
       mode: 'admin_document_upload',
       fileName: file.originalname,
       fileSizeBytes: file.size,
       extractor: extracted.extractor,
+      extractionMethod: extracted.extractionMethod,
       chunkCount: result.chunkCount,
       sha256Hash: result.sha256Hash,
       requiresHumanReview: source.status !== 'approved'
@@ -2841,7 +3455,8 @@ export const uploadKnowledgeSourceDocument = async (
       ingestionStatus: source.ingestionStatus
     };
   } catch (error) {
-    source.ingestionStatus = 'failed';
+    source.ingestionStatus =
+      error instanceof ApiError && /OCR/i.test(error.message) ? 'ocr_failed' : 'failed';
     source.ingestionError =
       error instanceof Error ? error.message : 'Document extraction failed';
     source.metadata = withSearchReadiness({
@@ -2917,6 +3532,7 @@ export const ingestKnowledgeSource = async (
         ...toMetadataRecord(normalizedMetadata),
         ...toMetadataRecord(resolvedText.metadata),
         extractionStatus: 'requires_ocr',
+        ocrStatus: 'required',
         processingStage: 'requires_ocr',
         processingError: source.ingestionError
       }, 'not_indexed');
@@ -2931,27 +3547,130 @@ export const ingestKnowledgeSource = async (
       };
     }
 
+    const resolvedExtracted = resolvedText.extracted;
+    const autoReviewOcr =
+      resolvedExtracted?.extractionMethod === 'ocr' && shouldAutoReviewOcrForAdmin(context);
+    const ocrReviewedAt = autoReviewOcr ? new Date() : undefined;
+    const ocrReviewedBy = autoReviewOcr ? context.owner.userId : undefined;
+    const ocrReviewRequired =
+      resolvedExtracted?.extractionMethod === 'ocr'
+        ? getOcrReviewRequired(source, { autoReview: autoReviewOcr })
+        : false;
+
+    if (resolvedExtracted?.extractionMethod === 'ocr') {
+      const ocrAssessment = assessOcrOutputQuality({
+        text: resolvedExtracted.text,
+        pageCount: resolvedExtracted.pageCount ?? 0,
+        pages: resolvedExtracted.pages ?? [],
+        averageConfidence: resolvedExtracted.ocrAverageConfidence ?? 0,
+        provider: (resolvedExtracted.ocrProvider as RagOcrExtractResult['provider']) ?? 'tesseract',
+        language: env.OCR_LANGUAGE,
+        extractionMethod: 'ocr',
+        warnings: resolvedExtracted.ocrWarnings ?? []
+      });
+
+      if (!ocrAssessment.passed) {
+        source.ingestionStatus =
+          ocrAssessment.status === 'failed' ? 'ocr_failed' : 'ocr_low_confidence';
+        source.ingestionError =
+          ocrAssessment.reason ?? 'OCR output did not meet SafeSpeak quality thresholds.';
+        source.extractionMethod = 'ocr';
+        source.ocrProvider = resolvedExtracted.ocrProvider;
+        source.ocrAverageConfidence = resolvedExtracted.ocrAverageConfidence;
+        source.ocrPageCount = resolvedExtracted.pageCount;
+        source.ocrWarnings = ocrAssessment.warnings;
+        source.ocrReviewRequired = getOcrReviewRequired(source);
+        source.ocrStatus = ocrAssessment.status;
+        source.metadata = withSearchReadiness(
+          {
+            ...toMetadataRecord(source.metadata),
+            ...toMetadataRecord(normalizedMetadata),
+            ...toMetadataRecord(resolvedText.metadata),
+            ...buildOcrMetadata(resolvedExtracted, ocrAssessment, {
+              reviewRequired: getOcrReviewRequired(source, { autoReview: autoReviewOcr })
+            }),
+            extractionStatus: source.ingestionStatus,
+            processingStage: source.ingestionStatus,
+            processingError: source.ingestionError
+          },
+          'not_indexed'
+        );
+        await source.save();
+
+        return {
+          source: serializeKnowledgeSourceForAdmin(source.toObject()),
+          chunkCount: 0,
+          metadataOnly: true,
+          ingestionStatus: source.ingestionStatus,
+          warning: source.ingestionError
+        };
+      }
+    }
+
     if (resolvedText.text.length < OFFICIAL_REFRESH_MIN_TEXT_LENGTH) {
       throw new ApiError(
         StatusCodes.UNPROCESSABLE_ENTITY,
-        'Extracted document text was too short to index safely. The PDF may be scanned or image-only; OCR is not supported yet.'
+        'Extracted document text was too short to index safely.'
       );
+    }
+
+    if (
+      resolvedExtracted?.extractionMethod === 'ocr' &&
+      source.sourceCategory === 'official_legal_source' &&
+      !autoReviewOcr
+    ) {
+      clearLegalReviewState(source);
     }
 
     const result = await embedKnowledgeSourceText(source, resolvedText.text, {
       expectedSha256: input.expectedSha256,
       metadata: {
         ...toMetadataRecord(normalizedMetadata),
-        ...toMetadataRecord(resolvedText.metadata)
+        ...toMetadataRecord(resolvedText.metadata),
+        ...(resolvedExtracted?.extractionMethod === 'ocr'
+          ? buildOcrMetadata(resolvedExtracted, {
+              passed: true,
+              status: ocrReviewRequired ? 'completed' : 'reviewed',
+              warnings: resolvedExtracted.ocrWarnings ?? [],
+              failedPageCount: 0,
+              garbageLikely: false
+            }, {
+              reviewRequired: ocrReviewRequired,
+              reviewedAt: ocrReviewedAt?.toISOString(),
+              reviewedBy: ocrReviewedBy
+            })
+          : {})
       },
       refreshMode: 'admin_ingest',
       contentType: resolvedText.contentType,
       contentLength: resolvedText.contentLength
     });
+    source.extractionMethod = resolvedExtracted?.extractionMethod ?? 'manual';
+    source.ocrProvider = resolvedExtracted?.ocrProvider;
+    source.ocrAverageConfidence = resolvedExtracted?.ocrAverageConfidence;
+    source.ocrPageCount = resolvedExtracted?.pageCount;
+    source.ocrWarnings = resolvedExtracted?.ocrWarnings;
+    source.ocrReviewedAt = ocrReviewedAt;
+    source.ocrReviewedBy = ocrReviewedBy as never;
+    source.ocrReviewRequired = ocrReviewRequired;
+    source.ocrStatus =
+      resolvedExtracted?.extractionMethod === 'ocr'
+        ? ocrReviewRequired
+          ? 'completed'
+          : 'reviewed'
+        : 'not_required';
+    source.ingestionStatus =
+      resolvedExtracted?.extractionMethod === 'ocr'
+        ? ocrReviewRequired
+          ? 'pending_ocr_review'
+          : 'embedded'
+        : 'embedded';
+    await source.save();
 
     await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
       chunkCount: result.chunkCount,
       sha256Hash: result.sha256Hash,
+      extractionMethod: resolvedExtracted?.extractionMethod ?? 'manual',
       requiresHumanReview: source.status !== 'approved'
     });
 
@@ -2963,7 +3682,8 @@ export const ingestKnowledgeSource = async (
       reviewStatus: 'pending_human_review'
     };
   } catch (error) {
-    source.ingestionStatus = 'failed';
+    source.ingestionStatus =
+      error instanceof ApiError && /OCR/i.test(error.message) ? 'ocr_failed' : 'failed';
     source.ingestionError =
       error instanceof Error ? error.message : 'Knowledge source ingestion failed';
     source.metadata = withSearchReadiness({
@@ -3168,10 +3888,24 @@ export const approveKnowledgeSource = async (
   const source = await getSource(sourceId);
   assertMergedKnowledgeSourceGovernance(source, {});
 
-  const approvalBlocker = getKnowledgeSourceApprovalBlocker(source);
+  const isAdminDirectApproval = context.actorType === 'admin' && Boolean(context.owner.userId);
+  const approvalBlocker = isAdminDirectApproval ? undefined : getKnowledgeSourceApprovalBlocker(source);
 
   if (approvalBlocker) {
     throw new ApiError(approvalBlocker.statusCode, approvalBlocker.message);
+  }
+
+  if (isAdminDirectApproval && source.sourceCategory === 'official_legal_source' && !source.legalReviewed) {
+    source.legalReviewed = true;
+    source.legalReviewedAt = new Date();
+    source.legalReviewedBy = context.owner.userId as never;
+  }
+
+  if (isAdminDirectApproval && source.ocrReviewRequired) {
+    source.ocrReviewRequired = false;
+    source.ocrReviewedAt = new Date();
+    source.ocrReviewedBy = context.owner.userId as never;
+    source.ocrStatus = 'reviewed';
   }
 
   source.status = 'approved';
@@ -3186,6 +3920,386 @@ export const approveKnowledgeSource = async (
   await auditRagAction(context, RAG_ACTIONS.sourceApprove, source._id.toString());
 
   return serializeKnowledgeSourceForAdmin(source.toObject());
+};
+
+export const runKnowledgeSourceOcr = async (
+  context: RagServiceContext,
+  sourceId: string,
+  input?: {
+    maxPages?: number;
+    batchSize?: number;
+    pageTimeoutMs?: number;
+    jobTimeoutMs?: number;
+    force?: boolean;
+  }
+): Promise<unknown> => {
+  ownerFilter(context.owner);
+  const source = await getSource(sourceId);
+  const runtimeOptions = normalizeOcrExecutionOptions(input);
+  const autoReviewOcr = shouldAutoReviewOcrForAdmin(context);
+  const reviewRequired = getOcrReviewRequired(source, { autoReview: autoReviewOcr });
+
+  if (
+    !input?.force &&
+    source.extractionMethod === 'ocr' &&
+    ['completed', 'pending_review', 'reviewed'].includes(source.ocrStatus ?? '')
+  ) {
+    return {
+      source: serializeKnowledgeSourceForAdmin(source.toObject()),
+      skipped: true,
+      message: 'OCR has already been completed for this source. Use force=true to rerun OCR.'
+    };
+  }
+
+  if (input?.force) {
+    await clearSourceIndexArtifacts(source);
+  }
+
+  const progressStartedAt = new Date().toISOString();
+  source.extractionMethod = 'ocr';
+  source.ocrReviewRequired = reviewRequired;
+  source.ocrReviewedAt = undefined;
+  source.ocrReviewedBy = undefined;
+  source.ocrStatus = 'running';
+  source.ingestionStatus = 'fetched';
+  source.ingestionError = undefined;
+  source.metadata = withSearchReadiness(
+    {
+      ...toMetadataRecord(source.metadata),
+      ocrStatus: 'running',
+      ocrProgress: {
+        totalPages: 0,
+        processedPages: 0,
+        completedPages: 0,
+        failedPages: 0,
+        lowConfidencePages: 0,
+        startedAt: progressStartedAt,
+        updatedAt: progressStartedAt
+      },
+      processingStage: 'ocr_running',
+      processingError: undefined
+    },
+    'indexing'
+  );
+  await source.save();
+
+  try {
+    const extracted = await runOcrForStoredDocument(source, {
+      ...runtimeOptions,
+      onProgress: async (progress, partialExtracted) => {
+        const existingMetadata = toMetadataRecord(source.metadata);
+        const existingPages = Array.isArray(existingMetadata.ocrPages) ? existingMetadata.ocrPages : [];
+        const newPage = partialExtracted?.pages?.[0];
+        const mergedPages = newPage
+          ? [
+              ...existingPages.filter(
+                (page) =>
+                  !(
+                    typeof page === 'object' &&
+                    page !== null &&
+                    'pageNumber' in page &&
+                    (page as { pageNumber?: unknown }).pageNumber === newPage.pageNumber
+                  )
+              ),
+              newPage
+            ].sort(
+              (left, right) =>
+                Number(
+                  typeof left === 'object' && left !== null && 'pageNumber' in left
+                    ? (left as { pageNumber?: number }).pageNumber ?? 0
+                    : 0
+                ) -
+                Number(
+                  typeof right === 'object' && right !== null && 'pageNumber' in right
+                    ? (right as { pageNumber?: number }).pageNumber ?? 0
+                    : 0
+                )
+            )
+          : existingPages;
+
+        source.ocrStatus = 'running';
+        source.ocrPageCount = progress.totalPages;
+        source.metadata = withSearchReadiness(
+          {
+            ...existingMetadata,
+            ocrStatus: 'running',
+            ocrPageCount: progress.totalPages,
+            ocrProgress: progress,
+            ocrPages: mergedPages,
+            processingStage: 'ocr_running',
+            processingError: progress.lastError
+          },
+          'indexing'
+        );
+        await source.save();
+      }
+    });
+    const ocrResult: RagOcrExtractResult = {
+      text: extracted.text,
+      pageCount: extracted.pageCount ?? 0,
+      totalPages: extracted.totalPages,
+      pages: extracted.pages ?? [],
+      averageConfidence: extracted.ocrAverageConfidence ?? 0,
+      provider: (extracted.ocrProvider as RagOcrExtractResult['provider']) ?? 'tesseract',
+      language: env.OCR_LANGUAGE,
+      extractionMethod: 'ocr',
+      warnings: extracted.ocrWarnings ?? [],
+      progress: extracted.ocrProgress
+    };
+    const assessment = assessOcrOutputQuality(ocrResult);
+
+    source.ocrProvider = extracted.ocrProvider;
+    source.ocrAverageConfidence = extracted.ocrAverageConfidence;
+    source.ocrPageCount = extracted.totalPages ?? extracted.pageCount;
+    source.ocrWarnings = assessment.warnings;
+    source.ocrReviewRequired = reviewRequired;
+    source.rawText = extracted.text;
+    source.ocrStatus = assessment.passed ? (reviewRequired ? 'pending_review' : 'completed') : assessment.status;
+    source.ingestionStatus = assessment.passed
+      ? reviewRequired
+        ? 'pending_ocr_review'
+        : 'ocr_completed'
+      : assessment.status === 'failed'
+        ? 'ocr_failed'
+        : 'ocr_low_confidence';
+    source.ingestionError = assessment.reason;
+    source.metadata = withSearchReadiness(
+      {
+        ...toMetadataRecord(source.metadata),
+        ...buildOcrMetadata(
+          {
+            ...extracted,
+            ocrProgress: extracted.ocrProgress
+              ? {
+                  ...extracted.ocrProgress,
+                  completedAt: extracted.ocrProgress.completedAt ?? new Date().toISOString()
+                }
+              : extracted.ocrProgress
+          },
+          assessment,
+          {
+            reviewRequired
+          }
+        ),
+        extractionStatus: source.ingestionStatus,
+        processingStage: source.ingestionStatus,
+        processingError: source.ingestionError,
+        ingestionPipeline: {
+          ...toMetadataRecord(toMetadataRecord(source.metadata).ingestionPipeline),
+          status: source.ingestionStatus,
+          extractor: extracted.extractor,
+          updatedAt: new Date().toISOString(),
+          error: source.ingestionError
+        }
+      },
+      assessment.passed ? 'not_indexed' : 'failed'
+    );
+
+    if (source.sourceCategory === 'official_legal_source' && !autoReviewOcr) {
+      clearLegalReviewState(source);
+    }
+
+    await source.save();
+
+    if (assessment.passed && !reviewRequired) {
+      await ingestKnowledgeSource(context, sourceId, {
+        content: extracted.text,
+        expectedSha256: source.sha256Hash,
+        metadata: toMetadataRecord(source.metadata)
+      });
+    }
+
+    await auditRagAction(context, RAG_ACTIONS.sourceIngest, source._id.toString(), {
+      mode: 'admin_run_ocr',
+      extractionMethod: 'ocr',
+      ocrProvider: source.ocrProvider,
+      ocrAverageConfidence: source.ocrAverageConfidence,
+      ocrStatus: source.ocrStatus,
+      force: Boolean(input?.force)
+    });
+
+    return {
+      source: serializeKnowledgeSourceForAdmin((await getSource(sourceId)).toObject()),
+      pageCount: extracted.pageCount ?? 0,
+      totalPages: extracted.totalPages ?? extracted.pageCount ?? 0,
+      averageConfidence: extracted.ocrAverageConfidence ?? 0,
+      warnings: assessment.warnings,
+      passed: assessment.passed,
+      ingestionStatus: source.ingestionStatus
+    };
+  } catch (error) {
+    source.ocrStatus = 'failed';
+    source.ingestionStatus = 'ocr_failed';
+    source.ingestionError = error instanceof Error ? error.message : 'OCR failed';
+    source.metadata = withSearchReadiness(
+      {
+        ...toMetadataRecord(source.metadata),
+        ocrStatus: 'failed',
+        ocrProgress: {
+          ...toMetadataRecord(toMetadataRecord(source.metadata).ocrProgress),
+          updatedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          lastError: source.ingestionError
+        },
+        processingStage: 'ocr_failed',
+        processingError: source.ingestionError
+      },
+      'failed'
+    );
+    await source.save();
+    throw error;
+  }
+};
+
+export const approveOcrKnowledgeSource = async (
+  context: RagServiceContext,
+  sourceId: string,
+  input: ApproveOcrKnowledgeSourceInput
+): Promise<unknown> => {
+  ownerFilter(context.owner);
+  const source = await getSource(sourceId);
+
+  if (source.extractionMethod !== 'ocr') {
+    throw new ApiError(StatusCodes.CONFLICT, 'Knowledge source does not have OCR output to approve.');
+  }
+
+  if ((source.ocrAverageConfidence ?? 0) < env.OCR_MIN_CONFIDENCE) {
+    throw new ApiError(
+      StatusCodes.CONFLICT,
+      'OCR confidence is below the configured threshold and cannot be approved for retrieval.'
+    );
+  }
+
+  if (!source.rawText?.trim()) {
+    throw new ApiError(
+      StatusCodes.CONFLICT,
+      'Knowledge source does not have OCR text available to approve and reindex.'
+    );
+  }
+
+  source.ocrReviewRequired = false;
+  source.ocrReviewedAt = new Date();
+  source.ocrReviewedBy = context.owner.userId as never;
+  source.ocrStatus = 'reviewed';
+  source.ingestionStatus = 'ocr_reviewed';
+  source.ingestionError = undefined;
+  source.metadata = withSearchReadiness(
+    {
+      ...toMetadataRecord(source.metadata),
+      ocrReviewRequired: false,
+      ocrReviewedAt: source.ocrReviewedAt.toISOString(),
+      ocrReviewedBy: source.ocrReviewedBy ? String(source.ocrReviewedBy) : undefined,
+      ocrStatus: 'reviewed',
+      extractionStatus: 'ocr_reviewed',
+      processingStage: 'ocr_reviewed',
+      processingError: undefined
+    },
+    'searchable'
+  );
+
+  if (input.legalReviewed && source.sourceCategory === 'official_legal_source') {
+    source.legalReviewed = true;
+    source.legalReviewedAt = source.ocrReviewedAt;
+    source.legalReviewedBy = context.owner.userId as never;
+  }
+
+  const result = await embedKnowledgeSourceText(source, source.rawText, {
+    expectedSha256: source.sha256Hash,
+    metadata: {
+      ...toMetadataRecord(source.metadata),
+      ocrReviewRequired: false,
+      ocrReviewedAt: source.ocrReviewedAt.toISOString(),
+      ocrReviewedBy: source.ocrReviewedBy ? String(source.ocrReviewedBy) : undefined,
+      ocrStatus: 'reviewed',
+      extractionStatus: 'ocr_reviewed',
+      processingStage: 'indexed',
+      processingError: undefined
+    },
+    refreshMode: 'ocr_review_approval'
+  });
+
+  const persistedSource = await getSource(sourceId);
+  let needsSave = false;
+
+  if (persistedSource.ocrReviewRequired || persistedSource.ocrStatus !== 'reviewed') {
+    persistedSource.ocrReviewRequired = false;
+    persistedSource.ocrStatus = 'reviewed';
+    persistedSource.ocrReviewedAt = source.ocrReviewedAt;
+    persistedSource.ocrReviewedBy = source.ocrReviewedBy;
+    persistedSource.ingestionError = undefined;
+    persistedSource.metadata = withSearchReadiness(
+      {
+        ...toMetadataRecord(persistedSource.metadata),
+        ocrReviewRequired: false,
+        ocrReviewedAt: persistedSource.ocrReviewedAt?.toISOString(),
+        ocrReviewedBy: persistedSource.ocrReviewedBy ? String(persistedSource.ocrReviewedBy) : undefined,
+        ocrStatus: 'reviewed',
+        extractionStatus: persistedSource.ingestionStatus,
+        processingError: undefined
+      },
+      'searchable'
+    );
+    needsSave = true;
+  }
+
+  if (
+    input.legalReviewed &&
+    persistedSource.sourceCategory === 'official_legal_source' &&
+    !persistedSource.legalReviewed
+  ) {
+    persistedSource.legalReviewed = true;
+    persistedSource.legalReviewedAt = source.ocrReviewedAt;
+    persistedSource.legalReviewedBy = context.owner.userId as never;
+    needsSave = true;
+  }
+
+  if (needsSave) {
+    await persistedSource.save();
+  }
+
+  return {
+    source: serializeKnowledgeSourceForAdmin(persistedSource.toObject()),
+    result
+  };
+};
+
+export const getKnowledgeSourceOcrPreview = async (
+  context: RagServiceContext,
+  sourceId: string,
+  query: KnowledgeSourceOcrPreviewQueryInput
+): Promise<unknown> => {
+  ownerFilter(context.owner);
+  const source = await getSource(sourceId);
+  const metadata = toMetadataRecord(source.metadata);
+  const pages = Array.isArray(metadata.ocrPages) ? metadata.ocrPages : [];
+  const page = query.page ?? 1;
+  const pageSize = query.pageSize ?? 5;
+  const paginated = paginateOcrPages(pages, page, pageSize);
+
+  return {
+    sourceId: source._id.toString(),
+    extractionMethod: source.extractionMethod,
+    ocrProvider: source.ocrProvider,
+    averageConfidence: source.ocrAverageConfidence,
+    pageCount: source.ocrPageCount,
+    warnings: source.ocrWarnings ?? [],
+    status: source.ocrStatus,
+    sampleText: source.rawText?.slice(0, KNOWLEDGE_SOURCE_ADMIN_TEXT_PREVIEW_CHARS) ?? '',
+    page: paginated.page,
+    pageSize: paginated.pageSize,
+    totalPages: paginated.totalPages,
+    pages: paginated.pages
+  };
+};
+
+export const getKnowledgeSourceStatus = async (
+  context: RagServiceContext,
+  sourceId: string
+): Promise<unknown> => {
+  ownerFilter(context.owner);
+  const source = await getSource(sourceId);
+
+  return buildOcrStatusSummary(source);
 };
 
 export const rejectKnowledgeSource = async (
@@ -3222,6 +4336,7 @@ export const reindexKnowledgeSource = async (
     { sourceId: source._id },
     {
       $set: {
+        pineconeVectorId: undefined,
         'metadata.embeddingStatus': 'pending',
         'metadata.embeddingError': undefined,
         'metadata.pineconeVectorId': undefined,
@@ -3560,6 +4675,21 @@ const buildSourceFilter = (
     deletedAt: { $exists: false },
     sourceCategory: category,
     ...(category === 'official_legal_source' ? { legalReviewed: true } : {}),
+    $and: [
+      {
+        $or: [
+          { extractionMethod: { $ne: 'ocr' } },
+          { ocrReviewRequired: false },
+          { ocrStatus: 'reviewed' }
+        ]
+      },
+      {
+        $or: [
+          { extractionMethod: { $ne: 'ocr' } },
+          { ocrAverageConfidence: { $gte: env.OCR_MIN_CONFIDENCE } }
+        ]
+      }
+    ],
     ...(input.language ? { language: input.language } : {}),
     ...buildJurisdictionFilter(input.jurisdiction, category),
     ...(input.stateOrTerritory ? { stateOrTerritory: input.stateOrTerritory } : {}),
@@ -3693,6 +4823,10 @@ const searchRagWithPinecone = async (
         lastUpdated: source.lastUpdated,
         text: chunk.chunkText,
         score: scoreByChunkId.get(chunk._id.toString()),
+        extractionMethod: source.extractionMethod,
+        ocrProvider: source.ocrProvider,
+        ocrAverageConfidence: source.ocrAverageConfidence,
+        ocrStatus: source.ocrStatus,
         metadata: chunk.metadata ?? {}
       });
   }
@@ -3961,7 +5095,11 @@ export const searchRag = async (
         'source.pathwayCategory': 1,
         'source.legalDomain': 1,
         'source.legislationName': 1,
-        'source.lastUpdated': 1
+        'source.lastUpdated': 1,
+        'source.extractionMethod': 1,
+        'source.ocrProvider': 1,
+        'source.ocrAverageConfidence': 1,
+        'source.ocrStatus': 1
       }
     }
   ];
@@ -3988,6 +5126,10 @@ export const searchRag = async (
       legalDomain?: RagLegalDomain;
       legislationName?: string;
       lastUpdated?: Date;
+      extractionMethod?: RagSearchResult['extractionMethod'];
+      ocrProvider?: string;
+      ocrAverageConfidence?: number;
+      ocrStatus?: RagOcrStatus;
     };
   };
   const results = await RagChunkModel.aggregate<RagAggregateResult>(pipeline);
@@ -4018,6 +5160,10 @@ export const searchRag = async (
     lastUpdated: result.source.lastUpdated,
     text: result.chunkText,
     score: result.score,
+    extractionMethod: result.source.extractionMethod,
+    ocrProvider: result.source.ocrProvider,
+    ocrAverageConfidence: result.source.ocrAverageConfidence,
+    ocrStatus: result.source.ocrStatus,
     metadata: result.metadata ?? {}
   }));
 

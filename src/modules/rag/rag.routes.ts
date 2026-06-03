@@ -11,9 +11,12 @@ import { validate } from '@common/middleware/validate.middleware';
 import {
   answerRagController,
   approveKnowledgeSourceController,
+  approveOcrKnowledgeSourceController,
   createKnowledgeSourceController,
   deleteKnowledgeSourceController,
   debugRetrieveRagController,
+  getKnowledgeSourceStatusController,
+  getKnowledgeSourceOcrPreviewController,
   ingestKnowledgeSourceController,
   knowledgeSourceReadinessController,
   listKnowledgeSourceChunksController,
@@ -22,6 +25,7 @@ import {
   rejectKnowledgeSourceController,
   reindexKnowledgeSourceController,
   refreshKnowledgeSourceController,
+  runKnowledgeSourceOcrController,
   searchRagController,
   timelineAssistantController,
   uploadKnowledgeSourceDocumentController,
@@ -29,7 +33,9 @@ import {
 } from './rag.controller';
 import {
   createKnowledgeSourceSchema,
+  approveOcrKnowledgeSourceSchema,
   knowledgeSourceChunkQuerySchema,
+  knowledgeSourceOcrPreviewQuerySchema,
   ingestKnowledgeSourceSchema,
   ragAnswerSchema,
   ragDebugRetrieveSchema,
@@ -38,6 +44,7 @@ import {
   ragTimelineAssistantSchema,
   rejectKnowledgeSourceSchema,
   refreshKnowledgeSourceSchema,
+  runOcrKnowledgeSourceRequestSchema,
   updateKnowledgeSourceSchema
 } from './rag.schema';
 
@@ -115,6 +122,26 @@ ragRoutes.post(
   '/knowledge-sources/:id/approve',
   validate({ params: ragParamsSchema }),
   approveKnowledgeSourceController
+);
+ragRoutes.post(
+  '/knowledge-sources/:id/run-ocr',
+  validate({ params: ragParamsSchema, body: runOcrKnowledgeSourceRequestSchema }),
+  runKnowledgeSourceOcrController
+);
+ragRoutes.post(
+  '/knowledge-sources/:id/approve-ocr',
+  validate({ params: ragParamsSchema, body: approveOcrKnowledgeSourceSchema }),
+  approveOcrKnowledgeSourceController
+);
+ragRoutes.get(
+  '/knowledge-sources/:id/ocr-preview',
+  validate({ params: ragParamsSchema, query: knowledgeSourceOcrPreviewQuerySchema }),
+  getKnowledgeSourceOcrPreviewController
+);
+ragRoutes.get(
+  '/knowledge-sources/:id/status',
+  validate({ params: ragParamsSchema }),
+  getKnowledgeSourceStatusController
 );
 ragRoutes.post(
   '/knowledge-sources/:id/reject',

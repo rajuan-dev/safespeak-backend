@@ -23,6 +23,32 @@ export type RagLegalDomain = (typeof RAG_LEGAL_DOMAINS)[number];
 export type RagPathwayCategory = (typeof RAG_PATHWAY_CATEGORIES)[number];
 export type RagSourceReliability = (typeof RAG_SOURCE_RELIABILITIES)[number];
 export type RagIndexSyncStatus = (typeof RAG_INDEX_SYNC_STATUSES)[number];
+export type RagExtractionMethod = 'text' | 'ocr' | 'manual' | 'url';
+export type RagOcrStatus =
+  | 'not_required'
+  | 'required'
+  | 'running'
+  | 'completed'
+  | 'low_confidence'
+  | 'failed'
+  | 'pending_review'
+  | 'reviewed';
+
+export type RagOcrPageStatus = 'completed' | 'failed' | 'skipped' | 'low_confidence';
+
+export interface RagOcrProgress {
+  totalPages: number;
+  processedPages: number;
+  completedPages: number;
+  failedPages: number;
+  lowConfidencePages: number;
+  currentBatchStart?: number;
+  currentBatchEnd?: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  lastError?: string;
+}
 
 export interface RagOwner {
   userId?: string;
@@ -50,6 +76,10 @@ export interface RagSearchResult {
   citationUrl?: string;
   text: string;
   score?: number;
+  extractionMethod?: RagExtractionMethod;
+  ocrProvider?: string;
+  ocrAverageConfidence?: number;
+  ocrStatus?: RagOcrStatus;
   metadata: Record<string, unknown>;
 }
 
