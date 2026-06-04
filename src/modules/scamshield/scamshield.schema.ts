@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
 const contentSchema = z.string().trim().min(1).max(20000);
+const analysisSnapshotSchema = z.record(z.unknown());
 
 export const scamShieldParamsSchema = z.object({
   id: objectIdSchema
@@ -19,6 +20,7 @@ export const analyzeEmailSchema = z.object({
   from: z.string().trim().max(320).optional(),
   body: contentSchema,
   headers: z.record(z.unknown()).default({}),
+  forwardedWithPermission: z.boolean().default(false),
   reportId: objectIdSchema.optional(),
   metadata: z.record(z.unknown()).default({})
 });
@@ -46,18 +48,28 @@ export const redactScamContentSchema = z.object({
 });
 
 export const generateReportDraftSchema = z.object({
-  analysisId: objectIdSchema,
-  notes: z.string().trim().max(4000).optional()
+  analysisId: objectIdSchema.optional(),
+  analysisSnapshot: analysisSnapshotSchema.optional(),
+  notes: z.string().trim().max(4000).optional(),
+  autoRedactPII: z.boolean().default(false),
+  redactionMode: z.enum(['mask', 'labels']).default('labels')
+}).refine((value) => value.analysisId || value.analysisSnapshot, {
+  message: 'analysisId or analysisSnapshot is required'
 });
 
 export const generateReportDraftByIdSchema = z.object({
-  notes: z.string().trim().max(4000).optional()
+  notes: z.string().trim().max(4000).optional(),
+  autoRedactPII: z.boolean().default(false),
+  redactionMode: z.enum(['mask', 'labels']).default('labels')
 });
 
 export const submitScamReportSchema = z.object({
-  analysisId: objectIdSchema,
+  analysisId: objectIdSchema.optional(),
+  analysisSnapshot: analysisSnapshotSchema.optional(),
   destination: z.string().trim().min(1).max(120).default('SafeSpeak review queue'),
   consentToShare: z.boolean().default(false)
+}).refine((value) => value.analysisId || value.analysisSnapshot, {
+  message: 'analysisId or analysisSnapshot is required'
 });
 
 export const submitScamReportByIdSchema = z.object({

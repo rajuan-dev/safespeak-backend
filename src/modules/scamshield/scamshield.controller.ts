@@ -122,7 +122,9 @@ export const generateReportDraftByIdController = asyncHandler(
     const body = req.body as GenerateReportDraftByIdInput;
     const analysis = await generateReportDraft(getContext(req), {
       analysisId: req.params.id,
-      notes: body.notes
+      notes: body.notes,
+      autoRedactPII: body.autoRedactPII,
+      redactionMode: body.redactionMode
     });
 
     res
