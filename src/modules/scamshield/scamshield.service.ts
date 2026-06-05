@@ -75,6 +75,15 @@ type LocalScamShieldAnalysis = {
   updatedAt: Date;
 };
 type ScamShieldAnalysisLike = ScamShieldAnalysisDocument | LocalScamShieldAnalysis;
+type OpenAiScamClassification = {
+  riskScore: number;
+  riskLevel?: ScamShieldRiskLevel;
+  confidence?: string;
+  summary?: string;
+  indicators?: string[];
+  redFlags?: string[];
+  recommendations?: string[];
+};
 type ScamContentClassification = {
   isFormalDocument: boolean;
   isTrustedReferenceDocument: boolean;
@@ -323,8 +332,15 @@ const classifyScamWithOpenAi = async (
               type: 'input_text',
               text:
                 'You are a scam and phishing classifier for SafeSpeak. Return only valid JSON. ' +
-                'Classify the content clearly and use high scores for phishing, impersonation, OTP theft, credential theft, payment fraud, remote-access scams, and malicious links. ' +
+                'Your job is to decide whether the user supplied content contains an actual scam/phishing attempt, a forwarded or quoted scam example, or only benign discussion about scams. ' +
+                'Before scoring, reason silently using these categories: actual_scam_message, quoted_or_forwarded_scam_example, discussion_about_scam, benign_business_message, or formal_reference_document. ' +
+                'If the input contains quoted, pasted, forwarded, or embedded scam wording inside otherwise normal discussion, classify the embedded suspicious content rather than the wrapper conversation. ' +
+                'If the input is only a business/admin/support request asking for a sample, asking for results, or discussing how to compare tools, keep the score low unless an actual scam message is included in the text. ' +
+                'Do not treat words like scam, test, result, compare, website, or link as scam evidence by themselves when they appear in legitimate business discussion. ' +
+                'Use high scores for clear phishing, impersonation, OTP theft, credential theft, payment fraud, remote-access scams, invoice redirection, and malicious links. ' +
+                'Messages such as "your account is suspended", "verify immediately", "unauthorized login", "click this link", or requests for codes/passwords should usually land in high or critical ranges. ' +
                 'If the content is a formal law, regulation, policy, or government reference document, keep the score low unless there are concrete scam indicators. ' +
+                'Write concise plain-English output. Avoid awkward warnings for benign business messages. For benign discussion, say it appears to discuss scam review/testing rather than being a live scam attempt. ' +
                 'Return riskScore from 0 to 100, riskLevel as low|medium|high|critical, confidence as low|medium|high, and short plain-English summary, indicators, redFlags, and recommendations.'
             }
           ]
