@@ -213,6 +213,59 @@ const ownerFilter = (owner: ScamShieldOwner): ScamShieldOwner => {
 const hashValue = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+const clampRiskScore = (value: number): number => Math.min(100, Math.max(0, Math.round(value)));
+
+const normalizeStringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : [];
+
+const normalizeConfidence = (value: unknown): string => {
+  if (typeof value !== 'string') {
+    return 'medium';
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'low' || normalized === 'medium' || normalized === 'high'
+    ? normalized
+    : 'medium';
+};
+
+const extractOpenAiOutputText = (payload: unknown): string => {
+  const response = payload as {
+    output_text?: string;
+    output?: Array<{ content?: Array<{ text?: string }> }>;
+  };
+
+  if (typeof response.output_text === 'string' && response.output_text.trim()) {
+    return response.output_text;
+  }
+
+  return (
+    response.output
+      ?.flatMap((item) => item.content ?? [])
+      .map((item) => item.text)
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .join('\n') ?? ''
+  );
+};
+
+const normalizeJsonCandidate = (text: string): string => {
+  const trimmed = text.trim();
+
+  if (trimmed.startsWith('```')) {
+    return trimmed
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+  }
+
+  return trimmed;
+};
+
 const getFileExtension = (fileName: string): string => path.extname(fileName).toLowerCase();
 
 const isImageEvidenceFile = (file: UploadedScamShieldEvidenceFile): boolean =>
@@ -227,6 +280,147 @@ const extractBestEffortLegacyDocText = (file: UploadedScamShieldEvidenceFile): s
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+const classifyScamWithOpenAi = async (
+  content: string,
+  options?: {
+    emailInput?: AnalyzeEmailInput;
+    analysisType?: ScamShieldAnalysisType;
+    uploadedFiles?: Array<{ fileName?: string; mimeType?: string; extractor?: string }>;
+  }
+): Promise<ScoredScamContent> => {
+  if (!env.OPENAI_API_KEY) {
+    throw new ApiError(
+      StatusCodes.SERVICE_UNAVAILABLE,
+      'ScamShield AI classification is unavailable because OPENAI_API_KEY is not configured'
+    );
+  }
+
+  const normalizedContent = content.replace(/\s+/g, ' ').trim();
+  const extractedEntities = extractScamEntities(normalizedContent);
+  const senderAnalysis = options?.emailInput ? analyzeSenderProfile(options.emailInput) : undefined;
+  const urlReputation = extractedEntities.primaryUrlDomain
+    ? await analyzeUrlReputation(extractedEntities.primaryUrlDomain)
+    : undefined;
+  const classification = classifyDocumentContext(normalizedContent, extractedEntities, {
+    analysisType: options?.analysisType,
+    uploadedFiles: options?.uploadedFiles
+  });
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: env.OPENAI_MODEL,
+      input: [
+        {
+          role: 'system',
+          content: [
+            {
+              type: 'input_text',
+              text:
+                'You are a scam and phishing classifier for SafeSpeak. Return only valid JSON. ' +
+                'Classify the content clearly and use high scores for phishing, impersonation, OTP theft, credential theft, payment fraud, remote-access scams, and malicious links. ' +
+                'If the content is a formal law, regulation, policy, or government reference document, keep the score low unless there are concrete scam indicators. ' +
+                'Return riskScore from 0 to 100, riskLevel as low|medium|high|critical, confidence as low|medium|high, and short plain-English summary, indicators, redFlags, and recommendations.'
+            }
+          ]
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: JSON.stringify({
+                analysisType: options?.analysisType ?? 'text',
+                content: normalizedContent,
+                extractedEntities,
+                senderAnalysis,
+                urlReputation,
+                documentContext: classification
+              })
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'scamshield_classification',
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: [
+              'riskScore',
+              'riskLevel',
+              'confidence',
+              'summary',
+              'indicators',
+              'redFlags',
+              'recommendations'
+            ],
+            properties: {
+              riskScore: { type: 'number' },
+              riskLevel: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+              confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
+              summary: { type: 'string' },
+              indicators: { type: 'array', items: { type: 'string' } },
+              redFlags: { type: 'array', items: { type: 'string' } },
+              recommendations: { type: 'array', items: { type: 'string' } }
+            }
+          }
+        }
+      }
+    })
+  });
+
+  if (!response.ok) {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'ScamShield AI classification request failed');
+  }
+
+  const payload = (await response.json()) as unknown;
+  const responseText = normalizeJsonCandidate(extractOpenAiOutputText(payload));
+
+  if (!responseText) {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'ScamShield AI classification response was empty');
+  }
+
+  let parsed: OpenAiScamClassification;
+
+  try {
+    parsed = JSON.parse(responseText) as OpenAiScamClassification;
+  } catch {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'ScamShield AI classification response was invalid');
+  }
+
+  const riskScore = clampRiskScore(parsed.riskScore);
+  const confidence = normalizeConfidence(parsed.confidence);
+  const modelRiskLevel = parsed.riskLevel ?? riskLevelForScore(riskScore);
+  const fallbackSummary =
+    modelRiskLevel === 'critical'
+      ? 'Critical scam risk detected. Avoid engaging with the message and verify independently.'
+      : modelRiskLevel === 'high'
+        ? 'High scam risk detected. Avoid clicking links, sharing codes, or sending money.'
+        : modelRiskLevel === 'medium'
+          ? 'Medium scam risk detected. Verify the request through official channels before responding.'
+          : 'Low scam risk detected based on the supplied content. Continue to verify through official channels.';
+
+  return {
+    riskScore,
+    confidence,
+    confidenceScore: confidence === 'high' ? 0.9 : confidence === 'medium' ? 0.65 : 0.4,
+    summary: typeof parsed.summary === 'string' && parsed.summary.trim() ? parsed.summary.trim() : fallbackSummary,
+    indicators: normalizeStringArray(parsed.indicators),
+    redFlags: normalizeStringArray(parsed.redFlags),
+    recommendations: normalizeStringArray(parsed.recommendations),
+    extractedEntities,
+    urlReputation,
+    senderAnalysis
+  };
+};
 
 const extractTextFromScreenshot = async (input: AnalyzeScreenshotInput): Promise<string> => {
   if (input.imageText?.trim()) {
@@ -1389,6 +1583,8 @@ const confidenceForScore = (confidenceScore: number): string => {
   return 'low';
 };
 
+// Legacy rule-based scorer kept for rollback/testing only. Production classification is routed
+// through `classifyScamWithOpenAi()` from `createAnalysis()` for now.
 const scoreContent = async (
   content: string,
   options?: {
@@ -1524,6 +1720,7 @@ const scoreContent = async (
     senderAnalysis
   };
 };
+void scoreContent;
 
 const riskLevelForScore = (score: number): ScamShieldAnalysisDocument['riskLevel'] => {
   if (score >= 75) {
@@ -1555,7 +1752,8 @@ const createAnalysis = async (
 ): Promise<ScamShieldAnalysisLike> => {
   await assertAiConsent(context.owner);
   const consent = await getConsentFlags(context.owner);
-  const scored = await scoreContent(content, options);
+  // Temporary product decision: bypass the local rule scorer and classify directly with OpenAI.
+  const scored = await classifyScamWithOpenAi(content, options);
   const language =
     typeof input.language === 'string'
       ? input.language
@@ -1582,7 +1780,8 @@ const createAnalysis = async (
     extractedEntities: scored.extractedEntities,
     metadata: {
       ...((input.metadata as Record<string, unknown> | undefined) ?? {}),
-      detectionVersion: 'scamshield-rules-v2',
+      detectionVersion: 'scamshield-openai-direct-v1',
+      scoringMode: 'openai_direct',
       confidenceScore: scored.confidenceScore,
       matchedSignalCount: scored.indicators.length,
       urlReputation: scored.urlReputation,
