@@ -26,7 +26,9 @@ import {
 import { adminMediaAssetRoutes, mediaAssetRoutes } from '@modules/media-assets/media-assets.routes';
 import { profileRoutes } from '@modules/profile/profile.routes';
 import { privacyRequestRoutes, privacyRoutes } from '@modules/privacy/privacy.routes';
-import { ragRoutes } from '@modules/rag/rag.routes';
+// Legacy RAG implementation is intentionally retained for rollback and reference.
+// Website RAG traffic now goes directly to the separate safespeak-ai-agent service.
+// import { ragRoutes } from '@modules/rag/rag.routes';
 import { adminResourceRoutes, resourceRoutes } from '@modules/resources/resources.routes';
 import { reportsRoutes } from '@modules/reports/reports.routes';
 import { scamShieldRoutes } from '@modules/scamshield/scamshield.routes';
@@ -60,7 +62,7 @@ apiRouter.use('/privacy', privacyRoutes);
 apiRouter.use('/analytics', publicAnalyticsRoutes);
 apiRouter.use('/', evidenceRoutes);
 apiRouter.use('/ai', aiRoutes);
-apiRouter.use('/rag', ragRoutes);
+// apiRouter.use('/rag', ragRoutes);
 apiRouter.use('/scamshield', scamShieldRoutes);
 apiRouter.use('/support', supportRoutes);
 apiRouter.use('/feedback', feedbackRoutes);

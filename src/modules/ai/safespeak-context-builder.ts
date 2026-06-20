@@ -15,8 +15,11 @@ import {
 } from './safespeak-response-planner';
 
 export type SafeSpeakRagSnippet = {
+  sourceId: string;
   sourceTitle: string;
+  publisher?: string;
   sourceAuthority?: string;
+  sourceCategory?: string;
   jurisdiction: string;
   stateOrTerritory?: string;
   legalDomain?: string;
@@ -26,6 +29,11 @@ export type SafeSpeakRagSnippet = {
   lastUpdated?: string;
   sectionNumber?: string;
   sectionTitle?: string;
+  page?: number;
+  pageStart?: number;
+  pageEnd?: number;
+  versionDate?: string;
+  commencementDate?: string;
   relevantSnippet: string;
 };
 

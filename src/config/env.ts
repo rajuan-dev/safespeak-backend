@@ -84,7 +84,7 @@ const envSchema = z
     PINECONE_REGION: z.string().min(1).default('us-east-1'),
     ASR_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(26214400),
     RAG_VECTOR_INDEX: z.string().min(1).default('rag_chunks_vector_index'),
-    RAG_MIN_SCORE_LEGAL: z.coerce.number().min(0).max(1).default(0.72),
+    RAG_MIN_SCORE_LEGAL: z.coerce.number().min(0).max(1).default(0.58),
     RAG_MIN_SCORE_SUPPORT: z.coerce.number().min(0).max(1).default(0.68),
     RAG_TOP_K_LEGAL: z.coerce.number().int().positive().default(6),
     RAG_TOP_K_SUPPORT: z.coerce.number().int().positive().default(5),

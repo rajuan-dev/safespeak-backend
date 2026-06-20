@@ -427,6 +427,29 @@ ragChunkSchema.index({
   pathwayCategory: 1,
   active: 1
 });
+// Exact-reference lookup channel for hybrid retrieval (section number matching).
+ragChunkSchema.index({ sourceId: 1, sectionNumber: 1 });
+// Keyword (BM25-style) channel for hybrid retrieval. MongoDB permits one text
+// index per collection; section references and headings are weighted highest so
+// exact legal references rank above incidental body-text mentions.
+ragChunkSchema.index(
+  {
+    sectionRef: 'text',
+    sectionTitle: 'text',
+    legislationName: 'text',
+    chunkText: 'text'
+  },
+  {
+    name: 'rag_chunk_keyword_text',
+    weights: {
+      sectionRef: 12,
+      sectionTitle: 6,
+      legislationName: 4,
+      chunkText: 1
+    },
+    default_language: 'english'
+  }
+);
 
 export const RagKnowledgeSourceModel = model<RagKnowledgeSourceDocument>(
   'RagKnowledgeSource',

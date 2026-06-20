@@ -48,11 +48,20 @@ export type GenerateSafeSpeakResponseOutput = {
   confidence: 'medium';
   disclaimer: string;
   citations: Array<{
+    sourceId?: string;
     title: string;
+    publisher?: string;
     jurisdiction: string;
     sourceType: string;
     url?: string;
     lastUpdated?: string;
+    sectionRef?: string;
+    sectionTitle?: string;
+    page?: number;
+    pageStart?: number;
+    pageEnd?: number;
+    versionDate?: string;
+    commencementDate?: string;
   }>;
   showSources: boolean;
   sourceDisplayReason:
@@ -140,6 +149,8 @@ const buildRagPromptSection = (ragContext: SafeSpeakRagSnippet[]): string =>
               item.sourceType
             }; sectionNumber=${item.sectionNumber ?? 'n/a'}; sectionTitle=${
               item.sectionTitle ?? 'n/a'
+            }; pageStart=${item.pageStart ?? 'n/a'}; pageEnd=${item.pageEnd ?? 'n/a'}; versionDate=${
+              item.versionDate ?? 'n/a'
             }; url=${item.url ?? 'n/a'}; lastUpdated=${item.lastUpdated ?? 'n/a'}; snippet=${item.relevantSnippet}`
         )
       ].join('\n');
@@ -154,6 +165,9 @@ const buildNaturalUserPrompt = (input: GenerateSafeSpeakResponseInput): string =
 
   if (input.ragContext && input.ragContext.length > 0) {
     sections.push(buildRagPromptSection(input.ragContext));
+    sections.push(
+      'For factual claims, use only the RAG snippets above. Do not use general knowledge or infer missing facts. Preserve exact names, dates, numbers, and legal wording. If the snippets do not contain the answer, say it was not found in the available approved data.'
+    );
   }
 
   sections.push('Reply directly to the latest user message in plain text.');
@@ -405,7 +419,7 @@ const callOpenAI = async (
     model: input.model ?? env.OPENAI_MODEL,
     systemPrompt: getResponseSystemPrompt(input, mode),
     userPrompt: buildUserPrompt(input, promptStyle),
-    temperature: mode === 'natural' ? 0.7 : 0.4
+    temperature: input.ragStatus === 'retrieved' ? 0.2 : mode === 'natural' ? 0.7 : 0.4
   });
 };
 
@@ -530,11 +544,20 @@ export const generateSafeSpeakResponse = async (
   const ragContext = input.ragContext ?? input.context.ragContext;
   const ragStatus = input.ragStatus ?? (ragContext.length > 0 ? 'retrieved' : 'not_required');
   const citations = ragContext.map((item) => ({
+    sourceId: item.sourceId,
     title: item.sourceTitle,
+    publisher: item.publisher ?? item.sourceAuthority,
     jurisdiction: item.jurisdiction,
     sourceType: item.sourceType,
     url: item.url,
-    lastUpdated: item.lastUpdated
+    lastUpdated: item.lastUpdated,
+    sectionRef: item.sectionNumber,
+    sectionTitle: item.sectionTitle,
+    page: item.page,
+    pageStart: item.pageStart,
+    pageEnd: item.pageEnd,
+    versionDate: item.versionDate,
+    commencementDate: item.commencementDate
   }));
   const preferParagraphs = shouldPreferParagraphs(input);
   const retryPromptStyle: PromptStyle =

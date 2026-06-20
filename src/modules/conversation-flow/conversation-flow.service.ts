@@ -732,7 +732,7 @@ const looksLikeLegalLookupMessage = (message: string): boolean => {
   const trimmedMessage = collapseWhitespace(message);
 
   return (
-    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|this act|that act|the act|uploaded source|covered by the legislation|can you cite the source|what does the act say|what does this act say|cite)\b/i.test(
+    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|this act|that act|the act|this document|this report|uploaded (?:source|document|report)|aihw|covered by the legislation|can you cite the source|what does (?:the|this) (?:act|document|report|source) say|cite)\b/i.test(
       trimmedMessage
     ) &&
     (/\?/.test(trimmedMessage) || trimmedMessage.split(' ').length <= 10)
@@ -1629,10 +1629,26 @@ const toRagSnippets = (results: Array<{
   sectionTitle?: string;
   lastUpdated?: Date;
   text: string;
+  metadata?: Record<string, unknown>;
 }>): SafeSpeakRagSnippet[] =>
-  results.slice(0, 4).map((result) => ({
+  results.slice(0, 4).map((result) => {
+    const pageStart =
+      typeof result.metadata?.pageStart === 'number' ? result.metadata.pageStart : undefined;
+    const pageEnd =
+      typeof result.metadata?.pageEnd === 'number' ? result.metadata.pageEnd : undefined;
+    const versionDate =
+      typeof result.metadata?.versionDate === 'string' ? result.metadata.versionDate : undefined;
+    const commencementDate =
+      typeof result.metadata?.commencementDate === 'string'
+        ? result.metadata.commencementDate
+        : undefined;
+
+    return {
+    sourceId: result.sourceId,
     sourceTitle: result.title,
+    publisher: result.sourceAuthority,
     sourceAuthority: result.sourceAuthority,
+    sourceCategory: result.sourceCategory,
     jurisdiction: result.jurisdiction,
     stateOrTerritory: result.stateOrTerritory,
     legalDomain: result.legalDomain,
@@ -1642,8 +1658,14 @@ const toRagSnippets = (results: Array<{
     lastUpdated: result.lastUpdated?.toISOString(),
     sectionNumber: result.sectionRef,
     sectionTitle: result.sectionTitle,
-    relevantSnippet: result.text.replace(/\s+/g, ' ').trim().slice(0, 500)
-  }));
+    page: pageStart,
+    pageStart,
+    pageEnd,
+    versionDate,
+    commencementDate,
+    relevantSnippet: result.text.replace(/\s+/g, ' ').trim().slice(0, 1600)
+  };
+  });
 
 type GroundedLegalSource = {
   sourceId: string;
@@ -1855,6 +1877,22 @@ const retrieveConversationFlowRag = async (input: {
     return [];
   }
 
+  const explicitlyMatchedSourceIds = await findMatchingLegalSourceIdsForQuery({
+    query: effectiveQuery,
+    jurisdiction: input.jurisdiction
+  });
+
+  if (explicitlyMatchedSourceIds.length > 0) {
+    return searchRag(input.context, {
+      query: effectiveQuery,
+      topK: 4,
+      language: input.language,
+      jurisdiction: input.jurisdiction,
+      sourceCategory: 'official_legal_source',
+      sourceIds: [explicitlyMatchedSourceIds[0]]
+    });
+  }
+
   const searchPlan = buildConversationFlowRagSearchPlan({
     intent: input.intent,
     detectedCategory: input.detectedCategory
@@ -1917,7 +1955,23 @@ const extractNamedLegislationReferences = (query: string): string[] =>
   );
 
 const hasContextualActReference = (query: string): boolean =>
-  /\b(this|that|the)\s+(act|regulation|code|charter|law|legislation)\b/i.test(query);
+  /\b(?:(?:this|that|the)\s+(?:act|regulation|code|charter|law|legislation|document|report|source)|uploaded\s+(?:document|report|source))\b/i.test(
+    query
+  );
+
+const requiresGroundedFactualAnswer = (query: string): boolean => {
+  const normalized = collapseWhitespace(query);
+  const sourceConstrained =
+    /\b(according to|aihw|uploaded\s+(?:document|report|source)|(?:this|the)\s+(?:document|report|source|act|legislation)|cite|citation|page\s+number|section\s+[0-9a-z])\b/i.test(
+      normalized
+    );
+  const factualRequest =
+    /\b(what|which|when|where|who|how many|how much|percentage|percent|rate|number|date|define|definition|called|state|territor|compare|difference|does|did|is|are|was|were)\b/i.test(
+      normalized
+    );
+
+  return sourceConstrained && (factualRequest || /\?/.test(normalized));
+};
 
 export const buildContextualLegalFollowUpQuery = (input: {
   query: string;
@@ -1970,10 +2024,10 @@ const buildUngroundedLegalFollowUpAssistantPayload = (input: {
   const sourceName =
     input.priorGroundedLegalSource?.legislationName ??
     input.priorGroundedLegalSource?.title ??
-    'the previously referenced Act';
+    'the requested approved source';
   const assistantMessage =
     input.assistantLanguage === 'en'
-      ? `I couldn't find a grounded answer in ${sourceName} for that question, so I don't want to answer without a citation. If you want, ask about a section or name the Act again and I can try to locate the exact part.`
+      ? `I couldn't find that information in ${sourceName}, so I won't answer from general knowledge or guess. Please name the source or document again, or ask for a specific section, page, date, or term.`
       : `I couldn't find a grounded answer in ${sourceName} for that question, so I don't want to answer without a citation.`;
 
   return {
@@ -2026,8 +2080,10 @@ const findMatchingLegalSourceIdsForQuery = async (input: {
     | 'Internal';
 }): Promise<string[]> => {
   const references = extractNamedLegislationReferences(input.query);
+  const mentionsAihw =
+    /\bAIHW\b|Australian Institute of Health and Welfare/i.test(input.query);
 
-  if (references.length === 0) {
+  if (references.length === 0 && !mentionsAihw) {
     return [];
   }
 
@@ -2036,6 +2092,9 @@ const findMatchingLegalSourceIdsForQuery = async (input: {
     'official_legal_source'
   );
   const patterns = references.map((reference) => new RegExp(`^${escapeRegex(reference)}$`, 'i'));
+  if (mentionsAihw) {
+    patterns.push(/AIHW|Australian Institute of Health and Welfare/i);
+  }
   const matches = await RagKnowledgeSourceModel.find({
     status: 'approved',
     active: true,
@@ -2054,10 +2113,13 @@ const findMatchingLegalSourceIdsForQuery = async (input: {
       { title: pattern },
       { sourceTitle: pattern },
       { legislationName: pattern },
+      { publisher: pattern },
+      { sourceAuthority: pattern },
       { 'metadata.detectedActNames': pattern }
     ])
   })
     .select('_id')
+    .sort({ createdAt: -1, lastUpdated: -1 })
     .limit(8)
     .lean();
 
@@ -4844,6 +4906,48 @@ const getOwnedConversationSession = async (
   return session;
 };
 
+const reserveConversationTurnPair = async (
+  session: HydratedConversationFlowSessionDocument,
+  existingMessages: Array<{ turnNumber: number }>
+): Promise<{
+  session: HydratedConversationFlowSessionDocument;
+  userTurnNumber: number;
+  assistantTurnNumber: number;
+}> => {
+  const highestPersistedTurn = existingMessages.reduce(
+    (highest, message) => Math.max(highest, message.turnNumber),
+    0
+  );
+
+  // Older failed requests may have persisted a message without updating the
+  // session counter. Bring the allocator forward before reserving a new pair.
+  await ConversationFlowSessionModel.updateOne(
+    { _id: session._id },
+    { $max: { messageCount: highestPersistedTurn } }
+  );
+
+  const reservedSession = await ConversationFlowSessionModel.findOneAndUpdate(
+    { _id: session._id },
+    {
+      $inc: {
+        messageCount: 2,
+        userTurnCount: 1
+      }
+    },
+    { new: true }
+  );
+
+  if (!reservedSession) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Conversation session not found');
+  }
+
+  return {
+    session: reservedSession,
+    userTurnNumber: reservedSession.messageCount - 1,
+    assistantTurnNumber: reservedSession.messageCount
+  };
+};
+
 const upsertFacts = async (conversationSessionId: string, timeline: Record<string, string>) => {
   const factPayload = buildFactsFromTimeline(conversationSessionId, timeline);
 
@@ -5020,22 +5124,22 @@ export const appendConversationFlowMessage = async (
   conversationSessionId: string,
   input: AppendConversationFlowMessageInput
 ) => {
-  const session = await getOwnedConversationSession(context, conversationSessionId);
+  let session = await getOwnedConversationSession(context, conversationSessionId);
   const existingMessages = await ConversationFlowMessageModel.find({
     conversationSessionId: session._id
   })
     .sort({ turnNumber: 1 })
     .lean();
+  const reservedTurns = await reserveConversationTurnPair(session, existingMessages);
+  session = reservedTurns.session;
   const userMessage = await ConversationFlowMessageModel.create({
     conversationSessionId: session._id,
     role: 'user',
     content: input.content,
-    turnNumber: existingMessages.length + 1,
+    turnNumber: reservedTurns.userTurnNumber,
     metadata: {}
   });
 
-  session.messageCount += 1;
-  session.userTurnCount += 1;
   const formatPreference = resolveAssistantFormatPreferenceUpdate(
     input.content,
     session.assistantFormatPreference
@@ -5094,7 +5198,7 @@ export const appendConversationFlowMessage = async (
       conversationSessionId: session._id,
       role: 'assistant',
       content: assistantPayload.assistantMessage,
-      turnNumber: existingMessages.length + 2,
+      turnNumber: reservedTurns.assistantTurnNumber,
       metadata: buildAssistantMessageMetadata(assistantPayload)
     });
 
@@ -5123,7 +5227,6 @@ export const appendConversationFlowMessage = async (
       assistantMessageContent: assistantMessage.content
     });
 
-    session.messageCount += 1;
     session.latestTurnRiskLevel = 'none';
     await session.save();
     await audit(context, CONVERSATION_FLOW_ACTIONS.messageAppend, conversationSessionId, {
@@ -5287,7 +5390,10 @@ export const appendConversationFlowMessage = async (
       }
     }
 
-    if (responseMode === 'legal_lookup' && ragStatus === 'required_but_no_sources_found') {
+    if (
+      (responseMode === 'legal_lookup' || requiresGroundedFactualAnswer(input.content)) &&
+      ragStatus === 'required_but_no_sources_found'
+    ) {
       assistantPayload = buildUngroundedLegalFollowUpAssistantPayload({
         message: input.content,
         priorGroundedLegalSource,
@@ -5436,7 +5542,7 @@ export const appendConversationFlowMessage = async (
     conversationSessionId: session._id,
     role: 'assistant',
     content: assistantMessageContent || resolvedAssistantPayload.assistantMessage,
-    turnNumber: existingMessages.length + 2,
+    turnNumber: reservedTurns.assistantTurnNumber,
     metadata: buildAssistantMessageMetadata(resolvedAssistantPayload)
   });
 
@@ -5495,7 +5601,6 @@ export const appendConversationFlowMessage = async (
     assistantMessageContent: assistantMessage.content
   });
 
-  session.messageCount += 1;
   session.latestTurnRiskLevel = turnHandlingPlan.latestTurnRiskLevel;
   session.activeIncidentRiskLevel = turnHandlingPlan.activeIncidentRiskLevel;
   session.sessionHistoricalMaxRiskLevel =

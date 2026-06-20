@@ -774,6 +774,249 @@ const shouldSkipLegislationLine = (line: string): boolean => {
   return !trimmed || isLikelyLegislationRunningHeaderLine(trimmed);
 };
 
+/**
+ * Parses a page-boundary marker emitted by the PDF extractor's `pageJoiner`
+ * (default format: `-- 5 of 120 --`). Returns the 1-based page number the
+ * preceding text belongs to, or undefined when the line is not a page marker.
+ */
+const parseLegislationPageMarker = (line: string): number | undefined => {
+  const trimmed = line.trim();
+
+  if (!LEGISLATION_PAGE_MARKER_PATTERN.test(trimmed)) {
+    return undefined;
+  }
+
+  const match = trimmed.match(/(\d+)\s+of\s+\d+/i);
+  const pageNumber = match ? Number(match[1]) : NaN;
+
+  return Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : undefined;
+};
+
+type ChunkCrossReference = {
+  /** The referenced provision, e.g. "5" for "section 5". */
+  section?: string;
+  /** The target Act/instrument name, e.g. "Privacy Act 1988". */
+  act: string;
+  /** The raw matched text, kept for auditing/citation. */
+  raw: string;
+};
+
+type ChunkLegalSignals = {
+  versionDate?: string;
+  commencementDate?: string;
+  amendmentStatus: 'in_force' | 'amended' | 'repealed';
+  amendedBy?: string;
+  crossReferences: ChunkCrossReference[];
+};
+
+const CROSS_REFERENCE_PATTERN =
+  /\b(?:section|sections|s)\.?\s*([0-9]+[0-9A-Za-z().-]*)\s+of\s+(?:the\s+)?([A-Z][A-Za-z'’&-]*(?:\s+[A-Z0-9][A-Za-z'’&-]*){0,8}\s+(?:Act|Regulation|Code|Charter|Constitution))(?:\s+(\d{4}))?/g;
+const COMMENCEMENT_PATTERN =
+  /\bcommenc(?:es|ed|ement)?\b[^.\n]{0,80}?\b(\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4})\b/i;
+const VERSION_DATE_PATTERN =
+  /\b(?:as in force(?:\s+(?:on|at|from))?|as at|reprinted as in force on|in force on|current as at)\s+(\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4})/i;
+const AMENDED_BY_PATTERN = /\bamended by\b\s+([^.\n]{3,90})/i;
+
+/**
+ * Best-effort extraction of section-level legal signals from a chunk's text:
+ * per-section version/commencement dates, amendment/repeal status, and
+ * cross-references to other Acts. Purely additive — never throws; absence of a
+ * signal simply yields `undefined`/`in_force`.
+ */
+const extractChunkLegalSignals = (text: string): ChunkLegalSignals => {
+  const head = text.slice(0, 400);
+
+  const commencementMatch = text.match(COMMENCEMENT_PATTERN);
+  const commencementDate = commencementMatch?.[1]?.trim();
+
+  const versionMatch = text.match(VERSION_DATE_PATTERN);
+  const versionDate = versionMatch?.[1]?.trim();
+
+  const amendedByMatch = text.match(AMENDED_BY_PATTERN);
+  const amendedBy = amendedByMatch?.[1]?.trim();
+
+  const amendmentStatus: ChunkLegalSignals['amendmentStatus'] = /\brepealed\b/i.test(head)
+    ? 'repealed'
+    : amendedBy
+      ? 'amended'
+      : 'in_force';
+
+  const crossReferences: ChunkCrossReference[] = [];
+  const seen = new Set<string>();
+
+  for (const match of text.matchAll(CROSS_REFERENCE_PATTERN)) {
+    const section = match[1]?.trim();
+    const actName = collapseWhitespace(`${match[2] ?? ''}${match[3] ? ` ${match[3]}` : ''}`);
+
+    if (!actName) {
+      continue;
+    }
+
+    const key = `${actName.toLowerCase()}|${(section ?? '').toLowerCase()}`;
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    crossReferences.push({ section, act: actName, raw: collapseWhitespace(match[0]) });
+
+    if (crossReferences.length >= 20) {
+      break;
+    }
+  }
+
+  return { versionDate, commencementDate, amendmentStatus, amendedBy, crossReferences };
+};
+
+/**
+ * Builds the full hierarchy lineage for a chunk
+ * (Act → Part → Division → Schedule → Section), so every chunk is
+ * unambiguously addressable and "12(1)(a) vs 12(1)(b)" can never be conflated.
+ */
+const buildHierarchyPath = (
+  chunk: Pick<
+    LegislationChunkCandidate,
+    'part' | 'division' | 'schedule' | 'sectionNumber' | 'sectionHeading'
+  >,
+  legislationName?: string
+): string[] => {
+  const path: string[] = [];
+
+  if (legislationName) path.push(legislationName);
+  if (chunk.part) path.push(`Part ${chunk.part}`);
+  if (chunk.division) path.push(`Division ${chunk.division}`);
+  if (chunk.schedule) path.push(`Schedule ${chunk.schedule}`);
+  if (chunk.sectionNumber) {
+    path.push(
+      `Section ${chunk.sectionNumber}${chunk.sectionHeading ? ` - ${chunk.sectionHeading}` : ''}`
+    );
+  }
+
+  return path;
+};
+
+type LegislationSectionNode = {
+  type: 'section';
+  sectionNumber?: string;
+  heading?: string;
+  pageStart?: number;
+  pageEnd?: number;
+  amendmentStatus?: string;
+  versionDate?: string;
+};
+
+type LegislationGroupNode = {
+  type: 'part' | 'division' | 'schedule' | 'body';
+  label: string;
+  children: Array<LegislationGroupNode | LegislationSectionNode>;
+};
+
+type LegislationStructureExport = {
+  legislationName?: string;
+  tree: LegislationGroupNode;
+  markdown: string;
+};
+
+type StructureChunkInput = Pick<
+  LegislationChunkCandidate,
+  'part' | 'division' | 'schedule' | 'sectionNumber' | 'sectionHeading' | 'pageStart' | 'pageEnd'
+> & { versionDate?: string; commencementDate?: string; amendmentStatus?: string };
+
+const LEGISLATION_MARKDOWN_MAX_CHARS = 200_000;
+
+/**
+ * Builds a machine-readable hierarchy tree (Act → Part → Division → Schedule →
+ * Section) from the ordered chunk descriptors and renders a human-reviewable
+ * Markdown export. Both artifacts are derived deterministically from the chunks
+ * that were already produced — no re-parsing — so they stay in lockstep with
+ * what is actually indexed and citable.
+ */
+const buildLegislationStructureExport = (
+  chunks: StructureChunkInput[],
+  legislationName?: string
+): LegislationStructureExport => {
+  const root: LegislationGroupNode = {
+    type: 'body',
+    label: legislationName ?? 'Document',
+    children: []
+  };
+
+  const ensureGroup = (
+    parent: LegislationGroupNode,
+    type: LegislationGroupNode['type'],
+    label: string
+  ): LegislationGroupNode => {
+    const existing = parent.children.find(
+      (child): child is LegislationGroupNode => child.type === type && child.label === label
+    );
+
+    if (existing) {
+      return existing;
+    }
+
+    const created: LegislationGroupNode = { type, label, children: [] };
+    parent.children.push(created);
+    return created;
+  };
+
+  for (const chunk of chunks) {
+    let container = root;
+
+    if (chunk.part) container = ensureGroup(container, 'part', `Part ${chunk.part}`);
+    if (chunk.division) container = ensureGroup(container, 'division', `Division ${chunk.division}`);
+    if (chunk.schedule) container = ensureGroup(container, 'schedule', `Schedule ${chunk.schedule}`);
+
+    if (!chunk.sectionNumber && !chunk.sectionHeading) {
+      continue;
+    }
+
+    container.children.push({
+      type: 'section',
+      sectionNumber: chunk.sectionNumber,
+      heading: chunk.sectionHeading,
+      pageStart: chunk.pageStart,
+      pageEnd: chunk.pageEnd,
+      amendmentStatus: chunk.amendmentStatus,
+      versionDate: chunk.versionDate ?? chunk.commencementDate
+    });
+  }
+
+  const lines: string[] = [];
+
+  if (legislationName) {
+    lines.push(`# ${legislationName}`, '');
+  }
+
+  const renderNode = (node: LegislationGroupNode | LegislationSectionNode, depth: number): void => {
+    if (node.type === 'section') {
+      const ref = node.sectionNumber ? `**s ${node.sectionNumber}**` : '';
+      const page = typeof node.pageStart === 'number' ? ` _(p. ${node.pageStart})_` : '';
+      const status =
+        node.amendmentStatus && node.amendmentStatus !== 'in_force'
+          ? ` _[${node.amendmentStatus}]_`
+          : '';
+      lines.push(`${'  '.repeat(depth)}- ${[ref, node.heading].filter(Boolean).join(' ')}${page}${status}`.trimEnd());
+      return;
+    }
+
+    const heading = '#'.repeat(Math.min(depth + 2, 6));
+    if (node !== root) {
+      lines.push('', `${heading} ${node.label}`, '');
+    }
+
+    for (const child of node.children) {
+      renderNode(child, node === root ? depth : depth + 1);
+    }
+  };
+
+  renderNode(root, 0);
+
+  const markdown = lines.join('\n').slice(0, LEGISLATION_MARKDOWN_MAX_CHARS);
+
+  return { legislationName, tree: root, markdown };
+};
+
 const isLegislationSource = (
   source: Pick<RagKnowledgeSourceDocument, 'sourceCategory' | 'sourceType' | 'metadata'>
 ): boolean => {
@@ -874,6 +1117,9 @@ const chunkLegislationText = (text: string): LegislationChunkCandidate[] => {
   let currentPart: string | undefined;
   let currentDivision: string | undefined;
   let currentSchedule: string | undefined;
+  // Page markers (`-- N of M --`) are appended at the END of each page's text by
+  // the PDF extractor, so content read before the first marker belongs to page 1.
+  let currentPage = 1;
 
   const flush = () => {
     if (!current?.text.trim()) {
@@ -884,6 +1130,17 @@ const chunkLegislationText = (text: string): LegislationChunkCandidate[] => {
   };
 
   for (const line of lines) {
+    const pageMarker = parseLegislationPageMarker(line);
+
+    if (pageMarker !== undefined) {
+      // The text just read completes `pageMarker`; subsequent text is on the next page.
+      if (current) {
+        current.pageEnd = pageMarker;
+      }
+      currentPage = pageMarker + 1;
+      continue;
+    }
+
     if (shouldSkipLegislationLine(line)) {
       continue;
     }
@@ -902,17 +1159,27 @@ const chunkLegislationText = (text: string): LegislationChunkCandidate[] => {
         sectionHeading: heading.sectionHeading,
         part: heading.part ?? currentPart,
         division: heading.division ?? currentDivision,
-        schedule: heading.schedule ?? currentSchedule
+        schedule: heading.schedule ?? currentSchedule,
+        pageStart: currentPage,
+        pageEnd: currentPage
       };
       continue;
     }
 
     if (!current) {
-      current = { text: line.trim(), part: currentPart, division: currentDivision, schedule: currentSchedule };
+      current = {
+        text: line.trim(),
+        part: currentPart,
+        division: currentDivision,
+        schedule: currentSchedule,
+        pageStart: currentPage,
+        pageEnd: currentPage
+      };
       continue;
     }
 
     current.text = `${current.text}\n${line}`.trim();
+    current.pageEnd = currentPage;
   }
 
   flush();
@@ -1003,6 +1270,8 @@ const resolveKnowledgeSourceText = async (
     metadata: {
       uploadedFile: sourceMetadata.uploadedFile,
       extractedPageCount: resolvedExtracted.pageCount,
+      extractedTableCount: resolvedExtracted.tables?.length ?? 0,
+      extractedTables: (resolvedExtracted.tables ?? []).slice(0, 200),
       extractionMethod: resolvedExtracted.extractionMethod,
       extractionQualityScore: resolvedExtracted.qualityScore,
       extractionStatus: 'extracted',
@@ -1164,7 +1433,44 @@ type ExtractedDocumentResult = {
     processingTimeMs?: number;
     status?: 'completed' | 'failed' | 'skipped' | 'low_confidence';
   }>;
+  tables?: Array<{
+    pageNumber: number;
+    rows: string[][];
+  }>;
   ocrProgress?: RagOcrProgress;
+};
+
+/**
+ * Renders a detected table grid as a clearly delimited Markdown table. Legal
+ * tables (penalties, thresholds, schedules) must keep their row/column
+ * structure: flattening them into prose is exactly the failure mode that
+ * produces legally wrong answers. Pipes inside cells are escaped so the grid
+ * stays unambiguous.
+ */
+const renderTableAsMarkdown = (rows: string[][]): string => {
+  const cleanedRows = rows
+    .map((row) => row.map((cell) => (cell ?? '').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim()))
+    .filter((row) => row.some((cell) => cell.length > 0));
+
+  if (cleanedRows.length === 0) {
+    return '';
+  }
+
+  const columnCount = cleanedRows.reduce((max, row) => Math.max(max, row.length), 0);
+  const toLine = (row: string[]): string => {
+    const padded = [...row];
+
+    while (padded.length < columnCount) {
+      padded.push('');
+    }
+
+    return `| ${padded.join(' | ')} |`;
+  };
+
+  const [headerRow, ...bodyRows] = cleanedRows;
+  const separator = `| ${Array.from({ length: columnCount }, () => '---').join(' | ')} |`;
+
+  return [toLine(headerRow), separator, ...bodyRows.map(toLine)].join('\n');
 };
 
 type OcrQualityAssessment = {
@@ -1559,15 +1865,85 @@ const extractTextFromUploadedDocument = async (
     const parser = new PDFParse({ data: file.buffer });
 
     try {
-      const parsed = await parser.getText();
+      // Explicitly request page-boundary markers (`-- N of M --`) so the
+      // legislation chunker can assign accurate page numbers to each chunk for
+      // citation. Relying on the library default is fragile across versions.
+      const parsed = await parser.getText({
+        pageJoiner: '\n-- page_number of total_number --'
+      });
       const parsedPageCount = (parsed as { total?: unknown; pages?: unknown }).total;
+      const totalPages = typeof parsedPageCount === 'number' ? parsedPageCount : undefined;
+      const parsedPages = Array.isArray(parsed.pages) ? parsed.pages : [];
+
+      // Extract tables from the PDF's vector grid so legal tables (penalties,
+      // thresholds, schedules) keep their structure. Best-effort: any failure
+      // leaves text extraction fully intact.
+      const extractedTables: Array<{ pageNumber: number; rows: string[][] }> = [];
+      const tablesByPage = new Map<number, string[][][]>();
+
+      try {
+        const tableResult = await parser.getTable();
+        const tablePages = Array.isArray(tableResult.pages) ? tableResult.pages : [];
+
+        for (const tablePage of tablePages) {
+          const pageTables = Array.isArray(tablePage.tables) ? tablePage.tables : [];
+
+          for (const grid of pageTables) {
+            if (Array.isArray(grid) && grid.length > 0) {
+              extractedTables.push({ pageNumber: tablePage.num, rows: grid });
+            }
+          }
+
+          if (pageTables.length > 0) {
+            tablesByPage.set(tablePage.num, pageTables);
+          }
+        }
+      } catch (error) {
+        logger.warn({ error, fileName: file.originalname }, 'PDF table extraction failed; continuing with text only');
+      }
+
+      // Rebuild the document text from per-page text, injecting each page's
+      // detected tables as Markdown immediately after that page's prose and
+      // before the page-boundary marker, so tables are embedded, searchable,
+      // and attributed to the correct page during chunking.
+      const text =
+        parsedPages.length > 0
+          ? parsedPages
+              .map((page) => {
+                const pageText = page.text
+                  .replace(/\n?--\s*\d+\s+of\s+\d+\s*--\s*$/i, '')
+                  .trimEnd();
+                const pageTables = tablesByPage.get(page.num) ?? [];
+                const renderedTables = pageTables
+                  .map((grid, index) => {
+                    const markdown = renderTableAsMarkdown(grid);
+
+                    return markdown
+                      ? `\n\n[Table ${index + 1} — page ${page.num}]\n${markdown}`
+                      : '';
+                  })
+                  .join('');
+                const marker = totalPages ? `\n-- ${page.num} of ${totalPages} --` : '';
+
+                return `${pageText}${renderedTables}${marker}`;
+              })
+              .join('\n')
+              .trim()
+          : parsed.text.trim();
 
       return {
-        text: parsed.text.trim(),
+        text,
         extractor: 'pdf-parse',
-        pageCount: typeof parsedPageCount === 'number' ? parsedPageCount : undefined,
-        qualityScore: estimateExtractionQuality(parsed.text),
-        extractionMethod: 'text'
+        pageCount: totalPages,
+        qualityScore: estimateExtractionQuality(text),
+        extractionMethod: 'text',
+        pages: parsedPages.map((page) => ({
+          pageNumber: page.num,
+          text: page.text,
+          confidence: 1,
+          warnings: []
+        })),
+        tables: extractedTables
       };
     } finally {
       await parser.destroy();
@@ -2392,6 +2768,11 @@ const embedKnowledgeSourceText = async (
     ...toMetadataRecord(options.metadata),
     ...extractedLegalMetadata
   };
+  const descriptorLegislationName =
+    source.legislationName ??
+    metadataString(sourceMetadata, 'actName') ??
+    metadataStringArray(sourceMetadata, 'detectedActNames')[0] ??
+    source.title;
   const chunkDescriptors = chunks.map((chunk, index) => {
     const sectionRef = chunk.sectionNumber
       ? `Section ${chunk.sectionNumber}`
@@ -2402,17 +2783,28 @@ const embedKnowledgeSourceText = async (
           : chunk.schedule
             ? `Schedule ${chunk.schedule}`
             : undefined;
+    const signals = extractChunkLegalSignals(chunk.text);
+    const hierarchyPath = buildHierarchyPath(chunk, descriptorLegislationName);
 
     return {
       ...chunk,
       index,
       sectionRef,
+      hierarchyPath,
+      versionDate: signals.versionDate,
+      commencementDate: signals.commencementDate,
+      amendmentStatus: signals.amendmentStatus,
+      amendedBy: signals.amendedBy,
+      crossReferences: signals.crossReferences,
       tokenCount: Math.ceil(chunk.text.length / 4),
       citationLabel: sectionRef
         ? `${source.title}, ${sectionRef}${chunk.sectionHeading ? ` - ${chunk.sectionHeading}` : ''}`
         : `${source.title} [chunk ${index + 1}]`
     };
   });
+  const legislationStructure = isLegislationSource(source)
+    ? buildLegislationStructureExport(chunkDescriptors, descriptorLegislationName)
+    : undefined;
   const embeddingBatches = buildEmbeddingBatches(chunkDescriptors);
   const embeddedChunks: EmbeddedKnowledgeSourceChunk[] = [];
   const verificationDate = options.verificationDate ?? new Date();
@@ -2492,6 +2884,12 @@ const embedKnowledgeSourceText = async (
           part: chunk.part,
           division: chunk.division,
           schedule: chunk.schedule,
+          hierarchyPath: chunk.hierarchyPath,
+          versionDate: chunk.versionDate,
+          commencementDate: chunk.commencementDate,
+          amendmentStatus: chunk.amendmentStatus,
+          amendedBy: chunk.amendedBy,
+          crossReferences: chunk.crossReferences,
           pageStart: chunk.pageStart,
           pageEnd: chunk.pageEnd,
           extractionMethod: source.extractionMethod ?? 'text',
@@ -2666,6 +3064,11 @@ const embedKnowledgeSourceText = async (
         error: pineconeIndexing.indexingError
       },
       sha256Verified: true,
+      // Structured JSON hierarchy tree + Markdown export of the legal structure
+      // (Act → Part → Division → Schedule → Section), derived from the indexed
+      // chunks so it stays consistent with what is searchable and citable.
+      legalStructure: legislationStructure?.tree,
+      legalStructureMarkdown: legislationStructure?.markdown,
       contentHashChanged: hashChanged,
       refreshMode: options.refreshMode,
       contentType: options.contentType,
@@ -4814,12 +5217,252 @@ const suppressDuplicateAndWeakResults = (
   });
 };
 
+// Reciprocal Rank Fusion constant. k=60 is the value from the original RRF
+// paper (Cormack et al.) and is the de-facto default for hybrid retrieval.
+const RRF_K = 60;
+
+type LeanRagChunk = Pick<
+  RagChunkDocument,
+  | '_id'
+  | 'sourceId'
+  | 'sectionRef'
+  | 'sectionTitle'
+  | 'sectionNumber'
+  | 'citationUrl'
+  | 'chunkText'
+  | 'metadata'
+>;
+
+type LeanRagSource = Pick<
+  RagKnowledgeSourceDocument,
+  | '_id'
+  | 'title'
+  | 'sourceTitle'
+  | 'publisher'
+  | 'sourceAuthority'
+  | 'sourceCategory'
+  | 'sourceType'
+  | 'jurisdiction'
+  | 'stateOrTerritory'
+  | 'pathwayCategory'
+  | 'legalDomain'
+  | 'topic'
+  | 'legislationName'
+  | 'lastUpdated'
+  | 'extractionMethod'
+  | 'ocrProvider'
+  | 'ocrAverageConfidence'
+  | 'ocrStatus'
+>;
+
+const mapKeywordChunkToResult = (
+  chunk: LeanRagChunk,
+  source: LeanRagSource
+): RagSearchResult => ({
+  chunkId: chunk._id.toString(),
+  sourceId: chunk.sourceId.toString(),
+  title: source.title,
+  sourceTitle: source.sourceTitle ?? source.title,
+  publisher: source.publisher,
+  sourceAuthority: source.sourceAuthority ?? source.publisher,
+  sourceCategory: source.sourceCategory,
+  sourceType: source.sourceType,
+  jurisdiction: source.jurisdiction,
+  stateOrTerritory: source.stateOrTerritory,
+  pathwayCategory: source.pathwayCategory,
+  legalDomain: source.legalDomain,
+  topic: source.topic,
+  legislationName: source.legislationName,
+  sectionRef: chunk.sectionRef,
+  sectionTitle: chunk.sectionTitle ?? metadataString(chunk.metadata ?? {}, 'sectionHeading'),
+  citationUrl: chunk.citationUrl,
+  lastUpdated: source.lastUpdated,
+  text: chunk.chunkText,
+  // Keyword/exact channels deliberately carry no numeric score: the cosine
+  // minimum-score threshold is calibrated for vector similarity and must not be
+  // applied to BM25/exact matches. These results are ranked purely via RRF.
+  score: undefined,
+  extractionMethod: source.extractionMethod,
+  ocrProvider: source.ocrProvider,
+  ocrAverageConfidence: source.ocrAverageConfidence,
+  ocrStatus: source.ocrStatus,
+  metadata: chunk.metadata ?? {}
+});
+
+/**
+ * Fuses multiple ranked result lists (vector, keyword, exact-section) into a
+ * single ordering using Reciprocal Rank Fusion. Each list contributes
+ * 1/(k + rank) to a chunk's fused score. The original cosine score (when
+ * present on the vector-channel object) is preserved on the surviving object so
+ * downstream score thresholds continue to behave as before.
+ */
+const reciprocalRankFusion = (lists: RagSearchResult[][]): RagSearchResult[] => {
+  const fusedScoreByChunkId = new Map<string, number>();
+  const resultByChunkId = new Map<string, RagSearchResult>();
+
+  for (const list of lists) {
+    list.forEach((result, rank) => {
+      const chunkId = result.chunkId;
+      fusedScoreByChunkId.set(
+        chunkId,
+        (fusedScoreByChunkId.get(chunkId) ?? 0) + 1 / (RRF_K + rank + 1)
+      );
+
+      const existing = resultByChunkId.get(chunkId);
+
+      if (!existing) {
+        resultByChunkId.set(chunkId, result);
+      } else if (existing.score === undefined && typeof result.score === 'number') {
+        // Prefer the object that carries the vector cosine score.
+        resultByChunkId.set(chunkId, result);
+      }
+    });
+  }
+
+  return Array.from(resultByChunkId.keys())
+    .sort(
+      (left, right) =>
+        (fusedScoreByChunkId.get(right) ?? 0) - (fusedScoreByChunkId.get(left) ?? 0)
+    )
+    .map((chunkId) => resultByChunkId.get(chunkId) as RagSearchResult);
+};
+
+const KEYWORD_CHANNEL_SOURCE_FIELDS =
+  '_id title sourceTitle publisher sourceAuthority sourceCategory sourceType jurisdiction stateOrTerritory pathwayCategory legalDomain topic legislationName lastUpdated extractionMethod ocrProvider ocrAverageConfidence ocrStatus';
+
+/**
+ * Parallel keyword + exact-section retrieval channel for legislation. Runs a
+ * MongoDB `$text` (BM25) search and, when the query cites explicit sections, an
+ * exact section-number lookup. Both are constrained by the same governance
+ * `sourceFilter` used by the vector channel, so approval/jurisdiction/staleness
+ * rules are identical. Returns up to `limit` results per channel as a tuple of
+ * ranked lists ready for RRF.
+ */
+const keywordSearchLegalChunks = async (
+  input: RagSearchInput,
+  category: RagSourceCategory,
+  sourceFilter: FilterQuery<RagKnowledgeSourceDocument>,
+  sourceIds: unknown[],
+  limit: number
+): Promise<RagSearchResult[][]> => {
+  const baseChunkFilter: FilterQuery<RagChunkDocument> = {
+    sourceId: { $in: sourceIds },
+    sourceCategory: category,
+    active: true,
+    ...(input.stateOrTerritory ? { stateOrTerritory: input.stateOrTerritory } : {}),
+    ...(input.legalDomain ? { legalDomain: input.legalDomain } : {}),
+    ...(input.pathwayCategory ? { pathwayCategory: input.pathwayCategory } : {})
+  };
+
+  const keywordQuery = buildFocusedLegalSearchQuery(input.query) || input.query;
+  const explicitSections = extractExplicitSectionReferences(input.query);
+
+  const [textChunks, sectionChunks] = await Promise.all([
+    keywordQuery.trim()
+      ? RagChunkModel.find(
+          { ...baseChunkFilter, $text: { $search: keywordQuery } },
+          { score: { $meta: 'textScore' } }
+        )
+          .sort({ score: { $meta: 'textScore' } })
+          .limit(limit)
+          .lean<LeanRagChunk[]>()
+      : Promise.resolve([] as LeanRagChunk[]),
+    explicitSections.length > 0
+      ? RagChunkModel.find({
+          ...baseChunkFilter,
+          sectionNumber: {
+            $in: explicitSections.map((ref) => new RegExp(`^${escapeRegExp(ref)}$`, 'i'))
+          }
+        })
+          .limit(limit)
+          .lean<LeanRagChunk[]>()
+      : Promise.resolve([] as LeanRagChunk[])
+  ]);
+
+  const allChunks: LeanRagChunk[] = textChunks.concat(sectionChunks);
+  const candidateSourceIds = Array.from(
+    new Set(allChunks.map((chunk) => chunk.sourceId.toString()))
+  );
+
+  if (candidateSourceIds.length === 0) {
+    return [];
+  }
+
+  // Re-apply the governance source filter so keyword/exact hits can never bypass
+  // approval, jurisdiction, or staleness rules enforced on the vector channel.
+  const sources = await RagKnowledgeSourceModel.find({
+    ...sourceFilter,
+    _id: { $in: candidateSourceIds.map((id) => new Types.ObjectId(id)) }
+  })
+    .select(KEYWORD_CHANNEL_SOURCE_FIELDS)
+    .lean<LeanRagSource[]>();
+  const sourceById = new Map(sources.map((source) => [source._id.toString(), source]));
+
+  const toResults = (chunks: LeanRagChunk[]): RagSearchResult[] =>
+    chunks
+      .map((chunk) => {
+        const source = sourceById.get(chunk.sourceId.toString());
+
+        return source ? mapKeywordChunkToResult(chunk, source) : undefined;
+      })
+      .filter((result): result is RagSearchResult => Boolean(result));
+
+  // Exact-section list first so explicit citations dominate the fusion.
+  return [toResults(sectionChunks), toResults(textChunks)];
+};
+
+/**
+ * Augments a vector result list with the keyword + exact-section channels and
+ * fuses them with RRF. Only applies to legislation; any failure (e.g. a missing
+ * text index in an environment that has not rebuilt indexes) is swallowed and
+ * the original vector results are returned unchanged, so retrieval can never
+ * regress relative to the prior vector-only behaviour.
+ */
+const applyHybridLegalRetrieval = async (
+  vectorResults: RagSearchResult[],
+  input: RagSearchInput,
+  category: RagSourceCategory,
+  sourceFilter: FilterQuery<RagKnowledgeSourceDocument>,
+  sourceIds: unknown[],
+  limit: number
+): Promise<RagSearchResult[]> => {
+  if (category !== 'official_legal_source') {
+    return vectorResults;
+  }
+
+  try {
+    const keywordLists = await keywordSearchLegalChunks(
+      input,
+      category,
+      sourceFilter,
+      sourceIds,
+      Math.max(limit, 10)
+    );
+
+    const nonEmptyKeywordLists = keywordLists.filter((list) => list.length > 0);
+
+    if (nonEmptyKeywordLists.length === 0) {
+      return vectorResults;
+    }
+
+    return reciprocalRankFusion([vectorResults, ...nonEmptyKeywordLists]);
+  } catch (error) {
+    logger.warn(
+      { error, category },
+      'Hybrid keyword retrieval failed; using vector-only results'
+    );
+
+    return vectorResults;
+  }
+};
+
 const searchRagWithPinecone = async (
   input: RagSearchInput,
   category: RagSourceCategory,
   sourceFilter: FilterQuery<RagKnowledgeSourceDocument>,
   queryVector: number[],
-  sourceIds: unknown[]
+  pineconeSourceIds: unknown[],
+  keywordSourceIds: unknown[] = pineconeSourceIds
 ): Promise<RagSearchResult[]> => {
   const requestedTopK = getEffectiveTopK(input, category);
   const candidateTopK =
@@ -4838,13 +5481,9 @@ const searchRagWithPinecone = async (
         pathwayCategory: input.pathwayCategory,
         active: true,
         legalReviewed: category === 'official_legal_source' ? true : undefined,
-        sourceIds: sourceIds.map((sourceId) => String(sourceId))
+        sourceIds: pineconeSourceIds.map((sourceId) => String(sourceId))
       }
     });
-
-  if (vectorResults.length === 0) {
-    return [];
-  }
 
   const scoreByChunkId = new Map(vectorResults.map((result) => [result.chunkId, result.score]));
   const orderByChunkId = new Map(vectorResults.map((result, index) => [result.chunkId, index]));
@@ -4905,10 +5544,19 @@ const searchRagWithPinecone = async (
         (orderByChunkId.get(right.chunkId) ?? Number.MAX_SAFE_INTEGER)
     );
 
+  const hybridResults = await applyHybridLegalRetrieval(
+    orderedResults,
+    input,
+    category,
+    sourceFilter,
+    keywordSourceIds,
+    requestedTopK
+  );
+
   const rerankedResults =
     category === 'official_legal_source'
-      ? rerankLegalSearchResults(orderedResults, input.query)
-      : orderedResults;
+      ? rerankLegalSearchResults(hybridResults, input.query)
+      : hybridResults;
 
   return suppressDuplicateAndWeakResults(rerankedResults, category).slice(0, requestedTopK);
 };
@@ -5053,37 +5701,46 @@ export const searchRag = async (
 
   const searchQuery = buildSearchEmbeddingQuery(input.query, sourceCategory);
   const queryVector = await createEmbedding(searchQuery);
-  const pineconeCoverageIncomplete = eligibleSources.some((source) => {
+  const pineconeCoveredSourceIds = eligibleSources.flatMap((source) => {
     const metadata = toMetadataRecord(source.metadata);
     const chunkCount = metadataNumber(metadata, 'chunkCount') ?? 0;
 
     if (chunkCount <= 0) {
-      return false;
+      return [];
     }
 
     const indexedChunkCount = metadataNumber(metadata, 'indexedChunkCount') ?? 0;
 
-    return (
+    const coverageIncomplete =
       Boolean(metadataString(metadata, 'indexingError')) ||
       !metadataString(metadata, 'pineconeIndexedAt') ||
-      indexedChunkCount < chunkCount
-    );
-  });
+      indexedChunkCount < chunkCount;
 
-  if (shouldUsePineconeProvider() && isPineconeConfigured() && !pineconeCoverageIncomplete) {
+    return coverageIncomplete ? [] : [source._id];
+  });
+  const pineconeCoverageIncomplete = pineconeCoveredSourceIds.length < sourceIds.length;
+
+  if (
+    shouldUsePineconeProvider() &&
+    isPineconeConfigured() &&
+    pineconeCoveredSourceIds.length > 0
+  ) {
     try {
       const pineconeResults = await searchRagWithPinecone(
         input,
         sourceCategory,
         sourceFilter,
         queryVector,
+        pineconeCoveredSourceIds,
         sourceIds
       );
 
       await auditRagAction(context, RAG_ACTIONS.search, undefined, {
         resultCount: pineconeResults.length,
         topK: getEffectiveTopK(input, sourceCategory),
-        vectorStore: 'pinecone'
+        vectorStore: 'pinecone',
+        eligibleSourceCount: sourceIds.length,
+        pineconeCoveredSourceCount: pineconeCoveredSourceIds.length
       });
 
       return pineconeResults;
@@ -5098,7 +5755,11 @@ export const searchRag = async (
         'Pinecone RAG search failed; falling back to Mongo vector search'
       );
     }
-  } else if (shouldUsePineconeProvider() && isPineconeConfigured() && pineconeCoverageIncomplete) {
+  } else if (
+    shouldUsePineconeProvider() &&
+    isPineconeConfigured() &&
+    pineconeCoverageIncomplete
+  ) {
     logger.warn(
       {
         sourceCategory,
@@ -5106,8 +5767,32 @@ export const searchRag = async (
         indexName: getPineconeIndexName(),
         namespace: getPineconeNamespace()
       },
-      'Pinecone coverage incomplete for eligible sources; using Mongo vector search fallback'
+      'No eligible sources have complete Pinecone coverage; considering configured fallback'
     );
+  }
+
+  if (sourceCategory === 'official_legal_source') {
+    try {
+      const keywordLists = await keywordSearchLegalChunks(
+        input,
+        sourceCategory,
+        sourceFilter,
+        sourceIds,
+        Math.max(getEffectiveTopK(input, sourceCategory), 10)
+      );
+      const keywordResults = reciprocalRankFusion(
+        keywordLists.filter((list) => list.length > 0)
+      );
+
+      if (keywordResults.length > 0) {
+        return suppressDuplicateAndWeakResults(
+          rerankLegalSearchResults(keywordResults, input.query),
+          sourceCategory
+        ).slice(0, getEffectiveTopK(input, sourceCategory));
+      }
+    } catch (error) {
+      logger.warn({ error, sourceCategory }, 'Legal keyword-only retrieval failed');
+    }
   }
 
   if (!shouldAllowMongoFallback()) {
@@ -5234,10 +5919,19 @@ export const searchRag = async (
     metadata: result.metadata ?? {}
   }));
 
+  const hybridResults = await applyHybridLegalRetrieval(
+    mappedResults,
+    input,
+    sourceCategory,
+    sourceFilter,
+    sourceIds,
+    getEffectiveTopK(input, sourceCategory)
+  );
+
   const filteredResults = suppressDuplicateAndWeakResults(
     sourceCategory === 'official_legal_source'
-      ? rerankLegalSearchResults(mappedResults, input.query)
-      : mappedResults,
+      ? rerankLegalSearchResults(hybridResults, input.query)
+      : hybridResults,
     sourceCategory
   );
 
@@ -5284,7 +5978,92 @@ const buildRagContextEntry = (result: RagSearchResult, index: number): string =>
   const sectionHeading = metadataString(metadata, 'sectionHeading');
   const heading = [result.title, result.sectionRef, sectionHeading].filter(Boolean).join(' | ');
 
-  return `[${index + 1}] ${heading || result.title}\n${result.text}`;
+  // Answer-time provenance: surface hierarchy path, page, and version so the
+  // model can cite Act + section + page + version and never guess beyond what
+  // each retrieved chunk supports.
+  const hierarchyPath = metadataStringArray(metadata, 'hierarchyPath');
+  const pageStart = metadataNumber(metadata, 'pageStart');
+  const pageEnd = metadataNumber(metadata, 'pageEnd');
+  const versionDate =
+    metadataString(metadata, 'versionDate') ?? metadataString(metadata, 'commencementDate');
+  const amendmentStatus = metadataString(metadata, 'amendmentStatus');
+
+  const provenanceParts: string[] = [];
+  if (hierarchyPath.length > 0) provenanceParts.push(`Path: ${hierarchyPath.join(' > ')}`);
+  if (typeof pageStart === 'number') {
+    provenanceParts.push(
+      `Page: ${pageStart}${typeof pageEnd === 'number' && pageEnd !== pageStart ? `-${pageEnd}` : ''}`
+    );
+  }
+  if (versionDate) provenanceParts.push(`Version: ${versionDate}`);
+  if (amendmentStatus && amendmentStatus !== 'in_force') {
+    provenanceParts.push(`Status: ${amendmentStatus}`);
+  }
+
+  const provenanceLine = provenanceParts.length > 0 ? `\n(${provenanceParts.join(' | ')})` : '';
+
+  return `[${index + 1}] ${heading || result.title}${provenanceLine}\n${result.text}`;
+};
+
+const QUERY_HISTORICAL_INTENT_PATTERN =
+  /\b(repeal(?:ed)?|former|previous(?:ly)?|historical|old version|as it was|prior to|used to|no longer in force)\b/i;
+
+/**
+ * Excludes sections tagged as repealed from answer context by default. When the
+ * user's query signals historical intent, repealed sections are retained so
+ * historical questions can still be answered.
+ */
+const excludeRepealedUnlessHistorical = (
+  results: RagSearchResult[],
+  query: string
+): RagSearchResult[] => {
+  if (QUERY_HISTORICAL_INTENT_PATTERN.test(query)) {
+    return results;
+  }
+
+  const filtered = results.filter(
+    (result) => metadataString(toMetadataRecord(result.metadata), 'amendmentStatus') !== 'repealed'
+  );
+
+  // Never strip away every result on the basis of repeal tagging alone.
+  return filtered.length > 0 ? filtered : results;
+};
+
+/**
+ * Citation completeness gate. Catches the highest-risk failure mode for a legal
+ * RAG system: the model citing a section number that does NOT appear in any
+ * retrieved chunk (a hallucinated reference). Returns the section refs that the
+ * answer cites but no source supports; an empty array means every cited section
+ * is grounded. Deliberately conservative — it only flags explicit, unsupported
+ * section/schedule citations so well-grounded answers are never blocked.
+ */
+const findUnsupportedSectionCitations = (
+  answerText: string,
+  results: RagSearchResult[]
+): string[] => {
+  const citedSections = extractExplicitSectionReferences(answerText);
+
+  if (citedSections.length === 0) {
+    return [];
+  }
+
+  const supported = new Set<string>();
+
+  for (const result of results) {
+    if (result.sectionRef) {
+      supported.add(normalizeSectionReferenceValue(result.sectionRef));
+    }
+
+    for (const ref of extractExplicitSectionReferences(result.text)) {
+      supported.add(ref);
+    }
+
+    for (const ref of extractExplicitSectionReferences(result.sectionRef ?? '')) {
+      supported.add(ref);
+    }
+  }
+
+  return citedSections.filter((section) => !supported.has(section));
 };
 
 const buildRagContextText = (results: RagSearchResult[]): string =>
@@ -5583,6 +6362,7 @@ export const answerRag = async (
 
     if (category === 'official_legal_source') {
       results = selectGroundedLegalResults(results, input.question);
+      results = excludeRepealedUnlessHistorical(results, input.question);
     }
   } catch (error) {
     if (!isVectorSearchUnavailable(error)) {
@@ -5667,6 +6447,32 @@ export const answerRag = async (
         : JSON.stringify(answerCandidate ?? ''))
   );
 
+  // Citation completeness gate: for model-generated legal answers, never return
+  // an answer that cites a section absent from every retrieved source. A
+  // deterministic grounded answer is built from the chunks themselves, so it is
+  // exempt. On a detected unsupported citation we fall through to the existing
+  // "not found in available legal data" response rather than risk a wrong cite.
+  if (category === 'official_legal_source' && !deterministicAnswer) {
+    const unsupportedSections = findUnsupportedSectionCitations(answerText, results);
+
+    if (unsupportedSections.length > 0) {
+      await auditRagAction(context, RAG_ACTIONS.answer, undefined, {
+        citationCount: results.length,
+        sourceCategory: category,
+        citationGate: 'unsupported_section_citation',
+        unsupportedSections
+      });
+
+      return buildFallbackAnswer(
+        input.question,
+        category,
+        { crisisRisk, legalAdviceRisk, clinicalAdviceRisk, insufficientSources: true },
+        'insufficient_sources',
+        legalAwareness
+      );
+    }
+  }
+
   await auditRagAction(context, RAG_ACTIONS.answer, undefined, {
     citationCount: results.length,
     sourceCategory: category
@@ -5684,23 +6490,40 @@ export const answerRag = async (
   return {
     answer: answerText,
     disclaimer: buildInformationOnlyDisclaimer(),
-    citations: results.map((result) => ({
-      sourceId: result.sourceId,
-      title: result.title,
-      publisher: result.publisher,
-      sourceAuthority: result.sourceAuthority,
-      url: result.citationUrl,
-      jurisdiction: result.jurisdiction,
-      stateOrTerritory: result.stateOrTerritory,
-      sourceCategory: result.sourceCategory,
-      sourceType: result.sourceType,
-      pathwayCategory: result.pathwayCategory,
-      legalDomain: result.legalDomain,
-      topic: result.topic,
-      sectionRef: result.sectionRef,
-      sectionTitle: result.sectionTitle,
-      lastUpdated: result.lastUpdated
-    })),
+    citations: results.map((result) => {
+      const resultMetadata = toMetadataRecord(result.metadata);
+      const pageStart = metadataNumber(resultMetadata, 'pageStart');
+      const pageEnd = metadataNumber(resultMetadata, 'pageEnd');
+
+      return {
+        sourceId: result.sourceId,
+        title: result.title,
+        publisher: result.publisher,
+        sourceAuthority: result.sourceAuthority,
+        url: result.citationUrl,
+        jurisdiction: result.jurisdiction,
+        stateOrTerritory: result.stateOrTerritory,
+        sourceCategory: result.sourceCategory,
+        sourceType: result.sourceType,
+        pathwayCategory: result.pathwayCategory,
+        legalDomain: result.legalDomain,
+        topic: result.topic,
+        sectionRef: result.sectionRef,
+        sectionTitle: result.sectionTitle,
+        // Section-level provenance for precise legal citation (Act + section + page + version).
+        page: typeof pageStart === 'number' ? pageStart : undefined,
+        pageEnd: typeof pageEnd === 'number' ? pageEnd : undefined,
+        hierarchyPath: metadataStringArray(resultMetadata, 'hierarchyPath'),
+        versionDate:
+          metadataString(resultMetadata, 'versionDate') ??
+          metadataString(resultMetadata, 'commencementDate'),
+        amendmentStatus: metadataString(resultMetadata, 'amendmentStatus'),
+        crossReferences: Array.isArray(resultMetadata.crossReferences)
+          ? resultMetadata.crossReferences
+          : undefined,
+        lastUpdated: result.lastUpdated
+      };
+    }),
     showSources: sourceDisplayMeta.showSources,
     sourceDisplayReason: sourceDisplayMeta.sourceDisplayReason,
     sourceCategoriesUsed: Array.from(new Set(results.map((result) => result.sourceCategory))),
