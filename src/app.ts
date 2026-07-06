@@ -3,6 +3,7 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express from 'express';
 import passport from 'passport';
+import swaggerUi from 'swagger-ui-express';
 
 import { corsOptions } from '@config/cors';
 import { appConstants } from '@config/constants';
@@ -16,6 +17,8 @@ import { configurePassport } from '@modules/auth/auth.passport';
 import { googleAuthRoutes } from '@modules/auth/auth.routes';
 import { healthRoutes } from '@modules/health/health.routes';
 import { apiRouter } from '@routes/index';
+
+import { openApiDocument } from './docs/openapi';
 
 export const createApp = (): express.Application => {
   const app = express();
@@ -32,10 +35,6 @@ export const createApp = (): express.Application => {
   app.options(/.*/, cors(corsOptions));
   app.use(compression());
   app.use(cookieParser());
-  app.use((_req, res, next) => {
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    next();
-  });
   app.use(express.json({ type: 'application/json', limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
   app.use(rateLimiter);
@@ -44,6 +43,18 @@ export const createApp = (): express.Application => {
   app.use('/health', healthRoutes);
   app.use('/api/auth/google', oauthRateLimiter);
   app.use('/api/auth', googleAuthRoutes);
+  app.get('/openapi.json', (_req, res) => {
+    res.json(openApiDocument);
+  });
+  app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument, { explorer: true }));
+  app.get(`${appConstants.apiPrefix}/openapi.json`, (_req, res) => {
+    res.json(openApiDocument);
+  });
+  app.use(
+    `${appConstants.apiPrefix}/docs`,
+    swaggerUi.serve,
+    swaggerUi.setup(openApiDocument, { explorer: true })
+  );
   app.use(appConstants.apiPrefix, apiRouter);
 
   app.use(notFoundMiddleware);
