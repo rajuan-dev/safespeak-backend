@@ -3,6 +3,7 @@ import type {
   MICRO_EDUCATION_DURATIONS,
   MICRO_EDUCATION_FORMATS,
   MICRO_EDUCATION_INCIDENT_CATEGORIES,
+  MICRO_EDUCATION_IMAGE_STORAGE_PROVIDERS,
   MICRO_EDUCATION_STATUSES,
   MICRO_EDUCATION_TONES
 } from './microeducation.constants';
@@ -14,6 +15,8 @@ export type MicroEducationIncidentCategory =
   (typeof MICRO_EDUCATION_INCIDENT_CATEGORIES)[number];
 export type MicroEducationDuration = (typeof MICRO_EDUCATION_DURATIONS)[number];
 export type MicroEducationFormat = (typeof MICRO_EDUCATION_FORMATS)[number];
+export type MicroEducationImageStorageProvider =
+  (typeof MICRO_EDUCATION_IMAGE_STORAGE_PROVIDERS)[number];
 
 export interface MicroEducationServiceContext {
   actor?: {

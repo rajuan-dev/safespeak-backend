@@ -1,8 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-
 import { StatusCodes } from 'http-status-codes';
 
 import { ApiError } from '@common/errors/ApiError';
@@ -19,15 +14,31 @@ import type {
   MicroEducationAdminQueryInput,
   UpdateMicroEducationInput
 } from './microeducation.schema';
+import {
+  deleteMicroEducationImageIfSafe,
+  getMicroEducationImageDirectUrl,
+  readMicroEducationImage,
+  storeMicroEducationImage,
+  type ReadMicroEducationImage
+} from './microeducation.storage';
 import type { MicroEducationServiceContext } from './microeducation.types';
 
 type UploadedFile = Express.Multer.File;
 
-const microEducationImageRoot = path.resolve(env.MICRO_EDUCATION_IMAGE_STORAGE_PATH);
 const allowedImageMimeTypes = new Set<string>(MICRO_EDUCATION_ALLOWED_IMAGE_MIME_TYPES);
 
-const serializeMicroEducation = (item: MicroEducationDocument | Record<string, unknown>) => {
+const serializeMicroEducation = async (
+  item: MicroEducationDocument | Record<string, unknown>,
+  options: { directS3ImageUrl?: boolean; versionProxyImagePath?: boolean } = {}
+) => {
   const raw = item as MicroEducationDocument & { _id: { toString: () => string } };
+  const proxyImagePath = getProxyMicroEducationImagePath(raw, options.versionProxyImagePath);
+  const imagePath =
+    raw.imageStorageKey && options.directS3ImageUrl
+      ? (await getMicroEducationImageDirectUrl(raw)) ?? proxyImagePath
+      : raw.imageStorageKey
+        ? proxyImagePath
+        : undefined;
 
   return {
     id: raw._id.toString(),
@@ -55,10 +66,30 @@ const serializeMicroEducation = (item: MicroEducationDocument | Record<string, u
     imageOriginalFileName: raw.imageOriginalFileName,
     imageMimeType: raw.imageMimeType,
     imageSizeBytes: raw.imageSizeBytes,
-    imagePath: raw.imageStorageKey ? `/microeducation/${raw._id.toString()}/image` : undefined,
+    imagePath,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt
   };
+};
+
+const getProxyMicroEducationImagePath = (
+  item: MicroEducationDocument & { _id: { toString: () => string } },
+  includeVersion = false
+): string => {
+  const basePath = `/microeducation/${item._id.toString()}/image`;
+
+  if (!includeVersion) {
+    return basePath;
+  }
+
+  const version =
+    item.updatedAt instanceof Date
+      ? item.updatedAt.getTime().toString()
+      : item.updatedAt
+        ? new Date(item.updatedAt).getTime().toString()
+        : item.imageStorageKey;
+
+  return version ? `${basePath}?v=${encodeURIComponent(version)}` : basePath;
 };
 
 const ensureSupportedImage = (file: UploadedFile): void => {
@@ -72,35 +103,6 @@ const ensureSupportedImage = (file: UploadedFile): void => {
   if (file.size > env.MICRO_EDUCATION_IMAGE_MAX_FILE_SIZE_BYTES) {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'Micro-education image exceeds the 10MB limit.');
   }
-};
-
-const createStorageKey = (originalFileName: string): string => {
-  const extension = path.extname(originalFileName).toLowerCase();
-  const dateSegment = new Date().toISOString().slice(0, 10);
-
-  return `${dateSegment}/${randomUUID()}${extension}`;
-};
-
-const getStoragePath = (storageKey: string): string => {
-  const absolutePath = path.resolve(microEducationImageRoot, storageKey);
-
-  if (!absolutePath.startsWith(microEducationImageRoot)) {
-    throw new ApiError(StatusCodes.BAD_REQUEST, 'Invalid micro-education image storage key');
-  }
-
-  return absolutePath;
-};
-
-const saveUploadedImage = async (file: UploadedFile): Promise<string> => {
-  ensureSupportedImage(file);
-
-  const storageKey = createStorageKey(file.originalname);
-  const absolutePath = getStoragePath(storageKey);
-
-  await mkdir(path.dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, file.buffer);
-
-  return storageKey;
 };
 
 const auditMicroEducationAction = async (
@@ -135,7 +137,7 @@ export const listPublicMicroEducation = async (
     count: items.length
   });
 
-  return items.map(serializeMicroEducation);
+  return Promise.all(items.map(item => serializeMicroEducation(item, { directS3ImageUrl: true })));
 };
 
 export const listAdminMicroEducation = async (
@@ -164,7 +166,7 @@ export const listAdminMicroEducation = async (
     count: items.length
   });
 
-  return items.map(serializeMicroEducation);
+  return Promise.all(items.map(item => serializeMicroEducation(item, { versionProxyImagePath: true })));
 };
 
 export const createMicroEducation = async (
@@ -172,15 +174,18 @@ export const createMicroEducation = async (
   input: CreateMicroEducationInput,
   image?: UploadedFile
 ): Promise<unknown> => {
-  const imageStorageKey = image ? await saveUploadedImage(image) : undefined;
+  const storedImage = image ? await saveMicroEducationImage(image) : undefined;
   const item = await MicroEducationModel.create({
     ...input,
-    ...(image
+    ...(storedImage
       ? {
-          imageOriginalFileName: image.originalname,
-          imageStorageKey,
-          imageMimeType: image.mimetype,
-          imageSizeBytes: image.size
+          imageStorageProvider: storedImage.storageProvider,
+          imageOriginalFileName: storedImage.originalFileName,
+          imageStorageKey: storedImage.storageKey,
+          imageMimeType: storedImage.mimeType,
+          imageSizeBytes: storedImage.fileSizeBytes,
+          imageS3Bucket: storedImage.bucket,
+          imageS3Region: storedImage.region
         }
       : {}),
     createdBy: context.actor?.userId,
@@ -191,7 +196,7 @@ export const createMicroEducation = async (
     status: item.status
   });
 
-  return serializeMicroEducation(item);
+  return serializeMicroEducation(item, { versionProxyImagePath: true });
 };
 
 export const updateMicroEducation = async (
@@ -212,11 +217,33 @@ export const updateMicroEducation = async (
   };
 
   if (image) {
-    const imageStorageKey = await saveUploadedImage(image);
-    updatePayload.imageOriginalFileName = image.originalname;
-    updatePayload.imageStorageKey = imageStorageKey;
-    updatePayload.imageMimeType = image.mimetype;
-    updatePayload.imageSizeBytes = image.size;
+    const previousImage = {
+      imageS3Bucket: item.imageS3Bucket,
+      imageStorageKey: item.imageStorageKey,
+      imageStorageProvider: item.imageStorageProvider
+    };
+    const storedImage = await saveMicroEducationImage(image);
+
+    updatePayload.imageStorageProvider = storedImage.storageProvider;
+    updatePayload.imageOriginalFileName = storedImage.originalFileName;
+    updatePayload.imageStorageKey = storedImage.storageKey;
+    updatePayload.imageMimeType = storedImage.mimeType;
+    updatePayload.imageSizeBytes = storedImage.fileSizeBytes;
+    updatePayload.imageS3Bucket = storedImage.bucket;
+    updatePayload.imageS3Region = storedImage.region;
+
+    await item.set(updatePayload).save();
+
+    if (previousImage.imageStorageProvider === 's3') {
+      await deleteMicroEducationImageIfSafe(previousImage);
+    }
+
+    await auditMicroEducationAction(context, MICRO_EDUCATION_ACTIONS.update, item._id.toString(), {
+      changedFields: Object.keys(input),
+      imageReplaced: true
+    });
+
+    return serializeMicroEducation(item, { versionProxyImagePath: true });
   }
 
   item.set(updatePayload);
@@ -227,7 +254,7 @@ export const updateMicroEducation = async (
     imageReplaced: Boolean(image)
   });
 
-  return serializeMicroEducation(item);
+  return serializeMicroEducation(item, { versionProxyImagePath: true });
 };
 
 export const deleteMicroEducation = async (
@@ -250,28 +277,21 @@ export const deleteMicroEducation = async (
 export const getMicroEducationImage = async (
   _context: MicroEducationServiceContext,
   id: string
-): Promise<{
-  stream: NodeJS.ReadableStream;
-  originalFileName: string;
-  mimeType: string;
-  fileSizeBytes: number;
-}> => {
+): Promise<ReadMicroEducationImage> => {
   const item = await MicroEducationModel.findOne({
     _id: id,
     deletedAt: { $exists: false }
   });
 
-  if (!item?.imageStorageKey || !item.imageMimeType || !item.imageSizeBytes) {
+  if (!item) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Micro-education image not found');
   }
 
-  const absolutePath = getStoragePath(item.imageStorageKey);
-  await stat(absolutePath);
+  return readMicroEducationImage(item);
+};
 
-  return {
-    stream: createReadStream(absolutePath),
-    originalFileName: item.imageOriginalFileName ?? 'micro-education-image',
-    mimeType: item.imageMimeType,
-    fileSizeBytes: item.imageSizeBytes
-  };
+const saveMicroEducationImage = async (file: UploadedFile) => {
+  ensureSupportedImage(file);
+
+  return storeMicroEducationImage(file);
 };

@@ -52,6 +52,7 @@ export type GenerateSafeSpeakResponseOutput = {
   citations: Array<{
     sourceId?: string;
     title: string;
+    legislationName?: string;
     publisher?: string;
     jurisdiction: string;
     sourceType: string;
@@ -659,6 +660,7 @@ export const generateSafeSpeakResponse = async (
   const citations = ragContext.map((item) => ({
     sourceId: item.sourceId,
     title: item.sourceTitle,
+    legislationName: item.legislationName,
     publisher: item.publisher ?? item.sourceAuthority,
     jurisdiction: item.jurisdiction,
     sourceType: item.sourceType,

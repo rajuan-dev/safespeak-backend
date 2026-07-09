@@ -5,6 +5,7 @@ import {
   MICRO_EDUCATION_DURATIONS,
   MICRO_EDUCATION_FORMATS,
   MICRO_EDUCATION_INCIDENT_CATEGORIES,
+  MICRO_EDUCATION_IMAGE_STORAGE_PROVIDERS,
   MICRO_EDUCATION_STATUSES,
   MICRO_EDUCATION_TONES
 } from './microeducation.constants';
@@ -13,6 +14,7 @@ import type {
   MicroEducationDuration,
   MicroEducationFormat,
   MicroEducationIncidentCategory,
+  MicroEducationImageStorageProvider,
   MicroEducationStatus,
   MicroEducationTone
 } from './microeducation.types';
@@ -38,10 +40,13 @@ export interface MicroEducationDocument {
   status: MicroEducationStatus;
   sortOrder: number;
   views: number;
+  imageStorageProvider?: MicroEducationImageStorageProvider;
   imageOriginalFileName?: string;
   imageStorageKey?: string;
   imageMimeType?: string;
   imageSizeBytes?: number;
+  imageS3Bucket?: string;
+  imageS3Region?: string;
   createdBy?: Types.ObjectId;
   updatedBy?: Types.ObjectId;
   deletedAt?: Date;
@@ -97,10 +102,19 @@ const microEducationSchema = new Schema<MicroEducationDocument>(
     },
     sortOrder: { type: Number, required: true, default: 0, index: true },
     views: { type: Number, required: true, default: 0, min: 0 },
+    imageStorageProvider: {
+      type: String,
+      enum: MICRO_EDUCATION_IMAGE_STORAGE_PROVIDERS,
+      required: false,
+      default: 'local',
+      index: true
+    },
     imageOriginalFileName: { type: String, required: false, trim: true },
     imageStorageKey: { type: String, required: false, unique: true, sparse: true },
     imageMimeType: { type: String, required: false, trim: true },
     imageSizeBytes: { type: Number, required: false, min: 0 },
+    imageS3Bucket: { type: String, required: false, trim: true },
+    imageS3Region: { type: String, required: false, trim: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
     updatedBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
     deletedAt: { type: Date, required: false, index: true }
