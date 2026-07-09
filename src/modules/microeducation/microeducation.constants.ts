@@ -20,6 +20,8 @@ export const MICRO_EDUCATION_DURATIONS = ['quick', 'deep'] as const;
 
 export const MICRO_EDUCATION_FORMATS = ['video', 'interactive', 'guide'] as const;
 
+export const MICRO_EDUCATION_IMAGE_STORAGE_PROVIDERS = ['local', 's3'] as const;
+
 export const MICRO_EDUCATION_ALLOWED_IMAGE_MIME_TYPES = [
   'image/jpeg',
   'image/png',

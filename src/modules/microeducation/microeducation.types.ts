@@ -2,6 +2,7 @@ import type {
   MICRO_EDUCATION_CHIPS,
   MICRO_EDUCATION_DURATIONS,
   MICRO_EDUCATION_FORMATS,
+  MICRO_EDUCATION_IMAGE_STORAGE_PROVIDERS,
   MICRO_EDUCATION_STATUSES,
   MICRO_EDUCATION_TONES
 } from './microeducation.constants';
@@ -11,6 +12,8 @@ export type MicroEducationTone = (typeof MICRO_EDUCATION_TONES)[number];
 export type MicroEducationChip = (typeof MICRO_EDUCATION_CHIPS)[number];
 export type MicroEducationDuration = (typeof MICRO_EDUCATION_DURATIONS)[number];
 export type MicroEducationFormat = (typeof MICRO_EDUCATION_FORMATS)[number];
+export type MicroEducationImageStorageProvider =
+  (typeof MICRO_EDUCATION_IMAGE_STORAGE_PROVIDERS)[number];
 
 export interface MicroEducationServiceContext {
   actor?: {

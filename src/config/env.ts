@@ -54,6 +54,9 @@ const envSchema = z
       .min(1)
       .default('./storage/microeducation-images'),
     MICRO_EDUCATION_IMAGE_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(10485760),
+    MICRO_EDUCATION_S3_BUCKET: optionalString(z.string().min(1)),
+    MICRO_EDUCATION_S3_PREFIX: z.string().min(1).default('microeducation-images'),
+    MICRO_EDUCATION_CDN_BASE_URL: optionalString(z.string().url()),
     MEDIA_ASSET_STORAGE_PATH: z.string().min(1).default('./storage/media-assets'),
     MEDIA_ASSET_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(2097152),
     OPENAI_API_KEY: optionalString(z.string().min(1)),
@@ -111,6 +114,18 @@ const envSchema = z
     DEFAULT_SUPER_ADMIN_FULL_NAME: z.string().min(1).default('SafeSpeak Super Admin')
   })
   .superRefine((value, context) => {
+    if (
+      value.MICRO_EDUCATION_S3_BUCKET &&
+      (!value.AWS_ACCESS_KEY_ID || !value.AWS_SECRET_ACCESS_KEY)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required when MICRO_EDUCATION_S3_BUCKET is set',
+        path: ['MICRO_EDUCATION_S3_BUCKET']
+      });
+    }
+
     if (!value.ENABLE_ADMIN_SEED) {
       return;
     }
