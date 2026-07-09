@@ -36,6 +36,9 @@ const {
   buildSupportReply,
 } = require('../src/modules/conversation-flow/legacy-support-replies.ts');
 const {
+  buildConversationTurnPolicy,
+} = require('../src/modules/conversation-flow/conversation-policy-engine.ts');
+const {
   composeEvidenceUploadResponse,
 } = require('../src/modules/ai/legacy/response-composer.ts');
 const {
@@ -49,11 +52,24 @@ const {
   normalizeAssistantContent,
 } = require('../src/modules/ai/model-response.service.ts');
 const {
+  buildClarifyingQuestionsPrompt,
+} = require('../src/modules/ai/ai.service.ts');
+const {
   validateSafeSpeakResponse,
+  getSafeSpeakSystemPrompt,
 } = require('../src/modules/ai/ai-guardrails.ts');
 const {
   buildSafeSpeakResponsePlan,
 } = require('../src/modules/ai/safespeak-response-planner.ts');
+const {
+  buildSafeSpeakContext,
+} = require('../src/modules/ai/safespeak-context-builder.ts');
+const {
+  detectProgressiveDisclosureStage,
+  detectUserRequestsDocumentation,
+  detectUserRequestsLegalInfo,
+  detectUserRequestsReporting,
+} = require('../src/modules/ai/safespeak-turn-signals.ts');
 const {
   hasBrokenTextEncoding,
 } = require('../src/modules/ai/text-encoding.ts');
@@ -85,6 +101,7 @@ const createModelContext = ({
   assistantFormatPreference = 'paragraphs',
   ragContext = [],
   safetyContext = {},
+  turnPolicyDecision,
   conversationSummary,
   activeIncidentSummary = 'None recorded.'
 }) => ({
@@ -129,10 +146,12 @@ const createModelContext = ({
   },
   ragContext,
   constraints: [],
+  turnPolicyDecision,
   responsePlan: buildSafeSpeakResponsePlan({
     intent,
     latestUserMessage,
     assistantFormatPreference,
+    turnPolicyDecision,
     safetyContext: {
       immediateDanger: Boolean(safetyContext.immediateDanger),
       threatsPresent: Boolean(safetyContext.threatsPresent),
@@ -169,7 +188,7 @@ test('explicit triage handoff phrases trigger the triage button intent', () => {
   });
 });
 
-test('conversation flow uses rag-first retrieval for ordinary messages before model fallback', () => {
+test('conversation flow uses principle-first retrieval and triggers RAG only when source grounding is needed', () => {
   assert.equal(
     shouldUseRagForIntent({
       intent: 'general_conversation',
@@ -185,6 +204,24 @@ test('conversation flow uses rag-first retrieval for ordinary messages before mo
       message: 'your answer sounds too scripted',
       responseMode: 'meta_feedback'
     }),
+    false
+  );
+
+  assert.equal(
+    shouldUseRagForIntent({
+      intent: 'general_conversation',
+      message: "I'm facing some issue in my school",
+      responseMode: 'general_conversation'
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldUseRagForIntent({
+      intent: 'rag_pathway_question',
+      message: 'Where can I report online threats?',
+      responseMode: 'general_conversation'
+    }),
     true
   );
 
@@ -195,6 +232,327 @@ test('conversation flow uses rag-first retrieval for ordinary messages before mo
       responseMode: 'general_conversation'
     }),
     false
+  );
+});
+
+test('normal help openers classify as general conversation instead of unknown', () => {
+  [
+    'i need help',
+    'can you help me',
+    'i need support',
+    'i want some help',
+    'can i talk to you'
+  ].forEach((message) => {
+    const classification = classifySafeSpeakIntentDetails(message);
+    const responseMode = classifyResponseMode({
+      message,
+      sessionFacts: extractSupportFacts({ message }).originalFacts
+    });
+
+    assert.equal(classification.intent, 'general_conversation');
+    assert.equal(responseMode, 'clarification_needed');
+  });
+});
+
+test('partial incident disclosures stay in clarification mode until the overview is usable', () => {
+  const message = 'My boss did something weird and I feel bad about it.';
+  const classification = classifySafeSpeakIntentDetails(message);
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(classification.intent, 'incident_disclosure');
+  assert.equal(responseMode, 'clarification_needed');
+});
+
+test('clear incident disclosures can move from clarification into support mode', () => {
+  const message =
+    'My boss shared my health information with coworkers at work last week and I have emails.';
+  const classification = classifySafeSpeakIntentDetails(message);
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(classification.intent, 'incident_disclosure');
+  assert.equal(responseMode, 'support_victim_style');
+});
+
+test('assistant metadata persists policy decision and human review fields', () => {
+  const metadata = buildAssistantMessageMetadata({
+    intent: 'legal_boundary_specific_case',
+    reviewStatus: 'pending_human_review',
+    humanReviewRecommended: true,
+    humanReviewReasons: ['may_influence_legal_or_reporting_decision'],
+    turnPolicyDecision: {
+      responseStrategy: 'grounded_legal_information',
+      ragRequired: true,
+      ragReason: 'legal_lookup',
+      groundedAnswerRequired: true,
+      questionAllowed: true,
+      maxQuestions: 1,
+      disclaimerRequired: true,
+      sourcesVisible: true,
+      pathwayAllowed: true,
+      timelineCollectionAllowed: true,
+      humanReviewRequired: true,
+      humanReviewRecommended: true,
+      humanReviewReasons: ['may_influence_legal_or_reporting_decision'],
+      principleOrder: [
+        'human_first',
+        'triage_before_data_collection',
+        'minimum_necessary_information',
+        'understand_not_decide',
+        'pathways_over_laws',
+        'authoritative_rag_only'
+      ]
+    }
+  });
+
+  assert.equal(metadata.reviewStatus, 'pending_human_review');
+  assert.equal(metadata.humanReviewRecommended, true);
+  assert.deepEqual(metadata.humanReviewReasons, ['may_influence_legal_or_reporting_decision']);
+  assert.equal(metadata.turnPolicyDecision.responseStrategy, 'grounded_legal_information');
+  assert.equal(metadata.turnPolicyDecision.ragRequired, true);
+  assert.equal(metadata.turnPolicyDecision.ragReason, 'legal_lookup');
+});
+
+test('response meta and minimal response expose human review policy signals', () => {
+  const responseMeta = buildConversationAssistantResponseMeta({
+    assistantPayload: {
+      assistantMessage: 'This may depend on the law and the facts.',
+      reviewStatus: 'pending_human_review',
+      humanReviewRecommended: true,
+      humanReviewReasons: ['may_influence_legal_or_reporting_decision'],
+      turnPolicyDecision: {
+        responseStrategy: 'pathway_guidance',
+        ragRequired: true,
+        ragReason: 'source_grounded_request',
+        groundedAnswerRequired: true,
+        questionAllowed: true,
+        maxQuestions: 1,
+        disclaimerRequired: true,
+        sourcesVisible: true,
+        pathwayAllowed: true,
+        timelineCollectionAllowed: false,
+        humanReviewRequired: false,
+        humanReviewRecommended: true,
+        humanReviewReasons: ['may_influence_legal_or_reporting_decision'],
+        principleOrder: [
+          'human_first',
+          'triage_before_data_collection',
+          'minimum_necessary_information',
+          'understand_not_decide',
+          'pathways_over_laws',
+          'authoritative_rag_only'
+        ]
+      }
+    },
+    conversationSessionId: 'session-1',
+    offerTriage: false
+  });
+
+  assert.match(responseMeta.disclaimer, /general information only, not legal advice/i);
+  assert.equal(responseMeta.humanReviewRecommended, true);
+  assert.deepEqual(responseMeta.humanReviewReasons, ['may_influence_legal_or_reporting_decision']);
+
+  const minimal = buildMinimalConversationAppendResponse({
+    session: { id: 's1' },
+    userMessage: { id: 'u1', role: 'user', content: 'help', turnNumber: 1 },
+    assistantMessage: {
+      id: 'a1',
+      role: 'assistant',
+      content: 'answer',
+      turnNumber: 2,
+      metadata: {
+        humanReviewRecommended: true,
+        humanReviewReasons: ['may_influence_legal_or_reporting_decision'],
+        turnPolicyDecision: responseMeta.turnPolicyDecision
+      }
+    },
+    triage: null,
+    responseMeta
+  });
+
+  assert.equal(minimal.assistantMessage.metadata.humanReviewRecommended, true);
+  assert.deepEqual(minimal.assistantMessage.metadata.humanReviewReasons, [
+    'may_influence_legal_or_reporting_decision'
+  ]);
+  assert.equal(minimal.responseMeta.humanReviewRecommended, true);
+  assert.equal(minimal.responseMeta.turnPolicyDecision.ragReason, 'source_grounded_request');
+});
+
+test('turn policy exposes explicit response controls for support vs grounded legal turns', () => {
+  const supportPolicy = buildConversationTurnPolicy({
+    intent: 'general_conversation',
+    message: "I'm facing some issue in my school",
+    responseMode: 'general_conversation'
+  });
+
+  assert.equal(supportPolicy.responseStrategy, 'support_only');
+  assert.equal(supportPolicy.ragRequired, false);
+  assert.equal(supportPolicy.disclaimerRequired, false);
+  assert.equal(supportPolicy.sourcesVisible, false);
+  assert.equal(supportPolicy.timelineCollectionAllowed, false);
+  assert.equal(supportPolicy.pathwayAllowed, true);
+
+  const legalPolicy = buildConversationTurnPolicy({
+    intent: 'legal_boundary_specific_case',
+    message: 'Where can I report online threats?',
+    responseMode: 'legal_lookup'
+  });
+
+  assert.equal(legalPolicy.responseStrategy, 'grounded_legal_information');
+  assert.equal(legalPolicy.ragRequired, true);
+  assert.equal(legalPolicy.groundedAnswerRequired, true);
+  assert.equal(legalPolicy.disclaimerRequired, true);
+  assert.equal(legalPolicy.sourcesVisible, true);
+  assert.equal(legalPolicy.timelineCollectionAllowed, true);
+  assert.equal(legalPolicy.humanReviewRequired, true);
+});
+
+test('clarification mode suppresses pathways so the conversation keeps gathering overview first', () => {
+  const policy = buildConversationTurnPolicy({
+    intent: 'incident_disclosure',
+    message: 'My boss did something weird.',
+    responseMode: 'clarification_needed'
+  });
+
+  assert.equal(policy.questionAllowed, true);
+  assert.equal(policy.maxQuestions, 1);
+  assert.equal(policy.pathwayAllowed, false);
+});
+
+test('response planner applies turn policy limits before model generation', () => {
+  const turnPolicyDecision = buildConversationTurnPolicy({
+    intent: 'general_conversation',
+    message: 'show me the next steps',
+    responseMode: 'triage_handoff'
+  });
+
+  const responsePlan = buildSafeSpeakResponsePlan({
+    intent: 'general_conversation',
+    latestUserMessage: 'show me the next steps',
+    turnPolicyDecision,
+    safetyContext: {
+      immediateDanger: false,
+      threatsPresent: false,
+      physicalHarm: false,
+      domesticFamilyViolence: false,
+      selfHarm: false,
+      childSafety: false
+    }
+  });
+
+  assert.equal(responsePlan.responseStrategy, 'triage_handoff');
+  assert.equal(responsePlan.questionAllowed, false);
+  assert.equal(responsePlan.maxQuestions, 0);
+  assert.equal(responsePlan.pathwayAllowed, true);
+  assert.equal(responsePlan.timelineCollectionAllowed, false);
+});
+
+test('response planner separates perpetrator admissions from victim-style harm replies', () => {
+  const responsePlan = buildSafeSpeakResponsePlan({
+    intent: 'incident_disclosure',
+    latestUserMessage: 'i abused my wife and her boyfriend',
+    safetyContext: {
+      immediateDanger: false,
+      threatsPresent: false,
+      physicalHarm: false,
+      domesticFamilyViolence: true,
+      selfHarm: false,
+      childSafety: false
+    }
+  });
+
+  assert.equal(responsePlan.primaryGoal, 'prevent_further_harm_and_immediate_risk_check');
+  assert.ok(responsePlan.allowedContent.some((item) => /preventing further harm right now/i.test(item)));
+  assert.ok(responsePlan.deferredContent.some((item) => /victim-style reassurance/i.test(item)));
+});
+
+test('response planner keeps short vague safety disclosures on a minimal clarification path', () => {
+  const responsePlan = buildSafeSpeakResponsePlan({
+    intent: 'unknown',
+    latestUserMessage: 'i feel unsafe in my house',
+    safetyContext: {
+      immediateDanger: false,
+      threatsPresent: false,
+      physicalHarm: false,
+      domesticFamilyViolence: false,
+      selfHarm: false,
+      childSafety: false
+    }
+  });
+
+  assert.equal(responsePlan.primaryGoal, 'clarify_minimum_context');
+  assert.ok(responsePlan.allowedContent.some((item) => /context-shaped question/i.test(item)));
+  assert.ok(responsePlan.allowedContent.some((item) => /do not default to an immediate-danger question/i.test(item)));
+  assert.ok(responsePlan.allowedContent.some((item) => /do not assume an actor/i.test(item)));
+  assert.ok(responsePlan.deferredContent.some((item) => /did not deserve the harm/i.test(item)));
+});
+
+test('shared turn-signal helpers keep planner and validator heuristics aligned', () => {
+  const message = 'Where can I report this and what are my options?';
+
+  assert.equal(detectProgressiveDisclosureStage(message), 'user_requests_reporting');
+  assert.equal(detectUserRequestsReporting(message), true);
+  assert.equal(detectUserRequestsDocumentation(message), false);
+  assert.equal(detectUserRequestsLegalInfo(message), false);
+
+  const responsePlan = buildSafeSpeakResponsePlan({
+    intent: 'rag_pathway_question',
+    latestUserMessage: message,
+    safetyContext: {
+      immediateDanger: false,
+      threatsPresent: false,
+      physicalHarm: false,
+      domesticFamilyViolence: false,
+      selfHarm: false,
+      childSafety: false
+    }
+  });
+
+  assert.equal(responsePlan.progressiveDisclosureStage, 'user_requests_reporting');
+});
+
+test('context constraints surface turn policy instructions to the model prompt layer', () => {
+  const turnPolicyDecision = buildConversationTurnPolicy({
+    intent: 'meta_feedback',
+    message: 'your answer sounds scripted',
+    responseMode: 'meta_feedback'
+  });
+
+  const context = buildSafeSpeakContext({
+    latestUserMessage: 'your answer sounds scripted',
+    detectedLanguage: 'en',
+    intentClassification: {
+      intent: 'meta_feedback',
+      confidence: 'high',
+      classifierSource: 'rule',
+      matchedSignals: ['feedback']
+    },
+    turnPolicyDecision,
+    safetyContext: {
+      latestTurnRiskLevel: 'none',
+      activeIncidentRiskLevel: 'none',
+      sessionHistoricalMaxRiskLevel: 'none',
+      immediateDanger: false,
+      threatsPresent: false,
+      physicalHarm: false,
+      domesticFamilyViolence: false,
+      selfHarm: false,
+      childSafety: false
+    }
+  });
+
+  assert.equal(context.responsePlan.responseStrategy, 'meta_feedback');
+  assert.ok(
+    context.constraints.includes(
+      'Do not offer pathways, routing, or agency options in this turn unless the user explicitly asks.'
+    )
   );
 });
 
@@ -297,6 +655,28 @@ test('evidence upload intent is detected for screenshot upload questions', () =>
 
   assert.equal(detectEvidenceUploadIntent(message), true);
   assert.equal(responseMode, 'evidence_upload_intent');
+});
+
+test('short upload questions still resolve to evidence upload mode', () => {
+  const message = 'can i upload them?';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(responseMode, 'evidence_upload_intent');
+});
+
+test('safety crisis messages resolve to emergency safety mode', () => {
+  const message = 'my partner is threatening me right now';
+  const facts = extractSupportFacts({ message });
+  const responseMode = classifyResponseMode({
+    message,
+    sessionFacts: facts.originalFacts
+  });
+
+  assert.equal(responseMode, 'emergency_safety');
 });
 
 test('meta feedback messages are not misclassified as incident support', () => {
@@ -746,6 +1126,314 @@ test('structured bullets are allowed when the user asks for scam warning signs',
   });
 
   assert.equal(validation.violations.includes('bullet_heavy_non_actionable'), false);
+});
+
+test('guardrails enforce questionAllowed false from the response plan', () => {
+  const validation = validateSafeSpeakResponse({
+    text: 'I can help with that. What happened?',
+    intent: 'general_conversation',
+    latestUserMessage: 'show me the next steps',
+    responsePlan: buildSafeSpeakResponsePlan({
+      intent: 'general_conversation',
+      latestUserMessage: 'show me the next steps',
+      turnPolicyDecision: buildConversationTurnPolicy({
+        intent: 'general_conversation',
+        message: 'show me the next steps',
+        responseMode: 'triage_handoff'
+      }),
+      safetyContext: {
+        immediateDanger: false,
+        threatsPresent: false,
+        physicalHarm: false,
+        domesticFamilyViolence: false,
+        selfHarm: false,
+        childSafety: false
+      }
+    })
+  });
+
+  assert.equal(validation.violations.includes('too_many_questions'), true);
+});
+
+test('guardrails block pathway routing when the turn policy disallows it', () => {
+  const validation = validateSafeSpeakResponse({
+    text: 'You can report this to police or another agency.',
+    intent: 'meta_feedback',
+    latestUserMessage: 'your answer sounds scripted',
+    responsePlan: buildSafeSpeakResponsePlan({
+      intent: 'meta_feedback',
+      latestUserMessage: 'your answer sounds scripted',
+      turnPolicyDecision: buildConversationTurnPolicy({
+        intent: 'meta_feedback',
+        message: 'your answer sounds scripted',
+        responseMode: 'meta_feedback'
+      }),
+      safetyContext: {
+        immediateDanger: false,
+        threatsPresent: false,
+        physicalHarm: false,
+        domesticFamilyViolence: false,
+        selfHarm: false,
+        childSafety: false
+      }
+    })
+  });
+
+  assert.equal(validation.violations.includes('too_many_pathways'), true);
+});
+
+test('guardrails require disclaimer for grounded pathway guidance turns', () => {
+  const validation = validateSafeSpeakResponse({
+    text: 'Your legal rights may depend on the facts and the reporting pathway in NSW.',
+    intent: 'rag_pathway_question',
+    latestUserMessage: 'Where can I report this in NSW?',
+    responsePlan: buildSafeSpeakResponsePlan({
+      intent: 'rag_pathway_question',
+      latestUserMessage: 'Where can I report this in NSW?',
+      turnPolicyDecision: buildConversationTurnPolicy({
+        intent: 'rag_pathway_question',
+        message: 'Where can I report this in NSW?',
+        responseMode: 'general_conversation'
+      }),
+      safetyContext: {
+        immediateDanger: false,
+        threatsPresent: false,
+        physicalHarm: false,
+        domesticFamilyViolence: false,
+        selfHarm: false,
+        childSafety: false
+      }
+    })
+  });
+
+  assert.equal(validation.violations.includes('missing_legal_boundary_disclaimer'), true);
+});
+
+test('guardrails block blame-heavy reframing that the user did not choose', () => {
+  const validation = validateSafeSpeakResponse({
+    text: "I'm here with you—what's going on that's got you in trouble?",
+    intent: 'general_conversation',
+    latestUserMessage: 'i in trable'
+  });
+
+  assert.equal(validation.violations.includes('unsupported_blame_reframing'), true);
+});
+
+test('guardrails block generic follow-up questions when the user already gave situation clues', () => {
+  const validation = validateSafeSpeakResponse({
+    text: 'I’m sorry this is happening. Can you tell me more about what happened?',
+    intent: 'incident_disclosure',
+    latestUserMessage: 'My boss shared my health information with coworkers.'
+  });
+
+  assert.equal(validation.violations.includes('generic_follow_up_for_supported_context'), true);
+});
+
+test('guardrails block emotional or actor assumptions for short vague safety disclosures', () => {
+  const validation = validateSafeSpeakResponse({
+    text:
+      'That sounds really scary and exhausting to be feeling unsafe in your own home. Are you in immediate danger right now or is the person who’s making you feel unsafe in the house with you?',
+    intent: 'unknown',
+    latestUserMessage: 'i feel unsafe in my house'
+  });
+
+  assert.equal(validation.violations.includes('unsupported_low_detail_expansion'), true);
+});
+
+test('model regeneration rewrites vague safety disclosures with dynamic low-assumption prompting', async () => {
+  const originalFetch = global.fetch;
+  const requestBodies = [];
+  let callCount = 0;
+  global.fetch = async (_url, options) => {
+    callCount += 1;
+    requestBodies.push(JSON.parse(options.body));
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? 'That sounds really scary and exhausting to be feeling unsafe in your own home. Are you in immediate danger right now or is the person who’s making you feel unsafe in the house with you?'
+            : "I hear that you feel unsafe at home. What's making home feel unsafe for you?"
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'unknown',
+      intentConfidence: 'low',
+      classifierSource: 'rule',
+      latestUserMessage: 'i feel unsafe in my house',
+      context: createModelContext({
+        latestUserMessage: 'i feel unsafe in my house',
+        intent: 'unknown'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.equal(reply.responseSource, 'openai_model_regenerated');
+    assert.equal(reply.assistantMessage, "I hear that you feel unsafe at home. What's making home feel unsafe for you?");
+    assert.match(
+      requestBodies[1].input[1].content,
+      /do not default to a stock immediate-danger question/i
+    );
+    assert.match(
+      requestBodies[1].input[1].content,
+      /Ask one dynamic question shaped by the user’s exact wording/i
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('base response prompt explicitly asks for human calm specific low-pressure replies', async () => {
+  const originalFetch = global.fetch;
+  const requestBodies = [];
+  global.fetch = async (_url, options) => {
+    requestBodies.push(JSON.parse(options.body));
+    return {
+      ok: true,
+      json: async () => ({
+        output_text: 'I can help with that. What part feels most important right now?'
+      })
+    };
+  };
+
+  try {
+    await generateSafeSpeakResponse({
+      intent: 'general_conversation',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'what can you help me with?',
+      context: createModelContext({
+        latestUserMessage: 'what can you help me with?',
+        intent: 'general_conversation'
+      })
+    });
+
+    assert.match(
+      requestBodies[0].input[1].content,
+      /calm, thoughtful person, not a script|warm and supportive|stay close to the user's exact words|reflect feeling, keep it tentative/i
+    );
+    assert.match(requestBodies[0].input[1].content, /Prompt context:/i);
+    assert.doesNotMatch(
+      requestBodies[0].input[1].content,
+      /SafeSpeak context JSON|Intent policy:|Response plan:|Turn policy:/i
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('simple help openers still use the normal model path', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+    return {
+      ok: true,
+      json: async () => ({
+        output_text: "I'm here with you. What's going on?"
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'general_conversation',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'i need help',
+      context: createModelContext({
+        latestUserMessage: 'i need help',
+        intent: 'general_conversation'
+      })
+    });
+
+    assert.equal(callCount, 1);
+    assert.equal(reply.usedModelGeneration, true);
+    assert.equal(reply.staticTemplateUsed, false);
+    assert.equal(reply.responseSource, 'openai_model');
+    assert.equal(reply.repairType, 'none');
+    assert.equal(reply.assistantMessage, "I'm here with you. What's going on?");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('too many questions are locally repaired without a second model call', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+    return {
+      ok: true,
+      json: async () => ({
+        output_text: 'I can help with that. What happened? Are you safe right now?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'general_conversation',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'this is confusing for me',
+      context: createModelContext({
+        latestUserMessage: 'this is confusing for me',
+        intent: 'general_conversation'
+      })
+    });
+
+    assert.equal(callCount, 1);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.equal(reply.responseSource, 'openai_model_local_fix');
+    assert.equal(reply.repairType, 'local_fix');
+    assert.equal(reply.fallbackReason, 'too_many_questions');
+    assert.equal(countQuestions(reply.assistantMessage), 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('guardrails block repeated law-chasing follow-up questions when context is already usable', () => {
+  const validation = validateSafeSpeakResponse({
+    text: 'Before I can help, which law was broken here exactly?',
+    intent: 'incident_disclosure',
+    latestUserMessage: 'My boss shared my health information with coworkers.'
+  });
+
+  assert.equal(validation.violations.includes('classification_chasing_follow_up'), true);
+});
+
+test('safespeak system prompt tells the model to ask situation-specific follow-up questions', () => {
+  const prompt = getSafeSpeakSystemPrompt('en');
+
+  assert.match(prompt, /make the next question fit that clue/i);
+  assert.match(prompt, /avoid generic follow-up questions/i);
+  assert.match(prompt, /do not keep asking follow-up questions just to classify the incident more precisely/i);
+  assert.match(prompt, /flexible incident-clarity coverage model/i);
+  assert.match(prompt, /not as a fixed sequence, fixed wording, or mandatory checklist/i);
+});
+
+test('clarifying questions prompt asks for supportive intake-style verification without legal chasing', () => {
+  const prompt = buildClarifyingQuestionsPrompt({
+    narrative: 'My manager shared my health information with coworkers and I feel exposed.',
+    maxQuestions: 12,
+    structuredFields: { where: 'office' },
+    incidentCategory: 'racial_abuse'
+  });
+
+  assert.match(prompt, /supportive guided intake/i);
+  assert.match(prompt, /not a fixed-length checklist/i);
+  assert.match(prompt, /as many trauma-informed clarifying questions as are genuinely needed/i);
+  assert.match(prompt, /what happened, who did it or their relationship, where it happened, when or whether it is ongoing/i);
+  assert.match(prompt, /flexible relevance areas, not as fixed question labels, fixed wording, or a mandatory order/i);
+  assert.match(prompt, /comforting/i);
+  assert.match(prompt, /do not stop just because you reached a small number like 3, 4, or 5/i);
+  assert.match(prompt, /do not ask repeated questions just to force an exact legal category or to decide which law was broken/i);
 });
 
 test('evidence upload without an active incident stays non-incident and does not create new triage facts', () => {
@@ -1664,6 +2352,40 @@ test('physical harm replies stay short and ask one question max', async () => {
   }
 });
 
+test('perpetrator admission prompt carries direct harm-prevention guidance instead of victim framing', async () => {
+  const originalFetch = global.fetch;
+  const requestBodies = [];
+  global.fetch = async (_url, options) => {
+    requestBodies.push(JSON.parse(options.body));
+    return {
+      ok: true,
+      json: async () => ({
+        output_text: 'You said you hurt them. The priority now is making sure no one is hurt again. Are you away from them right now?'
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'incident_disclosure',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'i abused my wife and her boyfriend',
+      context: createModelContext({
+        latestUserMessage: 'i abused my wife and her boyfriend',
+        intent: 'incident_disclosure'
+      })
+    });
+
+    assert.match(requestBodies[0].input[1].content, /prevent_further_harm_and_immediate_risk_check/);
+    assert.match(requestBodies[0].input[0].content, /do not respond as if they are the victim/i);
+    assert.match(reply.assistantMessage, /hurt them|no one is hurt again|away from them right now/i);
+    assert.doesNotMatch(reply.assistantMessage, /carrying something heavy|glad you said it plainly/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('workplace accent mocking stays calm and does not fallback', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({
@@ -2226,6 +2948,51 @@ test('legal boundary specific-case outputs regenerate away from direct legal con
   }
 });
 
+test('general conversation outputs regenerate away from blame-heavy reframing', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+  const requestBodies = [];
+  global.fetch = async (_url, options) => {
+    callCount += 1;
+    requestBodies.push(JSON.parse(options.body));
+
+    return {
+      ok: true,
+      json: async () => ({
+        output_text:
+          callCount === 1
+            ? "I'm here with you—what's going on that's got you in trouble?"
+            : "I'm here with you. What's been happening at home?"
+      })
+    };
+  };
+
+  try {
+    const reply = await generateSafeSpeakResponse({
+      intent: 'general_conversation',
+      intentConfidence: 'high',
+      classifierSource: 'rule',
+      latestUserMessage: 'i in trable',
+      context: createModelContext({
+        latestUserMessage: 'i in trable',
+        intent: 'general_conversation',
+        conversationSummary: 'assistant: Hi — I’m here with you. What would you like help with today?\nuser: i in trable'
+      })
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(reply.guardrailStatus, 'regenerated');
+    assert.equal(reply.responseSource, 'openai_model_regenerated');
+    assert.doesNotMatch(reply.assistantMessage, /\btrouble\b/i);
+    assert.match(
+      requestBodies[1].input[1].content,
+      /Do not rename the user’s situation with blame-heavy language such as "trouble"/i
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('model-path replies do not reuse removed static assistant phrases', async () => {
   const originalFetch = global.fetch;
   const outputs = [
@@ -2291,7 +3058,10 @@ test('model-path replies do not reuse removed static assistant phrases', async (
       assert.equal(reply.usedModelGeneration, true);
       assert.equal(reply.staticTemplateUsed, false);
       assert.ok(
-        reply.responseSource === 'openai_model' || reply.responseSource === 'openai_model_with_rag'
+        reply.responseSource === 'openai_model' ||
+          reply.responseSource === 'openai_model_with_rag' ||
+          reply.responseSource === 'openai_model_regenerated' ||
+          reply.responseSource === 'openai_model_local_fix'
       );
       assertNoLegacyRuntimePhrases(reply.assistantMessage);
       if (testCase.intent === 'physical_harm' || testCase.intent === 'evidence_upload') {
@@ -2714,6 +3484,21 @@ test('dynamic support reply handles fake visa agent scam and identity risk', () 
   assert.ok(steps.some((step) => /bank|card provider|account/i.test(step)));
   assert.ok(steps.some((step) => /passwords|two-factor/i.test(step)));
   assert.equal(shouldShowSources(responseMode, message, []), false);
+});
+
+test('clarification reply uses situation-specific scam question instead of generic follow-up', () => {
+  const reply = buildSupportReply({
+    facts: {
+      scam_or_fraud: true,
+      bank_details_exposed: true,
+      originalFacts: {}
+    },
+    responseMode: 'clarification_needed',
+    sessionContext: { selectedTopic: 'scamshield' }
+  });
+
+  assert.match(reply.nextQuestion, /take money|details right now/i);
+  assert.doesNotMatch(reply.nextQuestion, /tell me more about what happened|what feels most important/i);
 });
 
 test('clinic emailing health info to boss stays privacy-focused not bullying', () => {

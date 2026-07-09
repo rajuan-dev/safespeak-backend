@@ -1,3 +1,9 @@
+import {
+  AGENCY_QUESTION_PATTERN,
+  LEGAL_ASSISTANCE_SERVICES_PATTERN,
+  REPORTING_PATHWAY_QUESTION_PATTERN
+} from './safespeak-legal-signals';
+
 export type SafeSpeakIntent =
   | 'safety_crisis'
   | 'physical_harm'
@@ -184,12 +190,11 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
   }
 
   const ragPathwaySignals = collectSignals(normalized, [
-    { signal: 'reporting_pathway_question', pattern: /\b(where can i report|reportcyber|scamwatch|esafety|fair work|anti discrimination|police report|what are my rights)\b/ },
-    { signal: 'agency_question', pattern: /\b(which agency|what pathway|who do i report to|what are my reporting options|reporting options)\b/ },
+    { signal: 'reporting_pathway_question', pattern: REPORTING_PATHWAY_QUESTION_PATTERN },
+    { signal: 'agency_question', pattern: AGENCY_QUESTION_PATTERN },
     {
       signal: 'legal_assistance_services_question',
-      pattern:
-        /\b(what|which|where|who)\b.*\b(legal assistance|legal aid|legal service|legal services|lawyer|lawyers|community legal centre|community legal centres|wdvcas|family violence prevention legal services)\b/
+      pattern: LEGAL_ASSISTANCE_SERVICES_PATTERN
     },
     {
       signal: 'help_for_family_violence_question',
@@ -225,7 +230,17 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
     { signal: 'distress_context', pattern: /\b(scared|upset|someone followed me|someone touched me)\b/ },
     { signal: 'workplace_mocking_or_belonging', pattern: /\b(boss|manager|supervisor|coworker|co worker|colleague|work)\b.*\b(mock|mocking|laugh|accent|belong|do not belong|dont belong|humiliat|put me down)\b/ },
     { signal: 'discrimination_phrase', pattern: /\b(accent|where i come from|do not belong here|dont belong here)\b/ },
-    { signal: 'religious_harassment_contact', pattern: /\b(brother|someone|person)\b.*\b(pulled|grabbed|snatched|touched)\b.*\b(hijab|headscarf|veil)\b/ }
+    { signal: 'religious_harassment_contact', pattern: /\b(brother|someone|person)\b.*\b(pulled|grabbed|snatched|touched)\b.*\b(hijab|headscarf|veil)\b/ },
+    {
+      signal: 'vague_boundary_crossing_with_distress',
+      pattern:
+        /\b(boss|manager|supervisor|coworker|co worker|colleague|teacher|partner|family|someone|person)\b.*\b(did something weird|did something wrong|acted weird|acted inappropriately|crossed a line|made me uncomfortable)\b|\b(did something weird|did something wrong|acted weird|acted inappropriately|crossed a line|made me uncomfortable)\b.*\b(feel bad|felt bad|upset|uncomfortable|uneasy|shaken|not right)\b/
+    },
+    {
+      signal: 'privacy_or_personal_info_disclosure',
+      pattern:
+        /\b(shared|emailed|sent|leaked|posted|showed|told)\b.*\b(health info|health information|private information|private info|personal details|my details|messages|photos)\b|\b(health info|health information|private information|private info|personal details|my details|messages|photos)\b.*\b(shared|emailed|sent|leaked|posted|showed|told)\b/
+    }
   ]);
   if (incidentSignals.length > 0) {
     return {
@@ -259,7 +274,12 @@ const classifyByRule = (message: string): SafeSpeakIntentClassification => {
 
   const generalSignals = collectSignals(normalized, [
     { signal: 'greeting', pattern: /^(hi|hello|hey|good morning|good evening)\b/ },
-    { signal: 'capability_question', pattern: /\b(what can you do)\b/ }
+    { signal: 'capability_question', pattern: /\b(what can you do)\b/ },
+    {
+      signal: 'help_opening',
+      pattern:
+        /\b(i need help|can you help me|i need support|i want some help|can i talk to you|i want to talk|can we talk)\b/
+    }
   ]);
   if (generalSignals.length > 0) {
     return {

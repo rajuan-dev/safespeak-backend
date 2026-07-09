@@ -29,7 +29,7 @@ export const triageReportSchema = baseAiSchema.extend({
 export const clarifyingQuestionsSchema = baseAiSchema.extend({
   narrative: narrativeSchema,
   structuredFields: z.record(z.unknown()).optional(),
-  maxQuestions: z.number().int().min(1).max(10).default(5)
+  maxQuestions: z.number().int().min(1).max(25).default(12)
 });
 
 export const generateSummarySchema = baseAiSchema.extend({

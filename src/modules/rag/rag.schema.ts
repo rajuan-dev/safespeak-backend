@@ -4,6 +4,7 @@ import {
   RAG_JURISDICTIONS,
   RAG_LEGAL_DOMAINS,
   RAG_PATHWAY_CATEGORIES,
+  RAG_REFRESH_CADENCES,
   RAG_SOURCE_CATEGORIES,
   RAG_SOURCE_RELIABILITIES,
   RAG_SOURCE_STATUSES,
@@ -75,6 +76,7 @@ const stateOrTerritorySchema = z.enum(RAG_STATE_OR_TERRITORIES).optional();
 const legalDomainSchema = z.enum(RAG_LEGAL_DOMAINS).optional();
 const pathwayCategorySchema = z.enum(RAG_PATHWAY_CATEGORIES).optional();
 const sourceReliabilitySchema = z.enum(RAG_SOURCE_RELIABILITIES).default('unknown');
+const refreshCadenceSchema = z.enum(RAG_REFRESH_CADENCES).default('quarterly');
 const ocrReviewApprovalSchema = z.object({
   legalReviewed: z.boolean().default(true)
 });
@@ -143,6 +145,7 @@ export const createKnowledgeSourceSchema = z.object({
   legislationName: z.string().trim().max(200).optional(),
   sourceType: z.enum(RAG_SOURCE_TYPES),
   sourceAuthority: z.string().trim().max(200).optional(),
+  authority: z.string().trim().max(200).optional(),
   officialUrl: z.string().url().optional(),
   country: z.string().trim().max(80).optional(),
   language: z.string().trim().min(2).max(12).default('en'),
@@ -151,9 +154,11 @@ export const createKnowledgeSourceSchema = z.object({
   publisher: z.string().trim().min(1).max(200),
   licenseStatus: z.string().trim().min(1).max(200),
   lastUpdated: z.coerce.date().optional(),
+  sourceDate: z.coerce.date().optional(),
   lastVerifiedAt: z.coerce.date().optional(),
   nextReviewAt: z.coerce.date().optional(),
   nextRefreshAt: z.coerce.date().optional(),
+  refreshCadence: refreshCadenceSchema,
   legalReviewed: z.boolean().default(false),
   active: z.boolean().default(true),
   sourceReliability: sourceReliabilitySchema,

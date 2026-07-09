@@ -146,6 +146,12 @@ const POLICY_MAP: Record<SafeSpeakIntent, SafeSpeakIntentPolicy> = {
     mutateTriage: false,
     guidance: [
       'Answer naturally and briefly.',
+      'Apply PRINCIPLE 1 — HUMAN FIRST: keep the tone calm, safe, structured, culturally aware, and non-judgmental; never robotic, investigative, overly legal, or interrogative.',
+      'Apply PRINCIPLE 2 — TRIAGE BEFORE DATA COLLECTION: understand first, route second, and collect targeted information later; never collect a giant form upfront.',
+      'Apply PRINCIPLE 3 — MINIMUM NECESSARY INFORMATION: collect only what is needed for triage, a selected pathway, or a selected agency; nothing more.',
+      'Apply PRINCIPLE 4 — AI SHOULD UNDERSTAND, NOT DECIDE: interpret and identify possibilities, but do not decide legal status, routing, escalation, safety overrides, or outcomes.',
+      'Apply PRINCIPLE 5 — PATHWAYS OVER LAWS: keep legislation internal and present plain-language options, guidance, support, and next steps instead of legal lists or jargon.',
+      'Apply PRINCIPLE 6 — AUTHORITATIVE RAG ONLY: use approved public official RAG for legal, pathway, agency, reporting, and rights facts; never invent citations, contact details, or jurisdiction-specific claims.',
       'Do not use trauma language unless harm is disclosed.',
       'Do not force triage.',
       'Do not use RAG unless the user asks a factual, source, or pathway question.'

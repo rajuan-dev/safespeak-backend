@@ -64,6 +64,20 @@ export const RAG_SOURCE_RELIABILITIES = [
   'unknown'
 ] as const;
 
+export const RAG_REFRESH_CADENCES = ['quarterly', 'event_driven', 'monthly', 'manual'] as const;
+
+export const RAG_REQUIRED_LEGAL_JURISDICTIONS = [
+  'Cth',
+  'NSW',
+  'VIC',
+  'QLD',
+  'SA',
+  'WA',
+  'TAS',
+  'NT',
+  'ACT'
+] as const;
+
 export const RAG_INDEX_SYNC_STATUSES = ['synced', 'pending', 'failed', 'partial'] as const;
 
 export const RAG_JURISDICTIONS = [

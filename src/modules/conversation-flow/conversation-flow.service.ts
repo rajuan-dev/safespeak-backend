@@ -4,6 +4,7 @@ import { Types, type HydratedDocument } from 'mongoose';
 import { ApiError } from '@common/errors/ApiError';
 import { logger } from '@common/utils/logger';
 import { env } from '@config/env';
+import { buildInformationOnlyDisclaimer } from '@modules/ai/ai-guardrails';
 import {
   classifySafeSpeakIntent,
   classifySafeSpeakIntentDetails
@@ -43,6 +44,17 @@ import {
   type ConversationFlowFactsDocument,
   type ConversationFlowSessionDocument
 } from './conversation-flow.model';
+import {
+  buildConversationTurnPolicy,
+  shouldUseRagForIntent,
+  type ConversationAssistantResponseMode
+} from './conversation-policy-engine';
+import type {
+  ConversationAssistantMetadata,
+  ConversationAssistantPayload,
+  ConversationAssistantResponseMeta,
+  GroundedLegalSource
+} from './conversation-assistant.types';
 import type {
   AppendConversationFlowMessageInput,
   CreateConversationFlowSessionInput
@@ -377,16 +389,6 @@ type ConversationFlowStructuredFacts = {
   protectedAttributes: string[];
   jurisdiction?: string;
 };
-
-type ConversationAssistantResponseMode =
-  | 'legal_lookup'
-  | 'triage_handoff'
-  | 'evidence_upload_intent'
-  | 'meta_feedback'
-  | 'support_victim_style'
-  | 'scamshield_style'
-  | 'emergency_safety'
-  | 'clarification_needed';
 
 type SupportResponseFacts = {
   threat_present: boolean;
@@ -780,6 +782,10 @@ export const classifyResponseMode = (input: {
     return 'legal_lookup';
   }
 
+  if (detectedIntent === 'safety_crisis') {
+    return 'emergency_safety';
+  }
+
   if (
     input.sessionFacts.immediateDanger ||
     input.sessionFacts.selfHarmOrSuicidal ||
@@ -790,7 +796,10 @@ export const classifyResponseMode = (input: {
     return 'emergency_safety';
   }
 
-  if (detectEvidenceUploadIntent(input.message)) {
+  if (
+    detectedIntent === 'evidence_upload' ||
+    detectEvidenceUploadIntent(input.message)
+  ) {
     return 'evidence_upload_intent';
   }
 
@@ -798,11 +807,14 @@ export const classifyResponseMode = (input: {
     return 'meta_feedback';
   }
 
-  if (
-    detectedIntent === 'physical_harm' ||
-    detectedIntent === 'incident_disclosure'
-  ) {
+  if (detectedIntent === 'physical_harm') {
     return 'support_victim_style';
+  }
+
+  if (detectedIntent === 'incident_disclosure') {
+    return hasClearIncidentOverviewForLiveGuidance(input.message, input.sessionFacts)
+      ? 'support_victim_style'
+      : 'clarification_needed';
   }
 
   if (
@@ -826,11 +838,66 @@ export const classifyResponseMode = (input: {
   return 'support_victim_style';
 };
 
+const hasClearIncidentOverviewForLiveGuidance = (
+  message: string,
+  sessionFacts: ConversationFlowStructuredFacts
+): boolean => {
+  if (
+    sessionFacts.immediateDanger ||
+    sessionFacts.selfHarmOrSuicidal ||
+    sessionFacts.childSafetyRisk ||
+    sessionFacts.sexualViolenceRisk
+  ) {
+    return true;
+  }
+
+  const normalized = message.toLowerCase();
+  const hasActionDetail =
+    /\b(hit|hurt|threat(?:en|ened)?|blackmail(?:ed)?|share(?:d)?|sent|post(?:ed)?|leak(?:ed)?|stole|scam(?:med)?|mock(?:ed|ing)?|call(?:ed)?|yell(?:ed|ing)?|grab(?:bed)?|pull(?:ed)?|touch(?:ed)?|follow(?:ed|ing)?|email(?:ed)?|text(?:ed)?|said|take(?:n)?|publish(?:ed)?|pressure(?:d|ing)?|control(?:led|ling)?|watch(?:ed|ing)?|harass(?:ed|ing)?|bully(?:ing)?|discriminat(?:ed|ing)?)\b/i.test(
+      normalized
+    );
+  const actorOrRelationshipDetail =
+    sessionFacts.employerInvolved ||
+    sessionFacts.domesticFamilyContext ||
+    sessionFacts.companyOrOrganisationInvolved ||
+    sessionFacts.workplaceContext ||
+    sessionFacts.schoolContext ||
+    sessionFacts.housingOrServiceContext ||
+    sessionFacts.organisations.length > 0 ||
+    sessionFacts.platforms.length > 0 ||
+    /\b(my boss|manager|coworker|teacher|student|partner|husband|wife|ex|parent|family|friend|neighbor|neighbour|stranger|company|clinic|doctor|landlord)\b/i.test(
+      normalized
+    );
+  const placeOrChannelDetail =
+    sessionFacts.platforms.length > 0 ||
+    /\b(at work|workplace|office|school|class|campus|home|house|online|instagram|facebook|tiktok|snapchat|discord|email|text|dm|street|bus|train|shop|clinic|hospital|university)\b/i.test(
+      normalized
+    );
+  const timeOrPatternDetail =
+    /\b(today|yesterday|tonight|this morning|last night|last week|for weeks|for months|again|ongoing|still|keeps|every day|every night|repeatedly)\b/i.test(
+      normalized
+    );
+  const evidenceOrImpactDetail =
+    sessionFacts.evidenceAvailable ||
+    /\b(screenshot|screenshots|photo|photos|video|recording|email|text messages?|messages?|witness|witnesses|injur(?:y|ies)|scared|afraid|unsafe|panic|anxious)\b/i.test(
+      normalized
+    );
+
+  const detailCount = [
+    actorOrRelationshipDetail,
+    placeOrChannelDetail,
+    timeOrPatternDetail,
+    evidenceOrImpactDetail
+  ].filter(Boolean).length;
+
+  return hasActionDetail && detailCount >= 2;
+};
+
 export const localizeKnownLegalLookupAnswer = (input: {
   language: string;
   message: string;
-  assistantPayload: Record<string, unknown>;
-}): Record<string, unknown> => {
+  assistantPayload: ConversationAssistantPayload;
+}): ConversationAssistantPayload => {
   if (input.language === 'en') {
     return input.assistantPayload;
   }
@@ -872,10 +939,10 @@ export const localizeKnownLegalLookupAnswer = (input: {
 };
 
 export const buildConversationAssistantResponseMeta = (input: {
-  assistantPayload: Record<string, unknown>;
+  assistantPayload: ConversationAssistantPayload;
   conversationSessionId: string;
   offerTriage: boolean;
-}) => {
+}): ConversationAssistantResponseMeta => {
   const citations = Array.isArray(input.assistantPayload.citations)
     ? input.assistantPayload.citations
     : [];
@@ -909,10 +976,25 @@ export const buildConversationAssistantResponseMeta = (input: {
     }),
     triageHandoff: input.assistantPayload.sourceDisplayReason === 'triage_handoff'
   });
+  const turnPolicyDecision =
+    input.assistantPayload.turnPolicyDecision &&
+    typeof input.assistantPayload.turnPolicyDecision === 'object' &&
+    !Array.isArray(input.assistantPayload.turnPolicyDecision)
+      ? input.assistantPayload.turnPolicyDecision
+      : undefined;
+  const sourceVisibilityAllowed = turnPolicyDecision?.sourcesVisible ?? true;
+  const showSourcesFromPayload =
+    typeof input.assistantPayload.showSources === 'boolean'
+      ? input.assistantPayload.showSources
+      : sourceDisplayMeta.showSources;
+  const resolvedShowSources = sourceVisibilityAllowed ? showSourcesFromPayload : false;
 
   return {
     confidence: input.assistantPayload.confidence ?? 'low',
-    disclaimer: 'This is information only, not legal advice.',
+    disclaimer:
+      turnPolicyDecision?.disclaimerRequired ?? true
+        ? buildInformationOnlyDisclaimer()
+        : '',
     citations,
     rag:
       input.assistantPayload.rag ?? {
@@ -945,12 +1027,13 @@ export const buildConversationAssistantResponseMeta = (input: {
     recommendedImmediateActions: Array.isArray(input.assistantPayload.recommendedImmediateActions)
       ? input.assistantPayload.recommendedImmediateActions
       : [],
-    showSources:
-      typeof input.assistantPayload.showSources === 'boolean'
-        ? input.assistantPayload.showSources
-        : sourceDisplayMeta.showSources,
+    showSources: resolvedShowSources,
     sourceDisplayReason:
-      typeof input.assistantPayload.sourceDisplayReason === 'string'
+      !resolvedShowSources
+        ? typeof input.assistantPayload.sourceDisplayReason === 'string'
+          ? input.assistantPayload.sourceDisplayReason
+          : 'hidden_support_reply'
+        : typeof input.assistantPayload.sourceDisplayReason === 'string'
         ? input.assistantPayload.sourceDisplayReason
         : sourceDisplayMeta.sourceDisplayReason,
     responseSource:
@@ -994,7 +1077,14 @@ export const buildConversationAssistantResponseMeta = (input: {
     selectedResponseSource:
       typeof input.assistantPayload.selectedResponseSource === 'string'
         ? input.assistantPayload.selectedResponseSource
-        : 'unknown'
+        : 'unknown',
+    humanReviewRecommended: Boolean(input.assistantPayload.humanReviewRecommended),
+    humanReviewReasons:
+      Array.isArray(input.assistantPayload.humanReviewReasons) &&
+      input.assistantPayload.humanReviewReasons.every((reason) => typeof reason === 'string')
+        ? input.assistantPayload.humanReviewReasons
+        : [],
+    turnPolicyDecision
   };
 };
 
@@ -1047,6 +1137,7 @@ export const buildMinimalConversationAppendResponse = (input: {
         staticTemplateUsed: assistantMetadata.staticTemplateUsed,
         responseSource: assistantMetadata.responseSource,
         selectedResponseSource: assistantMetadata.selectedResponseSource,
+        repairType: assistantMetadata.repairType,
         model: assistantMetadata.model,
         guardrailStatus: assistantMetadata.guardrailStatus,
         fallbackReason: assistantMetadata.fallbackReason,
@@ -1060,7 +1151,10 @@ export const buildMinimalConversationAppendResponse = (input: {
         formatPreferenceUpdated: assistantMetadata.formatPreferenceUpdated,
         encodingWarning: assistantMetadata.encodingWarning,
         classifierSource: assistantMetadata.classifierSource,
-        matchedSignals: assistantMetadata.matchedSignals
+        matchedSignals: assistantMetadata.matchedSignals,
+        humanReviewRecommended: assistantMetadata.humanReviewRecommended,
+        humanReviewReasons: assistantMetadata.humanReviewReasons,
+        turnPolicyDecision: assistantMetadata.turnPolicyDecision
       }
     },
     triageSummary: triage
@@ -1090,6 +1184,7 @@ export const buildMinimalConversationAppendResponse = (input: {
       reviewStatus: input.responseMeta.reviewStatus,
       responseSource: input.responseMeta.responseSource,
       selectedResponseSource: input.responseMeta.selectedResponseSource,
+      repairType: input.responseMeta.repairType,
       model: input.responseMeta.model,
       ragStatus: input.responseMeta.ragStatus,
       guardrailStatus: input.responseMeta.guardrailStatus,
@@ -1097,7 +1192,10 @@ export const buildMinimalConversationAppendResponse = (input: {
       triageUpdated: input.responseMeta.triageUpdated,
       assistantLanguage: input.responseMeta.assistantLanguage,
       showSources: input.responseMeta.showSources,
-      sourceDisplayReason: input.responseMeta.sourceDisplayReason
+      sourceDisplayReason: input.responseMeta.sourceDisplayReason,
+      humanReviewRecommended: input.responseMeta.humanReviewRecommended,
+      humanReviewReasons: input.responseMeta.humanReviewReasons,
+      turnPolicyDecision: input.responseMeta.turnPolicyDecision
     }
   };
 };
@@ -1376,8 +1474,10 @@ export const buildSafetySteps = (facts: SupportResponseFacts): string[] => {
   return steps.slice(0, 3);
 };
 
-export const buildAssistantMessageMetadata = (assistantPayload: Record<string, unknown>) => {
-  const metadata: Record<string, unknown> = {
+export const buildAssistantMessageMetadata = (
+  assistantPayload: ConversationAssistantPayload
+): ConversationAssistantMetadata => {
+  const metadata: ConversationAssistantMetadata = {
     confidence: assistantPayload.confidence,
     reviewStatus: assistantPayload.reviewStatus
   };
@@ -1420,6 +1520,10 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
 
   if (typeof assistantPayload.selectedResponseSource === 'string') {
     metadata.selectedResponseSource = assistantPayload.selectedResponseSource;
+  }
+
+  if (typeof assistantPayload.repairType === 'string') {
+    metadata.repairType = assistantPayload.repairType;
   }
 
   if (typeof assistantPayload.responseSource === 'string') {
@@ -1480,6 +1584,22 @@ export const buildAssistantMessageMetadata = (assistantPayload: Record<string, u
 
   if (Array.isArray(assistantPayload.matchedSignals)) {
     metadata.matchedSignals = assistantPayload.matchedSignals;
+  }
+
+  if (typeof assistantPayload.humanReviewRecommended === 'boolean') {
+    metadata.humanReviewRecommended = assistantPayload.humanReviewRecommended;
+  }
+
+  if (Array.isArray(assistantPayload.humanReviewReasons)) {
+    metadata.humanReviewReasons = assistantPayload.humanReviewReasons;
+  }
+
+  if (
+    assistantPayload.turnPolicyDecision &&
+    typeof assistantPayload.turnPolicyDecision === 'object' &&
+    !Array.isArray(assistantPayload.turnPolicyDecision)
+  ) {
+    metadata.turnPolicyDecision = assistantPayload.turnPolicyDecision;
   }
 
   if (
@@ -1563,6 +1683,7 @@ const logAssistantTurn = (input: {
   model?: string;
   ragStatus?: string;
   guardrailStatus: string;
+  repairType?: string;
   nonIncidentTurn: boolean;
   triageUpdated: boolean;
   latestTurnRiskLevel: string;
@@ -1584,6 +1705,7 @@ const logAssistantTurn = (input: {
       model: input.model,
       ragStatus: input.ragStatus,
       guardrailStatus: input.guardrailStatus,
+      repairType: input.repairType,
       nonIncidentTurn: input.nonIncidentTurn,
       triageUpdated: input.triageUpdated,
       latestTurnRiskLevel: input.latestTurnRiskLevel,
@@ -1595,15 +1717,7 @@ const logAssistantTurn = (input: {
   );
 };
 
-export const shouldUseRagForIntent = (input: {
-  intent: string;
-  message: string;
-  responseMode: ConversationAssistantResponseMode;
-}): boolean => {
-  // Conversation flow is RAG-first by default: every substantive message should
-  // attempt retrieval before falling back to model-only generation.
-  return input.message.trim().length > 0;
-};
+export { shouldUseRagForIntent };
 
 const buildConversationSummary = (
   conversation: Array<{ role: 'assistant' | 'user'; content: string }>
@@ -1644,35 +1758,28 @@ const toRagSnippets = (results: Array<{
         : undefined;
 
     return {
-    sourceId: result.sourceId,
-    sourceTitle: result.title,
-    publisher: result.sourceAuthority,
-    sourceAuthority: result.sourceAuthority,
-    sourceCategory: result.sourceCategory,
-    jurisdiction: result.jurisdiction,
-    stateOrTerritory: result.stateOrTerritory,
-    legalDomain: result.legalDomain,
-    pathwayCategory: result.pathwayCategory,
-    sourceType: result.sourceType,
-    url: result.citationUrl,
-    lastUpdated: result.lastUpdated?.toISOString(),
-    sectionNumber: result.sectionRef,
-    sectionTitle: result.sectionTitle,
-    page: pageStart,
-    pageStart,
-    pageEnd,
-    versionDate,
-    commencementDate,
-    relevantSnippet: result.text.replace(/\s+/g, ' ').trim().slice(0, 1600)
-  };
+      sourceId: result.sourceId,
+      sourceTitle: result.title,
+      publisher: result.sourceAuthority,
+      sourceAuthority: result.sourceAuthority,
+      sourceCategory: result.sourceCategory,
+      jurisdiction: result.jurisdiction,
+      stateOrTerritory: result.stateOrTerritory,
+      legalDomain: result.legalDomain,
+      pathwayCategory: result.pathwayCategory,
+      sourceType: result.sourceType,
+      url: result.citationUrl,
+      lastUpdated: result.lastUpdated?.toISOString(),
+      sectionNumber: result.sectionRef,
+      sectionTitle: result.sectionTitle,
+      page: pageStart,
+      pageStart,
+      pageEnd,
+      versionDate,
+      commencementDate,
+      relevantSnippet: result.text.replace(/\s+/g, ' ').trim().slice(0, 1600)
+    };
   });
-
-type GroundedLegalSource = {
-  sourceId: string;
-  title?: string;
-  legislationName?: string;
-  citationUrl?: string;
-};
 
 const normalizeGroundedLegalSource = (value: unknown): GroundedLegalSource | undefined => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -1958,20 +2065,6 @@ const hasContextualActReference = (query: string): boolean =>
   /\b(?:(?:this|that|the)\s+(?:act|regulation|code|charter|law|legislation|document|report|source)|uploaded\s+(?:document|report|source))\b/i.test(
     query
   );
-
-const requiresGroundedFactualAnswer = (query: string): boolean => {
-  const normalized = collapseWhitespace(query);
-  const sourceConstrained =
-    /\b(according to|aihw|uploaded\s+(?:document|report|source)|(?:this|the)\s+(?:document|report|source|act|legislation)|cite|citation|page\s+number|section\s+[0-9a-z])\b/i.test(
-      normalized
-    );
-  const factualRequest =
-    /\b(what|which|when|where|who|how many|how much|percentage|percent|rate|number|date|define|definition|called|state|territor|compare|difference|does|did|is|are|was|were)\b/i.test(
-      normalized
-    );
-
-  return sourceConstrained && (factualRequest || /\?/.test(normalized));
-};
 
 export const buildContextualLegalFollowUpQuery = (input: {
   query: string;
@@ -5304,7 +5397,12 @@ export const appendConversationFlowMessage = async (
   });
   const triageHandoffIntent = responseMode === 'triage_handoff';
 
-  let assistantPayload: Record<string, unknown>;
+  let assistantPayload: ConversationAssistantPayload;
+  let turnPolicyDecision = buildConversationTurnPolicy({
+    intent: selectedIntent,
+    message: input.content,
+    responseMode
+  });
   let currentConsentSnapshot = {
     store_local: false,
     cloud_sync: false,
@@ -5344,11 +5442,12 @@ export const appendConversationFlowMessage = async (
         content: message.content
       }))
     );
-    const ragRequired = shouldUseRagForIntent({
+    turnPolicyDecision = buildConversationTurnPolicy({
       intent: selectedIntent,
       message: input.content,
       responseMode
     });
+    const ragRequired = turnPolicyDecision.ragRequired;
     let ragContext: SafeSpeakRagSnippet[] = [];
     let ragResults: Awaited<ReturnType<typeof retrieveConversationFlowRag>> = [];
     let ragStatus: SafeSpeakRagStatus = ragRequired ? 'required_but_no_sources_found' : 'not_required';
@@ -5390,10 +5489,7 @@ export const appendConversationFlowMessage = async (
       }
     }
 
-    if (
-      (responseMode === 'legal_lookup' || requiresGroundedFactualAnswer(input.content)) &&
-      ragStatus === 'required_but_no_sources_found'
-    ) {
+    if (turnPolicyDecision.groundedAnswerRequired && ragStatus === 'required_but_no_sources_found') {
       assistantPayload = buildUngroundedLegalFollowUpAssistantPayload({
         message: input.content,
         priorGroundedLegalSource,
@@ -5430,7 +5526,8 @@ export const appendConversationFlowMessage = async (
         ragContext,
         ragStatus,
         userSelectedTopic: session.selectedTopic,
-        assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs'
+        assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs',
+        turnPolicyDecision
       });
 
       assistantPayload = await generateSafeSpeakModelResponse({
@@ -5477,6 +5574,12 @@ export const appendConversationFlowMessage = async (
       typeof assistantPayload.selectedResponseSource === 'string'
         ? assistantPayload.selectedResponseSource
         : 'unknown',
+    reviewStatus:
+      typeof assistantPayload.reviewStatus === 'string'
+        ? assistantPayload.reviewStatus
+        : turnPolicyDecision.humanReviewRequired || turnPolicyDecision.humanReviewRecommended
+          ? 'pending_human_review'
+          : selectedIntent,
     nonIncidentTurn: turnHandlingPlan.nonIncidentTurn,
     triageUpdated: turnHandlingPlan.triageUpdated,
     formatPreferenceUpdated: formatPreference.formatPreferenceUpdated,
@@ -5487,6 +5590,20 @@ export const appendConversationFlowMessage = async (
     assistantFormatPreference: session.assistantFormatPreference ?? 'paragraphs',
     subIntent: formatPreference.subIntent,
     assistantLanguage,
+    turnPolicyDecision,
+    humanReviewRecommended:
+      Boolean(assistantPayload.humanReviewRecommended) ||
+      turnPolicyDecision.humanReviewRecommended,
+    humanReviewReasons:
+      Array.isArray(assistantPayload.humanReviewReasons) &&
+      assistantPayload.humanReviewReasons.every((reason) => typeof reason === 'string')
+        ? Array.from(
+            new Set([
+              ...assistantPayload.humanReviewReasons,
+              ...turnPolicyDecision.humanReviewReasons
+            ])
+          )
+        : turnPolicyDecision.humanReviewReasons,
     safetyOverride:
       latestTurnSafetyOverride.safetyOverride || Boolean(assistantPayload.safetyOverride),
     safetyLevel:
@@ -5498,7 +5615,7 @@ export const appendConversationFlowMessage = async (
       assistantPayload.recommendedImmediateActions ??
       latestTurnSafetyOverride.recommendedImmediateActions,
     showSources:
-      responseMode === 'legal_lookup'
+      turnPolicyDecision.sourcesVisible
         ? assistantPayload.showSources
         : false
   };
@@ -5578,6 +5695,10 @@ export const appendConversationFlowMessage = async (
       typeof resolvedAssistantPayload.guardrailStatus === 'string'
         ? resolvedAssistantPayload.guardrailStatus
         : 'passed',
+    repairType:
+      typeof resolvedAssistantPayload.repairType === 'string'
+        ? resolvedAssistantPayload.repairType
+        : undefined,
     nonIncidentTurn: Boolean(resolvedAssistantPayload.nonIncidentTurn),
     triageUpdated: Boolean(resolvedAssistantPayload.triageUpdated),
     latestTurnRiskLevel:

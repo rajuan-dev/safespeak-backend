@@ -58,11 +58,15 @@ type SourceConfig = {
     | 'FAQ'
     | 'WebPage';
   licenseStatus: string;
+  sourceAuthority?: string;
+  authority?: string;
   legalReviewed?: boolean;
   lastUpdated?: string;
+  sourceDate?: string;
   lastVerifiedAt?: string;
   nextReviewAt?: string;
   nextRefreshAt?: string;
+  refreshCadence?: 'quarterly' | 'event_driven' | 'monthly' | 'manual';
   reviewNotes?: string;
 };
 
@@ -110,11 +114,15 @@ const run = async (): Promise<void> => {
         new RagKnowledgeSourceModel({
           ...source,
           language: 'en',
+          sourceAuthority: source.sourceAuthority ?? source.authority ?? source.publisher,
+          authority: source.authority ?? source.sourceAuthority ?? source.publisher,
           legalReviewed: source.legalReviewed ?? false,
           lastUpdated,
+          sourceDate: source.sourceDate ? new Date(source.sourceDate) : lastUpdated,
           lastVerifiedAt: source.lastVerifiedAt ? new Date(source.lastVerifiedAt) : new Date(),
           nextReviewAt: source.nextReviewAt ? new Date(source.nextReviewAt) : undefined,
           nextRefreshAt,
+          refreshCadence: source.refreshCadence ?? 'quarterly',
           reviewNotes: source.reviewNotes,
           status: 'pending_review',
           version: 1,
@@ -123,6 +131,8 @@ const run = async (): Promise<void> => {
 
       doc.title = source.title;
       doc.publisher = source.publisher;
+      doc.sourceAuthority = source.sourceAuthority ?? source.authority ?? source.publisher;
+      doc.authority = source.authority ?? source.sourceAuthority ?? source.publisher;
       doc.sourceCategory = source.sourceCategory;
       doc.jurisdiction = source.jurisdiction;
       doc.topic = source.topic;
@@ -132,9 +142,11 @@ const run = async (): Promise<void> => {
       doc.legalReviewed = false;
       doc.status = 'pending_review';
       doc.lastUpdated = lastUpdated;
+      doc.sourceDate = source.sourceDate ? new Date(source.sourceDate) : lastUpdated;
       doc.lastVerifiedAt = source.lastVerifiedAt ? new Date(source.lastVerifiedAt) : new Date();
       doc.nextReviewAt = source.nextReviewAt ? new Date(source.nextReviewAt) : doc.nextReviewAt;
       doc.nextRefreshAt = nextRefreshAt;
+      doc.refreshCadence = source.refreshCadence ?? 'quarterly';
       doc.reviewNotes = source.reviewNotes ?? doc.reviewNotes;
 
       try {

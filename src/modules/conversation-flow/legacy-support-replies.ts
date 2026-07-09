@@ -183,6 +183,54 @@ const buildFollowUpQuestion = (facts: LegacySupportFacts): string => {
   return 'What feels most important for me to understand next?';
 };
 
+const buildClarificationQuestion = (
+  facts: LegacySupportFacts,
+  sessionContext?: {
+    selectedTopic?: string;
+    language?: string;
+  }
+): string => {
+  if (
+    facts.immediate_danger ||
+    facts.originalFacts?.selfHarmOrSuicidal ||
+    facts.child_safety_risk ||
+    facts.sexual_violence_risk
+  ) {
+    return 'Are you safe right now?';
+  }
+
+  if (facts.threat_present || facts.blackmail_or_extortion) {
+    return 'What are they demanding from you right now?';
+  }
+
+  if (
+    sessionContext?.selectedTopic === 'scamshield' ||
+    facts.scam_or_fraud ||
+    facts.bank_details_exposed ||
+    facts.identity_documents_exposed
+  ) {
+    return 'Did they take money, or do they mainly have your details right now?';
+  }
+
+  if (facts.personal_data_leak || facts.company_or_organisation_involved) {
+    return 'Was this mainly a data leak, or has someone started using your details?';
+  }
+
+  if (facts.employer_involved && facts.health_information) {
+    return 'Was your main concern that your boss saw it, or that it was shared without your permission?';
+  }
+
+  if (facts.racism_or_hate) {
+    return 'Did this happen in person, online, at work or school, or somewhere else?';
+  }
+
+  if (facts.domestic_family_context || facts.coercive_control) {
+    return 'Is this mainly about something happening at home, or are you trying to understand your options?';
+  }
+
+  return 'What part of the situation would help most right now?';
+};
+
 const buildEmpathySentence = (
   responseMode: LegacySupportResponseMode,
   facts: LegacySupportFacts
@@ -264,7 +312,7 @@ export const buildSupportReply = (input: {
   const validationSentence = buildValidationSentence(input.responseMode, input.facts);
   const nextQuestion =
     input.responseMode === 'clarification_needed'
-      ? 'Can you tell me a bit more about what happened and what feels most urgent right now?'
+      ? buildClarificationQuestion(input.facts, input.sessionContext)
       : buildFollowUpQuestion(input.facts);
   const practicalSentence =
     steps.length > 0

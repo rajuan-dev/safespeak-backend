@@ -5,6 +5,7 @@ import {
   RAG_JURISDICTIONS,
   RAG_LEGAL_DOMAINS,
   RAG_PATHWAY_CATEGORIES,
+  RAG_REFRESH_CADENCES,
   RAG_SOURCE_CATEGORIES,
   RAG_SOURCE_RELIABILITIES,
   RAG_SOURCE_STATUSES,
@@ -28,6 +29,7 @@ import type {
 } from './rag.types';
 
 export interface RagKnowledgeSourceMetadata {
+  authority?: string;
   adminCategory?: string;
   constitutionalBasis?: string;
   legislationTags?: string[];
@@ -37,7 +39,11 @@ export interface RagKnowledgeSourceMetadata {
   country?: string;
   state?: string;
   effectiveDate?: string;
+  sourceDate?: string;
   version?: number | string;
+  refreshCadence?: 'quarterly' | 'event_driven' | 'monthly' | 'manual';
+  reviewedByName?: string;
+  reviewedAt?: string;
   detectedLegalType?: string;
   detectedActNames?: string[];
   detectedSectionRefs?: string[];
@@ -124,6 +130,7 @@ export interface RagKnowledgeSourceDocument {
   description?: string;
   sourceCategory: RagSourceCategory;
   sourceAuthority?: string;
+  authority?: string;
   officialUrl?: string;
   country?: string;
   jurisdiction: RagJurisdiction;
@@ -139,9 +146,11 @@ export interface RagKnowledgeSourceDocument {
   publisher: string;
   licenseStatus: string;
   lastUpdated?: Date;
+  sourceDate?: Date;
   lastVerifiedAt?: Date;
   nextReviewAt?: Date;
   nextRefreshAt?: Date;
+  refreshCadence?: 'quarterly' | 'event_driven' | 'monthly' | 'manual';
   legalReviewed: boolean;
   legalReviewedBy?: Types.ObjectId;
   legalReviewedAt?: Date;
@@ -237,6 +246,7 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
     sourceCategory: { type: String, enum: RAG_SOURCE_CATEGORIES, required: true, index: true },
     sourceType: { type: String, enum: RAG_SOURCE_TYPES, required: true, index: true },
     sourceAuthority: { type: String, required: false, trim: true },
+    authority: { type: String, required: false, trim: true, index: true },
     officialUrl: { type: String, required: false, trim: true },
     country: { type: String, required: false, trim: true, index: true },
     jurisdiction: {
@@ -275,9 +285,17 @@ const ragKnowledgeSourceSchema = new Schema<RagKnowledgeSourceDocument>(
     publisher: { type: String, required: true, trim: true },
     licenseStatus: { type: String, required: true, trim: true },
     lastUpdated: { type: Date, required: false, index: true },
+    sourceDate: { type: Date, required: false, index: true },
     lastVerifiedAt: { type: Date, required: false, index: true },
     nextReviewAt: { type: Date, required: false },
     nextRefreshAt: { type: Date, required: false, index: true },
+    refreshCadence: {
+      type: String,
+      enum: RAG_REFRESH_CADENCES,
+      required: false,
+      default: 'quarterly',
+      index: true
+    },
     legalReviewed: { type: Boolean, required: true, default: false, index: true },
     legalReviewedBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
     legalReviewedAt: { type: Date, required: false },

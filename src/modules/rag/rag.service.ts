@@ -39,7 +39,8 @@ import {
   RAG_CHUNK_OVERLAP,
   RAG_CHUNK_SIZE,
   RAG_GOVERNED_SOURCE_CATEGORIES,
-  RAG_OFFICIAL_SOURCE_HOSTS
+  RAG_OFFICIAL_SOURCE_HOSTS,
+  RAG_REQUIRED_LEGAL_JURISDICTIONS
 } from './rag.constants';
 import {
   RagChunkModel,
@@ -174,11 +175,15 @@ const MATERIAL_REVIEW_FIELDS = new Set<keyof UpdateKnowledgeSourceInput>([
   'url',
   'localFilePath',
   'publisher',
+  'sourceAuthority',
+  'authority',
   'licenseStatus',
   'lastUpdated',
+  'sourceDate',
   'lastVerifiedAt',
   'nextReviewAt',
   'nextRefreshAt',
+  'refreshCadence',
   'legalReviewed',
   'status'
 ]);
@@ -329,17 +334,24 @@ const isGovernedKnowledgeSource = (sourceCategory?: string): boolean =>
 const assertKnowledgeSourceGovernance = (input: {
   sourceCategory?: string;
   url?: string;
+  officialUrl?: string;
   sourceType?: string;
   publisher?: string;
+  sourceAuthority?: string;
+  authority?: string;
   licenseStatus?: string;
   lastUpdated?: Date;
+  sourceDate?: Date;
   nextRefreshAt?: Date;
+  refreshCadence?: string;
 }): void => {
   if (!isGovernedKnowledgeSource(input.sourceCategory)) {
     return;
   }
 
-  if (!input.url || !isOfficialSourceUrl(input.url)) {
+  const canonicalOfficialUrl = input.officialUrl ?? input.url;
+
+  if (!canonicalOfficialUrl || !isOfficialSourceUrl(canonicalOfficialUrl)) {
     throw new ApiError(
       StatusCodes.BAD_REQUEST,
       'Official legal/support knowledge sources must use an approved government, agency, or AustLII URL'
@@ -380,6 +392,27 @@ const assertKnowledgeSourceGovernance = (input: {
       'Official legal/support knowledge sources require a nextRefreshAt refresh date'
     );
   }
+
+  if (!(input.sourceAuthority ?? input.authority)?.trim()) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official legal/support knowledge sources require a source authority or agency name'
+    );
+  }
+
+  if (!input.sourceDate) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official legal/support knowledge sources require a sourceDate for versioned provenance'
+    );
+  }
+
+  if (!input.refreshCadence?.trim()) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Official legal/support knowledge sources require a refreshCadence'
+    );
+  }
 };
 
 const assertMergedKnowledgeSourceGovernance = (
@@ -390,10 +423,15 @@ const assertMergedKnowledgeSourceGovernance = (
     sourceCategory: input.sourceCategory ?? source.sourceCategory,
     sourceType: input.sourceType ?? source.sourceType,
     url: input.url ?? source.url,
+    officialUrl: input.officialUrl ?? source.officialUrl,
     publisher: input.publisher ?? source.publisher,
+    sourceAuthority: input.sourceAuthority ?? source.sourceAuthority,
+    authority: input.authority ?? source.authority,
     licenseStatus: input.licenseStatus ?? source.licenseStatus,
     lastUpdated: input.lastUpdated ?? source.lastUpdated,
-    nextRefreshAt: input.nextRefreshAt ?? source.nextRefreshAt
+    sourceDate: input.sourceDate ?? source.sourceDate,
+    nextRefreshAt: input.nextRefreshAt ?? source.nextRefreshAt,
+    refreshCadence: input.refreshCadence ?? source.refreshCadence
   });
 };
 
@@ -519,6 +557,9 @@ const READINESS_BLOCKER_LABELS: Record<ReadinessBlockerCode, string> = {
   not_approved: 'Not approved',
   legal_review_missing: 'Legal review missing',
   refresh_due_or_missing: 'Refresh due or missing',
+  source_authority_missing: 'Source authority missing',
+  source_date_missing: 'Source date missing',
+  refresh_cadence_missing: 'Refresh cadence missing',
   not_embedded: 'Not embedded',
   no_chunks: 'No indexed chunks',
   official_url_missing_or_unapproved: 'Official URL missing or not allow-listed',
@@ -527,7 +568,8 @@ const READINESS_BLOCKER_LABELS: Record<ReadinessBlockerCode, string> = {
   openai_api_key_missing: 'OpenAI API key missing',
   vector_index_missing: 'Vector index missing',
   vector_search_unavailable: 'Vector search unavailable',
-  vector_index_check_failed: 'Vector index check failed'
+  vector_index_check_failed: 'Vector index check failed',
+  jurisdiction_coverage_incomplete: 'Required legal jurisdiction coverage is incomplete'
 };
 
 const isGovernedSourceCategory = (
@@ -2462,6 +2504,11 @@ const buildVectorMetadata = (
     sourceId: chunk.sourceId.toString(),
     title: source.title,
     sourceTitle: source.sourceTitle ?? source.title,
+    authority:
+      source.authority ??
+      source.sourceAuthority ??
+      metadataString(sourceMetadata, 'authority') ??
+      source.publisher,
     sourceAuthority: source.sourceAuthority ?? source.publisher,
     sourceCategory: source.sourceCategory,
     adminCategory: metadataString(sourceMetadata, 'adminCategory'),
@@ -2500,6 +2547,10 @@ const buildVectorMetadata = (
         : metadataStringArray(sourceMetadata, 'legislationTags'),
     language: source.language,
     version: source.version,
+    sourceDate: source.sourceDate?.toISOString(),
+    refreshCadence:
+      source.refreshCadence ?? metadataString(sourceMetadata, 'refreshCadence') ?? 'quarterly',
+    reviewedAt: source.legalReviewedAt?.toISOString(),
     pageStart: metadataNumber(chunkMetadata, 'pageStart'),
     pageEnd: metadataNumber(chunkMetadata, 'pageEnd'),
     chunkIndex: chunk.chunkIndex,
@@ -3114,17 +3165,24 @@ const addReadinessBlocker = (
 
 const addGlobalReadinessBlocker = (
   blockers: Map<ReadinessBlockerCode, RagKnowledgeReadinessBlocker>,
-  code: ReadinessBlockerCode
+  code: ReadinessBlockerCode,
+  options?: { missingJurisdictions?: RagKnowledgeReadinessBlocker['missingJurisdictions'] }
 ): void => {
   const existing = blockers.get(code) ?? {
     code,
     label: READINESS_BLOCKER_LABELS[code],
     count: 0,
     sourceIds: [],
-    sourceTitles: []
+    sourceTitles: [],
+    ...(options?.missingJurisdictions?.length
+      ? { missingJurisdictions: [...options.missingJurisdictions] }
+      : {})
   };
 
   existing.count += 1;
+  if (options?.missingJurisdictions?.length) {
+    existing.missingJurisdictions = [...options.missingJurisdictions];
+  }
   blockers.set(code, existing);
 };
 
@@ -3251,7 +3309,7 @@ export const getKnowledgeSourceReadiness = async (
       sourceCategory: { $in: RAG_GOVERNED_SOURCE_CATEGORIES }
     })
       .select(
-        '_id title sourceCategory jurisdiction topic url status ingestionStatus nextRefreshAt legalReviewed'
+        '_id title sourceCategory jurisdiction topic url officialUrl sourceAuthority authority lastUpdated sourceDate refreshCadence status ingestionStatus nextRefreshAt legalReviewed metadata'
       )
       .lean(),
     checkRagVectorIndexReadiness()
@@ -3271,10 +3329,15 @@ export const getKnowledgeSourceReadiness = async (
   );
   const coverage = new Map<string, RagKnowledgeReadinessCoverageCell>();
   const blockers = new Map<ReadinessBlockerCode, RagKnowledgeReadinessBlocker>();
+  const coveredEligibleLegalJurisdictions = new Set<RagKnowledgeSourceDocument['jurisdiction']>();
   const summary = {
     readinessStatus: 'not_ready' as const,
     readyForPublicLegalRag: false,
+    fullLegalJurisdictionCoverage: false,
     retrievalConfigurationReady,
+    requiredLegalJurisdictions: [...RAG_REQUIRED_LEGAL_JURISDICTIONS],
+    coveredLegalJurisdictions: [] as RagKnowledgeSourceDocument['jurisdiction'][],
+    missingLegalJurisdictions: [] as RagKnowledgeSourceDocument['jurisdiction'][],
     totalOfficialSources: sources.length,
     eligibleCitationSources: 0,
     eligibleLegalSources: 0,
@@ -3305,9 +3368,22 @@ export const getKnowledgeSourceReadiness = async (
     }
 
     const chunkCount = chunkCountBySourceId.get(source._id.toString()) ?? 0;
-    const hasApprovedOfficialUrl = Boolean(source.url && isOfficialSourceUrl(source.url));
+    const sourceMetadata = toMetadataRecord(source.metadata);
+    const canonicalOfficialUrl = source.officialUrl ?? source.url;
+    const hasApprovedOfficialUrl = Boolean(
+      canonicalOfficialUrl && isOfficialSourceUrl(canonicalOfficialUrl)
+    );
     const hasCurrentRefresh = Boolean(
       source.nextRefreshAt && source.nextRefreshAt.getTime() > now.getTime()
+    );
+    const hasSourceAuthority = Boolean(
+      (source.sourceAuthority ?? source.authority ?? metadataString(sourceMetadata, 'authority'))?.trim()
+    );
+    const hasSourceDate = Boolean(
+      source.sourceDate ?? metadataString(sourceMetadata, 'sourceDate') ?? source.lastUpdated
+    );
+    const hasRefreshCadence = Boolean(
+      source.refreshCadence ?? metadataString(sourceMetadata, 'refreshCadence')
     );
     const isApproved = source.status === 'approved';
     const hasLegalReview =
@@ -3318,6 +3394,9 @@ export const getKnowledgeSourceReadiness = async (
       isApproved &&
       hasApprovedOfficialUrl &&
       hasCurrentRefresh &&
+      hasSourceAuthority &&
+      hasSourceDate &&
+      hasRefreshCadence &&
       hasLegalReview &&
       isEmbedded &&
       hasChunks;
@@ -3335,6 +3414,18 @@ export const getKnowledgeSourceReadiness = async (
     if (!hasCurrentRefresh) {
       sourceBlockers.push('refresh_due_or_missing');
       summary.expiredRefreshSources += 1;
+    }
+
+    if (!hasSourceAuthority) {
+      sourceBlockers.push('source_authority_missing');
+    }
+
+    if (!hasSourceDate) {
+      sourceBlockers.push('source_date_missing');
+    }
+
+    if (!hasRefreshCadence) {
+      sourceBlockers.push('refresh_cadence_missing');
     }
 
     if (source.sourceCategory === 'official_legal_source') {
@@ -3367,6 +3458,9 @@ export const getKnowledgeSourceReadiness = async (
       summary.eligibleCitationSources += 1;
       if (source.sourceCategory === 'official_legal_source') {
         summary.eligibleLegalSources += 1;
+        if (RAG_REQUIRED_LEGAL_JURISDICTIONS.includes(source.jurisdiction as never)) {
+          coveredEligibleLegalJurisdictions.add(source.jurisdiction);
+        }
       }
     }
 
@@ -3393,8 +3487,22 @@ export const getKnowledgeSourceReadiness = async (
     coverage.set(coverageKey, cell);
   }
 
+  summary.coveredLegalJurisdictions = [...coveredEligibleLegalJurisdictions].sort();
+  summary.missingLegalJurisdictions = RAG_REQUIRED_LEGAL_JURISDICTIONS.filter(
+    (jurisdiction) => !coveredEligibleLegalJurisdictions.has(jurisdiction)
+  );
+  summary.fullLegalJurisdictionCoverage = summary.missingLegalJurisdictions.length === 0;
+
   summary.readyForPublicLegalRag =
-    summary.eligibleLegalSources > 0 && retrievalConfigurationReady;
+    summary.eligibleLegalSources > 0 &&
+    retrievalConfigurationReady &&
+    summary.fullLegalJurisdictionCoverage;
+
+  if (!summary.fullLegalJurisdictionCoverage) {
+    addGlobalReadinessBlocker(blockers, 'jurisdiction_coverage_incomplete', {
+      missingJurisdictions: summary.missingLegalJurisdictions
+    });
+  }
   const readinessStatus = summary.readyForPublicLegalRag
     ? summary.blockedSources > 0
       ? 'ready_with_gaps'

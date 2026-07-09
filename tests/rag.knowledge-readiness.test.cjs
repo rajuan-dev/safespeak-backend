@@ -4,7 +4,10 @@ const test = require('node:test');
 const {
   getKnowledgeSourceApprovalBlocker
 } = require('../src/modules/rag/rag.service.ts');
-const { RAG_OFFICIAL_SOURCE_HOSTS } = require('../src/modules/rag/rag.constants.ts');
+const {
+  RAG_OFFICIAL_SOURCE_HOSTS,
+  RAG_REQUIRED_LEGAL_JURISDICTIONS
+} = require('../src/modules/rag/rag.constants.ts');
 
 test('official legal knowledge sources require legal review before approval', () => {
   const blocker = getKnowledgeSourceApprovalBlocker({
@@ -69,4 +72,18 @@ test('failed or partially indexed knowledge sources cannot be approved', () => {
 test('trusted public legal aid hosts remain allow-listed for official source ingestion', () => {
   assert.equal(RAG_OFFICIAL_SOURCE_HOSTS.includes('familyviolencelaw.gov.au'), true);
   assert.equal(RAG_OFFICIAL_SOURCE_HOSTS.includes('aihw.gov.au'), true);
+});
+
+test('required legal jurisdiction coverage includes all Australian jurisdictions and Commonwealth', () => {
+  assert.deepEqual(RAG_REQUIRED_LEGAL_JURISDICTIONS, [
+    'Cth',
+    'NSW',
+    'VIC',
+    'QLD',
+    'SA',
+    'WA',
+    'TAS',
+    'NT',
+    'ACT'
+  ]);
 });

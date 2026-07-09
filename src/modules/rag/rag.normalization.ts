@@ -180,8 +180,17 @@ export const normalizeKnowledgeSourceMetadata = (
     return metadata;
   }
 
+  const refreshCadence =
+    typeof metadata.refreshCadence === 'string' && metadata.refreshCadence.trim()
+      ? metadata.refreshCadence.trim().toLowerCase()
+      : undefined;
+
   return {
     ...metadata,
+    authority:
+      typeof metadata.authority === 'string' && metadata.authority.trim()
+        ? metadata.authority.trim()
+        : undefined,
     adminCategory: normalizeAdminCategoryValue(metadata.adminCategory) as string | undefined,
     stateOrTerritory: normalizeStateOrTerritoryValue(metadata.stateOrTerritory) as
       | string
@@ -189,7 +198,14 @@ export const normalizeKnowledgeSourceMetadata = (
     legalDomain: normalizeLegalDomainValue(metadata.legalDomain) as string | undefined,
     pathwayCategory: normalizePathwayCategoryValue(metadata.pathwayCategory) as
       | string
-      | undefined
+      | undefined,
+    refreshCadence:
+      refreshCadence === 'quarterly' ||
+      refreshCadence === 'event_driven' ||
+      refreshCadence === 'monthly' ||
+      refreshCadence === 'manual'
+        ? refreshCadence
+        : undefined
   };
 };
 

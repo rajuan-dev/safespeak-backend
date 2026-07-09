@@ -20,10 +20,12 @@ import type {
 import type { SafeSpeakResponsePlan } from './safespeak-response-planner';
 
 type GuardrailStatus = 'passed' | 'regenerated' | 'fallback';
+type RepairType = 'none' | 'local_fix' | 'model_regeneration' | 'fallback';
 type OpenAiResponseSource =
   | 'openai_model'
   | 'openai_model_with_rag'
   | 'openai_model_regenerated'
+  | 'openai_model_local_fix'
   | 'raw_openai_model'
   | 'emergency_override'
   | 'guardrail_fallback'
@@ -86,7 +88,7 @@ export type GenerateSafeSpeakResponseOutput = {
   usedModelGeneration: boolean;
   guardrailStatus: GuardrailStatus;
   fallbackReason?: string;
-  staticTemplateUsed: false;
+  staticTemplateUsed: boolean;
   consentSnapshot: SafeSpeakModelContext['consentSnapshot'];
   intentConfidence?: 'high' | 'medium' | 'low';
   classifierSource?: 'rule' | 'model' | 'hybrid';
@@ -95,6 +97,7 @@ export type GenerateSafeSpeakResponseOutput = {
   jurisdiction: 'AU';
   ragStatus: SafeSpeakRagStatus;
   selectedResponseSource: OpenAiResponseSource;
+  repairType?: RepairType;
 };
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -175,6 +178,22 @@ const buildNaturalUserPrompt = (input: GenerateSafeSpeakResponseInput): string =
   return sections.join('\n');
 };
 
+const buildPromptContextSummary = (input: GenerateSafeSpeakResponseInput): string =>
+  JSON.stringify({
+    primaryGoal: input.context.responsePlan?.primaryGoal,
+    allowedContent: input.context.responsePlan?.allowedContent,
+    deferredContent: input.context.responsePlan?.deferredContent,
+    maxQuestions: input.context.responsePlan?.maxQuestions,
+    questionAllowed: input.context.responsePlan?.questionAllowed,
+    progressiveDisclosureStage: input.context.responsePlan?.progressiveDisclosureStage,
+    responseStrategy: input.context.turnPolicyDecision?.responseStrategy,
+    groundedAnswerRequired: input.context.turnPolicyDecision?.groundedAnswerRequired,
+    disclaimerRequired: input.context.turnPolicyDecision?.disclaimerRequired,
+    pathwayAllowed: input.context.turnPolicyDecision?.pathwayAllowed,
+    timelineCollectionAllowed: input.context.turnPolicyDecision?.timelineCollectionAllowed,
+    humanReviewRequired: input.context.turnPolicyDecision?.humanReviewRequired
+  });
+
 const buildBasePromptSections = (
   input: GenerateSafeSpeakResponseInput,
   promptStyle: PromptStyle = 'default'
@@ -184,11 +203,10 @@ const buildBasePromptSections = (
       ? [
           `Intent: ${input.intent}`,
           `Persona: ${input.context.persona}`,
-          `Intent policy: ${JSON.stringify(input.context.intentPolicy)}`,
           `Latest user message: ${input.latestUserMessage}`,
           `Detected language: ${input.context.detectedLanguage}`,
           `Format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
-          `Response plan: ${JSON.stringify(input.context.responsePlan)}`,
+          `Prompt context: ${buildPromptContextSummary(input)}`,
           `Key constraints: ${(input.context.constraints ?? []).join(' | ')}`,
           `RAG status: ${input.ragStatus ?? 'not_required'}`,
           buildRagPromptSection(input.ragContext ?? input.context.ragContext)
@@ -196,11 +214,10 @@ const buildBasePromptSections = (
       : [
           `Intent: ${input.intent}`,
           `Persona: ${input.context.persona}`,
-          `Intent policy: ${JSON.stringify(input.context.intentPolicy)}`,
           `Latest user message: ${input.latestUserMessage}`,
           `Assistant format preference: ${input.context.assistantFormatPreference ?? 'paragraphs'}`,
-          `Response plan: ${JSON.stringify(input.context.responsePlan)}`,
-          `SafeSpeak context JSON: ${JSON.stringify(input.context)}`,
+          `Prompt context: ${buildPromptContextSummary(input)}`,
+          `Conversation summary: ${input.context.conversationSummary || 'No prior context.'}`,
           `RAG status: ${input.ragStatus ?? 'not_required'}`,
           buildRagPromptSection(input.ragContext ?? input.context.ragContext)
         ];
@@ -222,8 +239,8 @@ const buildUserPrompt = (
               latestUserMessage: input.latestUserMessage
             })
           : promptStyle === 'compact'
-            ? 'Write one brief, natural SafeSpeak reply in plain text. Do not output JSON.'
-            : 'Write the final assistant reply naturally. Do not output JSON.'
+            ? `Write one brief SafeSpeak reply in plain text. ${STYLE_CONTRACT_LINES.join(' ')} Do not output JSON.`
+            : `Write the final SafeSpeak reply in plain text. ${STYLE_CONTRACT_LINES.join(' ')} Do not output JSON.`
       ].join('\n');
 
 const shouldPreferParagraphs = (input: GenerateSafeSpeakResponseInput): boolean => {
@@ -258,6 +275,28 @@ const buildCompactRewritePrompt = (
   [
     ...buildBasePromptSections(input, 'compact'),
     `Previous answer: ${previousAnswer}`,
+    'Apply PRINCIPLE 1 — HUMAN FIRST: the rewrite must first feel human before it feels informational. It should feel calm, safe, structured, culturally aware, and non-judgmental. It must not feel robotic, investigative, overly legal, or interrogative.',
+    'Apply PRINCIPLE 2 — TRIAGE BEFORE DATA COLLECTION: understand first, route second, and collect only the smallest targeted detail later. Remove giant forms, multi-question intake, premature evidence collection, and premature reporting details.',
+    'Apply PRINCIPLE 3 — MINIMUM NECESSARY INFORMATION: keep only information needed for triage, the selected pathway, or the selected agency. Remove unnecessary sensitive questions, agency-specific fields when no agency is selected, and report-style collection when the user only needs support or options.',
+    'Apply PRINCIPLE 4 — AI SHOULD UNDERSTAND, NOT DECIDE: interpret, extract supported signals, and identify possibilities only. Remove legal conclusions, eligibility decisions, agency-routing decisions, escalation decisions, safety override claims, or final outcome claims made by the model.',
+    'Apply PRINCIPLE 5 — PATHWAYS OVER LAWS: keep legislation internal and rewrite user-facing text into plain-language options, guidance, support, and next steps. Remove legislation lists, legal jargon, legal analysis, Act sections, offence tests, penalties, and formal legal categories unless the user explicitly asked for them.',
+    'Apply PRINCIPLE 6 — AUTHORITATIVE RAG ONLY: keep legal, rights, pathway, reporting, agency, safety-service, privacy, online-safety, discrimination, DV, workplace, migration, child-protection, surveillance, evidence, scam, and consumer-protection claims grounded only in approved RAG. Remove unsupported legal facts, unsupported contact details, invented citations, stale or mismatched jurisdiction claims, and source claims not present in retrieved snippets.',
+    'Write like a calm, caring person who is paying close attention.',
+    ...STYLE_CONTRACT_LINES,
+    'Avoid canned sympathy, repeated openings, or generic filler.',
+    'Start with a brief acknowledgement that feels supportive and emotionally attuned, but only to the level supported by the user’s words.',
+    'Ground the rewrite only in facts explicitly present in the latest message and conversation summary. Do not invent an emotion, impact, mistreatment, danger, or desired outcome.',
+    'Do not rename the user’s situation with blame-heavy language such as "trouble", "your fault", "mess", or "guilty" unless the user used that framing for themselves.',
+    'If the latest user message already contains a concrete setting, actor, or harm clue, replace generic follow-up questions with one situation-specific question tied to that clue.',
+    'Do not default to a stock immediate-danger question when the latest message only gives a vague safety concern without present-urgency signals. Ask one question shaped by the user’s exact words instead.',
+    'Do not keep asking questions only to identify the exact legal category or which law may have been broken. If there is enough context for a cautious best-fit explanation, move forward with that.',
+    'If the user admitted harming someone, do not answer as though they were the victim. Acknowledge the admission plainly, focus on preventing further harm, and ask one direct immediate-risk question.',
+    'Continue the conversation from the newest detail. Do not reuse the wording, opening phrase, reassurance, or question pattern of a prior assistant turn.',
+    ...(input.latestUserMessage.trim().split(/\s+/).length <= 8
+      ? [
+          'The latest message contains very little information. Write one natural sentence of at most 14 words that acknowledges only the stated context and asks at most one open question tied to the user’s wording. Do not use a fixed fallback question.'
+        ]
+      : []),
     buildCompactRetryInstruction()
   ].join('\n');
 
@@ -266,6 +305,8 @@ const shouldUseProgressiveDisclosureRepair = (plan: SafeSpeakResponsePlan, viola
   violations.some((violation) =>
     [
       'over_answering',
+      'unsupported_low_detail_expansion',
+      'generic_follow_up_for_supported_context',
       'too_many_pathways',
       'premature_documentation',
       'premature_reporting',
@@ -283,6 +324,15 @@ const buildProgressiveDisclosureRewritePrompt = (
     `Previous answer: ${previousAnswer}`,
     'Rewrite using progressive disclosure. Keep only the immediate acknowledgement, the primary goal, and at most one next question.',
     'Remove deferred reporting, documentation, legal, service-list, or safety-plan detail unless the user explicitly asked for it.',
+    'Write like a calm, caring person who is paying close attention.',
+    ...STYLE_CONTRACT_LINES,
+    'Do not sound over-explained.',
+    'Keep the opening warm and supportive, but do not claim feelings or facts the user did not give you.',
+    'Ground the rewrite only in facts explicitly present in the latest message and conversation summary. Do not invent an emotion, impact, mistreatment, danger, actor, relationship, or desired outcome.',
+    'If the latest user message contains only a vague safety concern without present-urgency signals, do not default to a stock immediate-danger question.',
+    'Ask one dynamic question shaped by the user’s exact wording, setting, or clue.',
+    'Do not reuse the same reassurance template or question pattern from the previous answer.',
+    'If the message is short, keep the rewrite short.',
     'Keep the reply natural, calm, and specific. Do not output JSON.'
   ].join('\n');
 
@@ -332,6 +382,14 @@ const callOpenAiPrompt = async (options: {
 const TECHNICAL_FALLBACK_MESSAGE =
   "I'm sorry, I couldn't generate a reliable response just now. Please try again.";
 
+const STYLE_CONTRACT_LINES = [
+  'Sound like one calm, thoughtful person, not a script.',
+  'Let the reply feel warm and supportive without becoming dramatic or generic.',
+  'Stay close to the user\'s exact words and level of detail.',
+  'If you reflect feeling, keep it tentative and grounded in what the user actually said.',
+  'If you ask a question, ask only one and make it fit what they actually said.'
+] as const;
+
 const minimalFallback = (
   intent: string,
   responseSource: 'guardrail_fallback' | 'model_empty_fallback' = 'guardrail_fallback'
@@ -355,6 +413,61 @@ const minimalFallback = (
       responseSource === 'model_empty_fallback' ? 'model_empty_fallback' : 'guardrail_fallback',
     responseSource
   };
+};
+
+const keepFirstQuestionOnly = (text: string): string => {
+  const normalized = normalizeAssistantContent(text).trim();
+  if (!normalized) {
+    return normalized;
+  }
+  const firstQuestionIndex = normalized.indexOf('?');
+  if (firstQuestionIndex < 0) {
+    return normalized;
+  }
+  const prefix = normalized.slice(0, firstQuestionIndex + 1);
+  const suffix = normalized
+    .slice(firstQuestionIndex + 1)
+    .replace(/\?/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return suffix ? `${prefix} ${suffix}` : prefix;
+};
+
+const softenBlameHeavyReframing = (text: string): string =>
+  normalizeAssistantContent(text)
+    .replace(/\bgot you in trouble\b/gi, 'has been happening')
+    .replace(/\bin trouble\b/gi, 'going on')
+    .replace(/\byour fault\b/gi, 'what happened')
+    .replace(/\bmess you made\b/gi, 'situation')
+    .replace(/\bguilty\b/gi, 'responsible');
+
+const applyLocalSoftViolationFixes = (input: {
+  text: string;
+  softViolations: string[];
+}): { text: string; applied: boolean; reason?: string } => {
+  let nextText = input.text;
+  let applied = false;
+  let reason: string | undefined;
+
+  if (input.softViolations.includes('too_many_questions')) {
+    const trimmed = keepFirstQuestionOnly(nextText);
+    if (trimmed !== nextText) {
+      nextText = trimmed;
+      applied = true;
+      reason ??= 'too_many_questions';
+    }
+  }
+
+  if (input.softViolations.includes('unsupported_blame_reframing')) {
+    const softened = softenBlameHeavyReframing(nextText);
+    if (softened !== nextText) {
+      nextText = softened;
+      applied = true;
+      reason ??= 'unsupported_blame_reframing';
+    }
+  }
+
+  return { text: nextText, applied, reason };
 };
 
 export const buildSafeSpeakFallbackResponse = (input: {
@@ -605,7 +718,8 @@ export const generateSafeSpeakResponse = async (
       model,
       jurisdiction: 'AU',
       ragStatus,
-      selectedResponseSource: fallback.responseSource
+      selectedResponseSource: fallback.responseSource,
+      repairType: 'fallback'
     };
   }
 
@@ -662,11 +776,13 @@ export const generateSafeSpeakResponse = async (
         model,
         jurisdiction: 'AU',
         ragStatus,
-        selectedResponseSource: responseSource
+        selectedResponseSource: responseSource,
+        repairType: 'none'
       };
     }
 
     let guardrailStatus: GuardrailStatus = 'passed';
+    let repairType: RepairType = 'none';
     let fallbackReason: string | undefined;
     let validation = validateSafeSpeakResponse({
       text: assistantMessage,
@@ -674,6 +790,7 @@ export const generateSafeSpeakResponse = async (
       jurisdiction: 'AU',
       allowMultipleQuestions: input.intent === 'safety_crisis',
       latestUserMessage: input.latestUserMessage,
+      conversationSummary: input.context.conversationSummary,
       preferParagraphs,
       responsePlan: input.context.responsePlan
     });
@@ -686,12 +803,14 @@ export const generateSafeSpeakResponse = async (
         callOpenAI({ ...input, mode, model, ragContext, ragStatus }, retryPromptStyle)
       );
       guardrailStatus = 'regenerated';
+      repairType = 'model_regeneration';
       validation = validateSafeSpeakResponse({
         text: assistantMessage,
         intent: input.intent,
         jurisdiction: 'AU',
         allowMultipleQuestions: input.intent === 'safety_crisis',
         latestUserMessage: input.latestUserMessage,
+        conversationSummary: input.context.conversationSummary,
         preferParagraphs,
         responsePlan: input.context.responsePlan
       });
@@ -709,6 +828,28 @@ export const generateSafeSpeakResponse = async (
     }
 
     if (softViolations.length > 0) {
+      const localFix = applyLocalSoftViolationFixes({
+        text: assistantMessage,
+        softViolations
+      });
+      if (localFix.applied) {
+        assistantMessage = localFix.text;
+        guardrailStatus = 'regenerated';
+        repairType = 'local_fix';
+        fallbackReason = localFix.reason;
+        validation = validateSafeSpeakResponse({
+          text: assistantMessage,
+          intent: input.intent,
+          jurisdiction: 'AU',
+          allowMultipleQuestions: input.intent === 'safety_crisis',
+          latestUserMessage: input.latestUserMessage,
+          conversationSummary: input.context.conversationSummary,
+          preferParagraphs,
+          responsePlan: input.context.responsePlan
+        });
+        ({ hard: hardViolations, soft: softViolations } = splitGuardrailViolations(validation.violations));
+      }
+
       const requiresStrictRepair =
         softViolations.includes('missing_legal_boundary_disclaimer') ||
         softViolations.includes('evidence_legal_strategy') ||
@@ -721,6 +862,9 @@ export const generateSafeSpeakResponse = async (
         softViolations.includes('too_long_for_intent') ||
         softViolations.includes('too_many_paragraphs_for_intent') ||
         softViolations.includes('too_many_questions') ||
+        softViolations.includes('unsupported_low_detail_expansion') ||
+        softViolations.includes('unsupported_blame_reframing') ||
+        softViolations.includes('repetitive_conversation_opening') ||
         softViolations.includes('bullet_heavy_non_actionable');
 
       if (requiresStrictRepair || requiresCompactRetry || requiresProgressiveDisclosureRepair) {
@@ -734,6 +878,7 @@ export const generateSafeSpeakResponse = async (
         if (rewrittenMessage.trim()) {
           assistantMessage = rewrittenMessage;
           guardrailStatus = 'regenerated';
+          repairType = 'model_regeneration';
           fallbackReason = softViolations.includes('too_long_for_intent')
             ? 'too_long_for_intent'
             : softViolations[0];
@@ -743,6 +888,7 @@ export const generateSafeSpeakResponse = async (
             jurisdiction: 'AU',
             allowMultipleQuestions: input.intent === 'safety_crisis',
             latestUserMessage: input.latestUserMessage,
+            conversationSummary: input.context.conversationSummary,
             preferParagraphs,
             responsePlan: input.context.responsePlan
           });
@@ -764,6 +910,7 @@ export const generateSafeSpeakResponse = async (
       if (softViolations.includes('too_long_for_intent') || softViolations.includes('too_many_paragraphs_for_intent')) {
         assistantMessage = trimResponseToSentenceBoundaries(assistantMessage, input.intent);
         guardrailStatus = 'regenerated';
+        repairType = 'local_fix';
         fallbackReason = 'too_long_for_intent';
         validation = validateSafeSpeakResponse({
           text: assistantMessage,
@@ -771,6 +918,7 @@ export const generateSafeSpeakResponse = async (
           jurisdiction: 'AU',
           allowMultipleQuestions: input.intent === 'safety_crisis',
           latestUserMessage: input.latestUserMessage,
+          conversationSummary: input.context.conversationSummary,
           preferParagraphs,
           responsePlan: input.context.responsePlan
         });
@@ -794,7 +942,11 @@ export const generateSafeSpeakResponse = async (
     }
 
     const responseSource: OpenAiResponseSource =
-      guardrailStatus === 'regenerated' ? 'openai_model_regenerated' : responseSourceBase;
+      repairType === 'model_regeneration'
+        ? 'openai_model_regenerated'
+        : repairType === 'local_fix'
+          ? 'openai_model_local_fix'
+          : responseSourceBase;
 
     return {
       assistantMessage: normalizeAssistantContent(assistantMessage),
@@ -824,7 +976,8 @@ export const generateSafeSpeakResponse = async (
       model,
       jurisdiction: 'AU',
       ragStatus,
-      selectedResponseSource: responseSource
+      selectedResponseSource: responseSource,
+      repairType
     };
   } catch (error) {
     return buildSafeSpeakFallbackResponse({

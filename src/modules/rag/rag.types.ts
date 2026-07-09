@@ -130,7 +130,11 @@ export interface RagKnowledgeReadinessConfiguration {
 export interface RagKnowledgeReadinessSummary {
   readinessStatus: RagKnowledgeReadinessStatus;
   readyForPublicLegalRag: boolean;
+  fullLegalJurisdictionCoverage: boolean;
   retrievalConfigurationReady: boolean;
+  requiredLegalJurisdictions: RagJurisdiction[];
+  coveredLegalJurisdictions: RagJurisdiction[];
+  missingLegalJurisdictions: RagJurisdiction[];
   totalOfficialSources: number;
   eligibleCitationSources: number;
   eligibleLegalSources: number;
@@ -163,6 +167,9 @@ export interface RagKnowledgeReadinessBlocker {
     | 'not_approved'
     | 'legal_review_missing'
     | 'refresh_due_or_missing'
+    | 'source_authority_missing'
+    | 'source_date_missing'
+    | 'refresh_cadence_missing'
     | 'not_embedded'
     | 'no_chunks'
     | 'official_url_missing_or_unapproved'
@@ -171,11 +178,13 @@ export interface RagKnowledgeReadinessBlocker {
     | 'openai_api_key_missing'
     | 'vector_index_missing'
     | 'vector_search_unavailable'
-    | 'vector_index_check_failed';
+    | 'vector_index_check_failed'
+    | 'jurisdiction_coverage_incomplete';
   label: string;
   count: number;
   sourceIds: string[];
   sourceTitles: string[];
+  missingJurisdictions?: RagJurisdiction[];
 }
 
 export interface RagKnowledgeSourceReadiness {

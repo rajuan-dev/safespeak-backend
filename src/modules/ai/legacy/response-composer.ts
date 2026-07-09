@@ -457,7 +457,8 @@ export const composeEvidenceUploadResponse = (
     nextQuestion,
     readyForSubmission: false,
     confidence: 'medium',
-    disclaimer: 'This is information only, not legal advice.',
+    disclaimer:
+      'This is general information only, not legal advice. For personal legal help, contact a qualified lawyer, Legal Aid, or a relevant support service.',
     citations: [],
     showSources: false,
     sourceDisplayReason: 'hidden_support_reply',

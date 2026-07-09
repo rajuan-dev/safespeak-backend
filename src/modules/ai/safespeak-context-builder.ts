@@ -1,4 +1,5 @@
 import type { ConsentFlags } from '@modules/consent/consent.types';
+import type { ConversationTurnPolicyDecision } from '@modules/conversation-flow/conversation-policy-engine';
 
 import type {
   IntentConfidence,
@@ -82,6 +83,7 @@ export type SafeSpeakModelContext = {
   userSelectedTopic?: string;
   constraints: string[];
   responsePlan: SafeSpeakResponsePlan;
+  turnPolicyDecision?: ConversationTurnPolicyDecision;
 };
 
 export type SafeSpeakContextBuilderInput = {
@@ -98,6 +100,7 @@ export type SafeSpeakContextBuilderInput = {
   ragStatus?: SafeSpeakRagStatus;
   userSelectedTopic?: string;
   assistantFormatPreference?: 'paragraphs' | 'bullets' | 'mix';
+  turnPolicyDecision?: ConversationTurnPolicyDecision;
 };
 
 const summarize = (value?: string, fallback = 'None recorded.'): string => {
@@ -134,6 +137,7 @@ export const buildSafeSpeakContext = (
     conversationSummary: input.conversationSummary,
     activeIncidentSummary: input.activeIncidentSummary,
     assistantFormatPreference: input.assistantFormatPreference,
+    turnPolicyDecision: input.turnPolicyDecision,
     safetyContext: {
       immediateDanger: input.safetyContext.immediateDanger,
       threatsPresent: input.safetyContext.threatsPresent,
@@ -170,6 +174,7 @@ export const buildSafeSpeakContext = (
     ragContext,
     userSelectedTopic: input.userSelectedTopic,
     responsePlan,
+    turnPolicyDecision: input.turnPolicyDecision,
     constraints: [
       'Respond naturally to the latest user message.',
       'Use reasoning to infer what the user is actually asking and answer directly.',
@@ -178,9 +183,25 @@ export const buildSafeSpeakContext = (
       'Choose the format that best helps: paragraphs for conversation, bullets for options, steps, red flags, or organized guidance.',
       'Follow the response plan. Focus on the primary goal only and do not include deferred content unless the user asked for it.',
       'Choose the next best response, not every possible response. If multiple pathways may apply, mention only the most immediate or useful one and defer the rest.',
+      'Use a flexible incident coverage model in the background: what happened, who did it, where or when, safety, impact, evidence, and what help the user wants now.',
+      'Treat that model as relevance guidance only, not a fixed checklist or fixed question order. Ask only the next relevant missing piece in natural wording.',
+      'Do not keep asking clarifying questions just to identify the exact legal label, exact category, or exact law. When the message already gives enough context, give a cautious best-fit response and a next step.',
       'Do not claim any upload, sharing, saving, syncing, or agency contact already happened unless confirmed by backend action.',
       'Use Australian emergency guidance only: 000.',
-      'Ask at most one user-facing question.',
+      input.turnPolicyDecision?.questionAllowed === false
+        ? 'Do not ask the user a follow-up question in this turn.'
+        : `Ask at most ${input.turnPolicyDecision?.maxQuestions ?? 1} user-facing question${
+            (input.turnPolicyDecision?.maxQuestions ?? 1) === 1 ? '' : 's'
+          }.`,
+      input.turnPolicyDecision?.pathwayAllowed === false
+        ? 'Do not offer pathways, routing, or agency options in this turn unless the user explicitly asks.'
+        : 'Offer pathways only when they are the next best step for this turn.',
+      input.turnPolicyDecision?.timelineCollectionAllowed === true
+        ? 'Collect only minimal timeline or evidence detail if it directly helps the current user request.'
+        : 'Do not collect timeline or evidence detail unless the user explicitly asks for help organizing it.',
+      input.turnPolicyDecision?.groundedAnswerRequired === true
+        ? 'If a grounded answer is required and approved RAG does not support it, say that clearly and do not fill gaps from general knowledge.'
+        : 'Do not invent citations or unsupported legal facts.',
       'Keep legal content information-only and never invent citations.',
       ...intentPolicy.guidance
     ]

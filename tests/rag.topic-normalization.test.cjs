@@ -129,9 +129,11 @@ test('normalization keeps adminCategory display labels stable', () => {
     normalizeKnowledgeSourceMetadata({ adminCategory: 'scam_pattern' }),
     {
       adminCategory: 'Scam Pattern',
+      authority: undefined,
       stateOrTerritory: undefined,
       legalDomain: undefined,
-      pathwayCategory: undefined
+      pathwayCategory: undefined,
+      refreshCadence: undefined
     }
   );
   assert.equal(
