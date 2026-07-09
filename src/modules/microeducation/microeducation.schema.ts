@@ -4,6 +4,7 @@ import {
   MICRO_EDUCATION_CHIPS,
   MICRO_EDUCATION_DURATIONS,
   MICRO_EDUCATION_FORMATS,
+  MICRO_EDUCATION_INCIDENT_CATEGORIES,
   MICRO_EDUCATION_STATUSES,
   MICRO_EDUCATION_TONES
 } from './microeducation.constants';
@@ -13,7 +14,7 @@ const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId')
 const toChipList = (items: unknown[]): string[] =>
   items.filter((item): item is string => typeof item === 'string');
 
-const chipsSchema = z.preprocess((value) => {
+const toStringList = (value: unknown): unknown => {
   if (Array.isArray(value)) {
     return toChipList(value);
   }
@@ -39,7 +40,22 @@ const chipsSchema = z.preprocess((value) => {
   }
 
   return trimmedValue.split('|').map((item) => item.trim()).filter(Boolean);
-}, z.array(z.enum(MICRO_EDUCATION_CHIPS)).min(1).max(4).default(['safety']));
+};
+
+const chipsSchema = z.preprocess(
+  toStringList,
+  z.array(z.enum(MICRO_EDUCATION_CHIPS)).min(1).max(4).default(['safety'])
+);
+
+const incidentCategoriesSchema = z.preprocess(
+  toStringList,
+  z.array(z.enum(MICRO_EDUCATION_INCIDENT_CATEGORIES)).max(5).default([])
+);
+
+const matchKeywordsSchema = z.preprocess(
+  toStringList,
+  z.array(z.string().trim().min(1).max(60)).max(12).default([])
+);
 
 export const microEducationParamsSchema = z.object({
   id: objectIdSchema
@@ -63,6 +79,8 @@ export const createMicroEducationSchema = z.object({
   imageAlt: z.string().trim().max(180).optional(),
   tone: z.enum(MICRO_EDUCATION_TONES).default('blue'),
   chips: chipsSchema,
+  incidentCategories: incidentCategoriesSchema,
+  matchKeywords: matchKeywordsSchema,
   duration: z.enum(MICRO_EDUCATION_DURATIONS).default('quick'),
   format: z.enum(MICRO_EDUCATION_FORMATS).default('guide'),
   status: z.enum(MICRO_EDUCATION_STATUSES).default('draft'),

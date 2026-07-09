@@ -11,6 +11,7 @@ const {
   buildIntakePlanner,
   buildStructuredReportPreparation,
   buildSuggestedMicroCardTitles,
+  rankSuggestedMicroEducationCards,
   buildSupportResourceSuggestions,
   buildRelatedIssueTypes,
   buildSafetySteps,
@@ -4303,6 +4304,78 @@ test('elder medicare scam adds elder and identity supports', () => {
   assert.ok(
     supportSuggestions.some((item) => /ReportCyber/i.test(item.title))
   );
+});
+
+test('microeducation ranking prioritises admin incident categories and keywords', () => {
+  const ranked = rankSuggestedMicroEducationCards(
+    {
+      likelyCategory: 'racism_discrimination',
+      safetyRiskLevel: 'medium',
+      structuredFacts: {
+        racismDiscrimination: true,
+        threatsPresent: true,
+        matchedFacts: ['racial abuse on public transport']
+      }
+    },
+    [
+      {
+        _id: { toString: () => 'general' },
+        title: 'General Wellbeing Guide',
+        summary: 'Small grounding steps after a stressful day.',
+        chips: ['mentalHealth'],
+        incidentCategories: ['general_support'],
+        matchKeywords: ['calm', 'breathing'],
+        sortOrder: 2
+      },
+      {
+        _id: { toString: () => 'racism-card' },
+        title: 'Know Your Options After Racial Abuse',
+        summary: 'Evidence and support steps after racism, hate speech, or discrimination.',
+        chips: ['rights', 'harassment'],
+        incidentCategories: ['racism_discrimination'],
+        matchKeywords: ['racism', 'hate speech', 'discrimination'],
+        sortOrder: 1
+      }
+    ]
+  );
+
+  assert.equal(ranked[0]?.id, 'racism-card');
+  assert.equal(ranked.length, 1);
+});
+
+test('microeducation ranking can infer relevance from uploaded card content without admin metadata', () => {
+  const ranked = rankSuggestedMicroEducationCards(
+    {
+      likelyCategory: 'online_abuse',
+      safetyRiskLevel: 'high',
+      structuredFacts: {
+        imageBasedAbuse: true,
+        privatePhotosOrMessages: true,
+        onlineThreatBlackmail: true,
+        platforms: ['instagram'],
+        matchedFacts: ['private photos threatened online']
+      }
+    },
+    [
+      {
+        _id: { toString: () => 'online-card' },
+        title: 'Safer Steps for Private Photos Shared Online',
+        summary: 'What to save before reporting image-based abuse to a platform or eSafety.',
+        chips: ['safety', 'harassment'],
+        sortOrder: 2
+      },
+      {
+        _id: { toString: () => 'work-card' },
+        title: 'Handling a Difficult Meeting at Work',
+        summary: 'Communication tips for workplace conflict.',
+        chips: ['rights'],
+        sortOrder: 1
+      }
+    ]
+  );
+
+  assert.equal(ranked[0]?.id, 'online-card');
+  assert.ok(ranked.every((item) => item.id !== 'work-card' || item.score < ranked[0].score));
 });
 
 test('ambiguous low-detail report stays in broad review mode', () => {

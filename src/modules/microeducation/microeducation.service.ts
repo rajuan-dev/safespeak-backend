@@ -45,6 +45,8 @@ const serializeMicroEducation = (item: MicroEducationDocument | Record<string, u
     imageAlt: raw.imageAlt,
     tone: raw.tone,
     chips: raw.chips,
+    incidentCategories: raw.incidentCategories ?? [],
+    matchKeywords: raw.matchKeywords ?? [],
     duration: raw.duration,
     format: raw.format,
     status: raw.status,

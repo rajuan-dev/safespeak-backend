@@ -16,6 +16,18 @@ export const MICRO_EDUCATION_CHIPS = [
   'mentalHealth'
 ] as const;
 
+export const MICRO_EDUCATION_INCIDENT_CATEGORIES = [
+  'domestic_violence',
+  'workplace_bullying',
+  'racism_discrimination',
+  'online_abuse',
+  'scam_fraud',
+  'theft_property',
+  'harassment',
+  'mental_health_distress',
+  'general_support'
+] as const;
+
 export const MICRO_EDUCATION_DURATIONS = ['quick', 'deep'] as const;
 
 export const MICRO_EDUCATION_FORMATS = ['video', 'interactive', 'guide'] as const;

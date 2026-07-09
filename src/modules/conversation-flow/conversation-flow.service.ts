@@ -27,6 +27,10 @@ import {
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
 import { MicroEducationModel } from '@modules/microeducation/microeducation.model';
+import type {
+  MicroEducationChip,
+  MicroEducationIncidentCategory
+} from '@modules/microeducation/microeducation.types';
 import { RagKnowledgeSourceModel } from '@modules/rag/rag.model';
 import {
   buildAssistantSourceDisplayMeta,
@@ -4419,6 +4423,322 @@ export const buildSuggestedMicroCardTitles = (triage: {
   return titles.slice(0, 7);
 };
 
+type SuggestedMicroEducationCandidate = {
+  _id?: { toString: () => string };
+  title?: string;
+  tag?: string;
+  summary?: string;
+  detailHeading?: string;
+  detailSummary?: string;
+  detailBody?: string;
+  detailTakeaway?: string;
+  chips?: MicroEducationChip[];
+  incidentCategories?: MicroEducationIncidentCategory[];
+  matchKeywords?: string[];
+  sortOrder?: number;
+  createdAt?: Date;
+};
+
+type SuggestedMicroCardRanking = {
+  id: string;
+  score: number;
+};
+
+const normalizeMicroEducationText = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const hasMicroEducationPhrase = (haystack: string, phrase: string): boolean =>
+  haystack.includes(normalizeMicroEducationText(phrase));
+
+const mapCategoryToMicroEducationChip = (
+  category: ConversationFlowCategory
+): MicroEducationChip | undefined => {
+  switch (category) {
+    case 'domestic_violence':
+    case 'online_abuse':
+    case 'scam_fraud':
+    case 'theft_property':
+      return 'safety';
+    case 'workplace_bullying':
+    case 'racism_discrimination':
+    case 'harassment':
+      return 'harassment';
+    case 'mental_health_distress':
+      return 'mentalHealth';
+    default:
+      return undefined;
+  }
+};
+
+const buildMicroEducationMatchSignals = (triage: {
+  likelyCategory: ConversationFlowCategory;
+  safetyRiskLevel: ConversationFlowRiskLevel;
+  structuredFacts?: unknown;
+}) => {
+  const facts = toStructuredFactsRecord(triage.structuredFacts);
+  const relatedCategories = new Set<MicroEducationIncidentCategory>([triage.likelyCategory]);
+  const preferredChips = new Set<MicroEducationChip>();
+  const keywordPhrases = new Set<string>();
+  const titleBoosts = buildSuggestedMicroCardTitles(triage);
+
+  const primaryChip = mapCategoryToMicroEducationChip(triage.likelyCategory);
+
+  if (primaryChip) {
+    preferredChips.add(primaryChip);
+  }
+
+  preferredChips.add('safety');
+
+  const addKeywordGroup = (...phrases: string[]) => {
+    phrases.forEach((phrase) => keywordPhrases.add(phrase));
+  };
+
+  switch (triage.likelyCategory) {
+    case 'domestic_violence':
+      addKeywordGroup('domestic violence', 'family violence', 'coercive control', 'safe exit');
+      preferredChips.add('mentalHealth');
+      break;
+    case 'workplace_bullying':
+      addKeywordGroup('workplace bullying', 'manager', 'coworker', 'hr', 'workplace');
+      preferredChips.add('rights');
+      break;
+    case 'racism_discrimination':
+      addKeywordGroup('racism', 'racial abuse', 'hate speech', 'vilification', 'discrimination');
+      preferredChips.add('rights');
+      break;
+    case 'online_abuse':
+      addKeywordGroup('online abuse', 'platform report', 'esafety', 'private photos', 'blackmail');
+      preferredChips.add('harassment');
+      break;
+    case 'scam_fraud':
+      addKeywordGroup('scam', 'fraud', 'identity theft', 'bank details', 'phishing');
+      preferredChips.add('rights');
+      break;
+    case 'theft_property':
+      addKeywordGroup('theft', 'stolen', 'property', 'evidence');
+      break;
+    case 'harassment':
+      addKeywordGroup('harassment', 'threats', 'stalking', 'intimidation');
+      break;
+    case 'mental_health_distress':
+      addKeywordGroup('mental health', 'panic', 'anxiety', 'overwhelmed', 'emotional support');
+      break;
+    default:
+      addKeywordGroup('support', 'next steps', 'safety planning');
+      break;
+  }
+
+  if (facts.domesticViolence || facts.domesticFamilyContext || facts.coerciveControl) {
+    relatedCategories.add('domestic_violence');
+    addKeywordGroup('domestic violence', 'family violence', 'coercive control', 'safety planning');
+  }
+
+  if (facts.workplaceBullying || facts.workplaceContext || facts.workplaceDiscrimination) {
+    relatedCategories.add('workplace_bullying');
+    preferredChips.add('rights');
+    addKeywordGroup(
+      'workplace bullying',
+      'workplace discrimination',
+      'fair treatment',
+      'work record'
+    );
+  }
+
+  if (facts.racismDiscrimination || facts.protectedAttribute) {
+    relatedCategories.add('racism_discrimination');
+    preferredChips.add('rights');
+    addKeywordGroup('racism', 'racial abuse', 'hate speech', 'protected attribute');
+  }
+
+  if (
+    facts.imageBasedAbuse ||
+    facts.privatePhotosOrMessages ||
+    facts.onlineThreatBlackmail ||
+    facts.platforms.length > 0
+  ) {
+    relatedCategories.add('online_abuse');
+    preferredChips.add('harassment');
+    addKeywordGroup(
+      'image based abuse',
+      'private photos',
+      'online threats',
+      'platform report',
+      'esafety'
+    );
+  }
+
+  if (
+    facts.scamFraud ||
+    facts.identityTheftRisk ||
+    facts.identityDocumentsExposed ||
+    facts.bankDetailsExposed ||
+    facts.moneyLost
+  ) {
+    relatedCategories.add('scam_fraud');
+    addKeywordGroup('scam', 'identity', 'bank', 'fraud', 'account security');
+  }
+
+  if (facts.privacyDataBreach || facts.personalDataLeak || facts.employerHealthPrivacy) {
+    addKeywordGroup('privacy', 'data breach', 'personal data', 'health information', 'complaint');
+    preferredChips.add('rights');
+  }
+
+  if (facts.migrationOrVisaThreat) {
+    addKeywordGroup('visa', 'migration', 'migration pressure', 'sponsorship', 'immigration');
+    preferredChips.add('rights');
+  }
+
+  if (facts.evidenceAvailable) {
+    addKeywordGroup('evidence', 'screenshots', 'timeline', 'record what happened');
+  }
+
+  if (facts.schoolContext) {
+    addKeywordGroup('school', 'classmate', 'school racism', 'school bullying');
+  }
+
+  if (facts.languageOrInterpreterNeed) {
+    addKeywordGroup('interpreter', 'language support', 'translation');
+    preferredChips.add('mentalHealth');
+  }
+
+  if (facts.elderOrVulnerablePerson) {
+    addKeywordGroup('elder scam', 'older person', 'vulnerable person');
+  }
+
+  if (facts.selfHarmOrSuicidal) {
+    relatedCategories.add('mental_health_distress');
+    preferredChips.add('mentalHealth');
+    addKeywordGroup('mental health', 'distress', 'emotional support', 'crisis support');
+  }
+
+  return {
+    relatedCategories,
+    preferredChips,
+    keywordPhrases,
+    titleBoosts
+  };
+};
+
+export const rankSuggestedMicroEducationCards = (
+  triage: {
+    likelyCategory: ConversationFlowCategory;
+    safetyRiskLevel: ConversationFlowRiskLevel;
+    structuredFacts?: unknown;
+  },
+  cards: SuggestedMicroEducationCandidate[]
+): SuggestedMicroCardRanking[] => {
+  const signals = buildMicroEducationMatchSignals(triage);
+
+  return cards
+    .map((card, index) => {
+      const id = card._id?.toString();
+
+      if (!id) {
+        return null;
+      }
+
+      const searchableText = normalizeMicroEducationText(
+        [
+          card.title,
+          card.tag,
+          card.summary,
+          card.detailHeading,
+          card.detailSummary,
+          card.detailBody,
+          card.detailTakeaway,
+          ...(card.matchKeywords ?? [])
+        ]
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          .join(' ')
+      );
+
+      const incidentCategories = new Set(card.incidentCategories ?? []);
+      const chips = new Set(card.chips ?? []);
+      const matchKeywords = (card.matchKeywords ?? []).map(normalizeMicroEducationText);
+      let score = 0;
+
+      if (incidentCategories.has(triage.likelyCategory)) {
+        score += 120;
+      }
+
+      signals.relatedCategories.forEach((category) => {
+        if (category !== triage.likelyCategory && incidentCategories.has(category)) {
+          score += 40;
+        }
+      });
+
+      signals.preferredChips.forEach((chip) => {
+        if (chips.has(chip)) {
+          score += chip === 'safety' ? 8 : 10;
+        }
+      });
+
+      signals.keywordPhrases.forEach((phrase) => {
+        if (hasMicroEducationPhrase(searchableText, phrase)) {
+          score += 14;
+        }
+      });
+
+      matchKeywords.forEach((keyword) => {
+        if (keyword && signals.keywordPhrases.has(keyword)) {
+          score += 10;
+        }
+      });
+
+      signals.titleBoosts.forEach((title) => {
+        if (normalizeMicroEducationText(card.title ?? '') === normalizeMicroEducationText(title)) {
+          score += 70;
+        }
+      });
+
+      if (
+        triage.safetyRiskLevel !== 'low' &&
+        (chips.has('safety') || hasMicroEducationPhrase(searchableText, 'safety'))
+      ) {
+        score += 6;
+      }
+
+      return {
+        id,
+        score,
+        sortOrder: typeof card.sortOrder === 'number' ? card.sortOrder : Number.MAX_SAFE_INTEGER,
+        createdAt: card.createdAt?.getTime() ?? 0,
+        index
+      };
+    })
+    .filter(
+      (
+        item
+      ): item is {
+        id: string;
+        score: number;
+        sortOrder: number;
+        createdAt: number;
+        index: number;
+      } => item !== null && item.score > 0
+    )
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      if (left.sortOrder !== right.sortOrder) {
+        return left.sortOrder - right.sortOrder;
+      }
+
+      if (right.createdAt !== left.createdAt) {
+        return right.createdAt - left.createdAt;
+      }
+
+      return left.index - right.index;
+    })
+    .map(({ id, score }) => ({ id, score }));
+};
+
 const getSuggestedMicroCardIds = async (triage: {
   likelyCategory: ConversationFlowCategory;
   safetyRiskLevel: ConversationFlowRiskLevel;
@@ -4430,21 +4750,28 @@ const getSuggestedMicroCardIds = async (triage: {
 }) => {
   const suggestedTitles = buildSuggestedMicroCardTitles(triage);
 
-  if (suggestedTitles.length === 0) {
-    return [];
-  }
-
   const cards = await MicroEducationModel.find({
     status: 'published',
     deletedAt: { $exists: false }
   })
     .select(
-      'title tag summary detailHeading detailSummary detailBody detailTakeaway chips sortOrder'
+      'title tag summary detailHeading detailSummary detailBody detailTakeaway chips incidentCategories matchKeywords sortOrder createdAt'
     )
     .sort({ sortOrder: 1, createdAt: -1 })
     .lean();
+
+  const rankedCards = rankSuggestedMicroEducationCards(triage, cards);
+
+  if (rankedCards.length > 0) {
+    return rankedCards.slice(0, 6).map((card) => card.id);
+  }
+
+  if (suggestedTitles.length === 0) {
+    return [];
+  }
+
   const cardsByTitle = new Map(
-    cards.map((card) => [card.title.trim().toLowerCase(), card._id.toString()] as const)
+    cards.map((card) => [card.title?.trim().toLowerCase(), card._id.toString()] as const)
   );
 
   return suggestedTitles

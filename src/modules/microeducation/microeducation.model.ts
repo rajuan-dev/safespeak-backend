@@ -4,6 +4,7 @@ import {
   MICRO_EDUCATION_CHIPS,
   MICRO_EDUCATION_DURATIONS,
   MICRO_EDUCATION_FORMATS,
+  MICRO_EDUCATION_INCIDENT_CATEGORIES,
   MICRO_EDUCATION_STATUSES,
   MICRO_EDUCATION_TONES
 } from './microeducation.constants';
@@ -11,6 +12,7 @@ import type {
   MicroEducationChip,
   MicroEducationDuration,
   MicroEducationFormat,
+  MicroEducationIncidentCategory,
   MicroEducationStatus,
   MicroEducationTone
 } from './microeducation.types';
@@ -29,6 +31,8 @@ export interface MicroEducationDocument {
   imageAlt?: string;
   tone: MicroEducationTone;
   chips: MicroEducationChip[];
+  incidentCategories: MicroEducationIncidentCategory[];
+  matchKeywords: string[];
   duration: MicroEducationDuration;
   format: MicroEducationFormat;
   status: MicroEducationStatus;
@@ -59,6 +63,17 @@ const microEducationSchema = new Schema<MicroEducationDocument>(
     imageAlt: { type: String, required: false, trim: true },
     tone: { type: String, enum: MICRO_EDUCATION_TONES, required: true, default: 'blue' },
     chips: { type: [String], enum: MICRO_EDUCATION_CHIPS, required: true, default: ['safety'] },
+    incidentCategories: {
+      type: [String],
+      enum: MICRO_EDUCATION_INCIDENT_CATEGORIES,
+      required: true,
+      default: []
+    },
+    matchKeywords: {
+      type: [String],
+      required: true,
+      default: []
+    },
     duration: {
       type: String,
       enum: MICRO_EDUCATION_DURATIONS,
