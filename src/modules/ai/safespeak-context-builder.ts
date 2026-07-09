@@ -18,6 +18,7 @@ import {
 export type SafeSpeakRagSnippet = {
   sourceId: string;
   sourceTitle: string;
+  legislationName?: string;
   publisher?: string;
   sourceAuthority?: string;
   sourceCategory?: string;

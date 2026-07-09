@@ -995,13 +995,61 @@ export const buildConversationAssistantResponseMeta = (input: {
       turnPolicyDecision?.disclaimerRequired ?? true
         ? buildInformationOnlyDisclaimer()
         : '',
-    citations,
+    citations: citations.map((citation) => {
+      const safeCitation =
+        citation && typeof citation === 'object'
+          ? (citation as Record<string, unknown>)
+          : {};
+
+      return {
+        sourceId: typeof safeCitation.sourceId === 'string' ? safeCitation.sourceId : undefined,
+        title: typeof safeCitation.title === 'string' ? safeCitation.title : 'Source',
+        legislationName:
+          typeof safeCitation.legislationName === 'string'
+            ? safeCitation.legislationName
+            : undefined,
+        publisher:
+          typeof safeCitation.publisher === 'string' ? safeCitation.publisher : undefined,
+        url: typeof safeCitation.url === 'string' ? safeCitation.url : undefined,
+        jurisdiction:
+          typeof safeCitation.jurisdiction === 'string' ? safeCitation.jurisdiction : 'AU',
+        sourceCategory:
+          typeof safeCitation.sourceCategory === 'string'
+            ? safeCitation.sourceCategory
+            : undefined,
+        sourceType:
+          typeof safeCitation.sourceType === 'string' ? safeCitation.sourceType : 'WebPage',
+        topic: typeof safeCitation.topic === 'string' ? safeCitation.topic : undefined,
+        sectionRef:
+          typeof safeCitation.sectionRef === 'string' ? safeCitation.sectionRef : undefined,
+        sectionTitle:
+          typeof safeCitation.sectionTitle === 'string' ? safeCitation.sectionTitle : undefined,
+        page: typeof safeCitation.page === 'number' ? safeCitation.page : undefined,
+        pageStart: typeof safeCitation.pageStart === 'number' ? safeCitation.pageStart : undefined,
+        pageEnd: typeof safeCitation.pageEnd === 'number' ? safeCitation.pageEnd : undefined,
+        versionDate:
+          typeof safeCitation.versionDate === 'string' ? safeCitation.versionDate : undefined,
+        commencementDate:
+          typeof safeCitation.commencementDate === 'string'
+            ? safeCitation.commencementDate
+            : undefined,
+        amendmentStatus:
+          safeCitation.amendmentStatus === 'in_force' ||
+          safeCitation.amendmentStatus === 'amended' ||
+          safeCitation.amendmentStatus === 'repealed'
+            ? safeCitation.amendmentStatus
+            : undefined,
+        lastUpdated:
+          typeof safeCitation.lastUpdated === 'string' ? safeCitation.lastUpdated : undefined
+      };
+    }),
     rag:
       input.assistantPayload.rag ?? {
         used: false,
         unavailable: true,
         resultCount: 0
       },
+    groundedLegalSource: input.assistantPayload.groundedLegalSource,
     reviewStatus: input.assistantPayload.reviewStatus ?? 'fallback_local',
     intent: typeof input.assistantPayload.intent === 'string' ? input.assistantPayload.intent : undefined,
     triageReady,
@@ -1195,6 +1243,7 @@ export const buildMinimalConversationAppendResponse = (input: {
       sourceDisplayReason: input.responseMeta.sourceDisplayReason,
       humanReviewRecommended: input.responseMeta.humanReviewRecommended,
       humanReviewReasons: input.responseMeta.humanReviewReasons,
+      groundedLegalSource: input.responseMeta.groundedLegalSource,
       turnPolicyDecision: input.responseMeta.turnPolicyDecision
     }
   };
@@ -1757,11 +1806,12 @@ const toRagSnippets = (results: Array<{
         ? result.metadata.commencementDate
         : undefined;
 
-    return {
-      sourceId: result.sourceId,
-      sourceTitle: result.title,
-      publisher: result.sourceAuthority,
-      sourceAuthority: result.sourceAuthority,
+  return {
+    sourceId: result.sourceId,
+    sourceTitle: result.title,
+    legislationName: result.legislationName,
+    publisher: result.sourceAuthority,
+    sourceAuthority: result.sourceAuthority,
       sourceCategory: result.sourceCategory,
       jurisdiction: result.jurisdiction,
       stateOrTerritory: result.stateOrTerritory,
@@ -5233,27 +5283,27 @@ export const appendConversationFlowMessage = async (
     metadata: {}
   });
 
-  const formatPreference = resolveAssistantFormatPreferenceUpdate(
-    input.content,
-    session.assistantFormatPreference
-  );
-  session.assistantFormatPreference = formatPreference.assistantFormatPreference;
+    const formatPreference = resolveAssistantFormatPreferenceUpdate(
+      input.content,
+      session.assistantFormatPreference
+    );
+    session.assistantFormatPreference = formatPreference.assistantFormatPreference;
 
-  const conversationForAssistant = [
-    ...existingMessages.map((message) => ({
-      role: toAssistantConversationRole(message.role),
-      content: message.content
-    })),
-    {
-      role: 'user' as const,
-      content: input.content
-    }
-  ];
-  const existingFacts = await ConversationFlowFactsModel.findOne({
-    conversationSessionId: session._id
-  }).lean();
-  const existingTimeline = (existingFacts?.timeline ?? {}) as Record<string, string>;
-  if (hasBrokenTextEncoding(input.content)) {
+    const conversationForAssistant = [
+      ...existingMessages.map((message) => ({
+        role: toAssistantConversationRole(message.role),
+        content: message.content
+      })),
+      {
+        role: 'user' as const,
+        content: input.content
+      }
+    ];
+    const existingFacts = await ConversationFlowFactsModel.findOne({
+      conversationSessionId: session._id
+    }).lean();
+    const existingTimeline = (existingFacts?.timeline ?? {}) as Record<string, string>;
+    if (hasBrokenTextEncoding(input.content)) {
     const assistantPayload = {
       assistantMessage: 'The message looks like it was received with broken text encoding. Please resend it.',
       nextQuestion: '',
@@ -5356,62 +5406,62 @@ export const appendConversationFlowMessage = async (
       ? buildMinimalConversationAppendResponse(fullResponse)
       : fullResponse;
   }
-  const activeIncidentExists = hasActiveIncidentContext({
-    facts: existingFacts,
-    timeline: existingTimeline,
-    sessionRiskLevel: session.safetyRiskLevel
-  });
-  const latestTurnFacts = extractSupportFacts({
-    message: input.content,
-    jurisdiction: session.jurisdiction ?? undefined
-  });
-  const assistantLanguage = detectAssistantLanguage(input.content, input.language);
-  session.detectedLanguage = assistantLanguage;
-  const latestTurnSafetyOverride = evaluateSafetyOverride(latestTurnFacts);
-  const detectedCategory = detectCategory({
-    text: `${input.content}\n${JSON.stringify(existingTimeline)}`,
-    selectedTopic: session.selectedTopic
-  }).category;
-  const intentClassification = classifySafeSpeakIntentDetails(input.content);
-  const detectedIntent = intentClassification.intent;
-  const responseMode = classifyResponseMode({
-    message: input.content,
-    sessionFacts: latestTurnFacts.originalFacts,
-    selectedTopic: session.selectedTopic
-  });
-  const selectedIntent = resolveConversationIntent({
-    detectedIntent,
-    responseMode,
-    sessionFacts: latestTurnFacts.originalFacts
-  });
-  const turnHandlingPlan = buildTurnHandlingPlan({
-    selectedIntent,
-    responseMode,
-    existingFacts,
-    existingTimeline,
-    sessionRiskLevel: session.safetyRiskLevel,
-    latestTurnRiskLevel: latestTurnSafetyOverride.safetyLevel,
-    sessionId: session._id.toString(),
-    session,
-    latestUserMessage: input.content
-  });
-  const triageHandoffIntent = responseMode === 'triage_handoff';
+    const activeIncidentExists = hasActiveIncidentContext({
+      facts: existingFacts,
+      timeline: existingTimeline,
+      sessionRiskLevel: session.safetyRiskLevel
+    });
+    const latestTurnFacts = extractSupportFacts({
+      message: input.content,
+      jurisdiction: session.jurisdiction ?? undefined
+    });
+    const assistantLanguage = detectAssistantLanguage(input.content, input.language);
+    session.detectedLanguage = assistantLanguage;
+    const latestTurnSafetyOverride = evaluateSafetyOverride(latestTurnFacts);
+    const detectedCategory = detectCategory({
+      text: `${input.content}\n${JSON.stringify(existingTimeline)}`,
+      selectedTopic: session.selectedTopic
+    }).category;
+    const intentClassification = classifySafeSpeakIntentDetails(input.content);
+    const detectedIntent = intentClassification.intent;
+    const responseMode = classifyResponseMode({
+      message: input.content,
+      sessionFacts: latestTurnFacts.originalFacts,
+      selectedTopic: session.selectedTopic
+    });
+    const selectedIntent = resolveConversationIntent({
+      detectedIntent,
+      responseMode,
+      sessionFacts: latestTurnFacts.originalFacts
+    });
+    const turnHandlingPlan = buildTurnHandlingPlan({
+      selectedIntent,
+      responseMode,
+      existingFacts,
+      existingTimeline,
+      sessionRiskLevel: session.safetyRiskLevel,
+      latestTurnRiskLevel: latestTurnSafetyOverride.safetyLevel,
+      sessionId: session._id.toString(),
+      session,
+      latestUserMessage: input.content
+    });
+    const triageHandoffIntent = responseMode === 'triage_handoff';
 
-  let assistantPayload: ConversationAssistantPayload;
-  let turnPolicyDecision = buildConversationTurnPolicy({
-    intent: selectedIntent,
-    message: input.content,
-    responseMode
-  });
-  let currentConsentSnapshot = {
-    store_local: false,
-    cloud_sync: false,
-    share_with_agencies: false,
-    retain_evidence: false,
-    process_with_ai: false,
-    translate_content: false,
-    warm_referral: false
-  };
+    let assistantPayload: ConversationAssistantPayload;
+    let turnPolicyDecision = buildConversationTurnPolicy({
+      intent: selectedIntent,
+      message: input.content,
+      responseMode
+    });
+    let currentConsentSnapshot = {
+      store_local: false,
+      cloud_sync: false,
+      share_with_agencies: false,
+      retain_evidence: false,
+      process_with_ai: false,
+      translate_content: false,
+      warm_referral: false
+    };
 
   if (triageHandoffIntent) {
     assistantPayload = {

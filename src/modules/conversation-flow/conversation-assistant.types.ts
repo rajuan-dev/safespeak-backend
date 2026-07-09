@@ -108,6 +108,7 @@ export type ConversationAssistantResponseMeta = {
   disclaimer: string;
   citations: GenerateSafeSpeakResponseOutput['citations'];
   rag: GenerateSafeSpeakResponseOutput['rag'];
+  groundedLegalSource?: GroundedLegalSource;
   reviewStatus: string;
   intent?: string;
   triageReady: boolean;

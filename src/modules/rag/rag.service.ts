@@ -6293,9 +6293,8 @@ export const buildGroundedSectionAnswer = (
       : sectionSubject;
 
   return [
-    `Yes — under ${sourceTitle}, ${sectionSubject} is dealt with in ${sectionRef}.`,
-    `In simple terms, this section is about ${simpleTopic}.`,
-    `I'm not making a legal decision for you, but this may be relevant if that issue affects your situation.`
+    `Compared with what you asked, ${sourceTitle} addresses ${sectionSubject} in ${sectionRef}.`,
+    `In practical terms, if your situation is about ${simpleTopic}, this is the part of the law that applies to it.`
   ].join('\n\n');
 };
 
@@ -6333,8 +6332,8 @@ export const buildGroundedDefinitionAnswer = (
   const sourceTitle = /^the\s+/i.test(topResult.title) ? topResult.title : `the ${topResult.title}`;
 
   return [
-    `Under ${sourceTitle}, ${sectionRef} says ${focusedQuery.toLowerCase()} means ${normalizedDefinitionText}`,
-    `In simple terms, this is the definition the source gives for that term.`
+    `Compared with your question, ${sourceTitle} uses ${sectionRef} to define ${focusedQuery.toLowerCase()}.`,
+    `In practical terms, that means ${normalizedDefinitionText}`
   ].join('\n\n');
 };
 
