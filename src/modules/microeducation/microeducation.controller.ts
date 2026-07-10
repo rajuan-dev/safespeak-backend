@@ -27,9 +27,21 @@ const getContext = (req: Request) => ({
 
 export const publicMicroEducationController = asyncHandler(
   async (req: Request, res: Response) => {
-    const items = await listPublicMicroEducation(getContext(req));
+    const items = await listPublicMicroEducation(getContext(req), req.query);
 
     res.status(StatusCodes.OK).json(successResponse('Micro-education items retrieved', { items }));
+  }
+);
+
+export const publicMicroEducationByCategoryController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const items = await listPublicMicroEducation(getContext(req), {
+      categoryId: req.params.id
+    });
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Micro-education category items retrieved', { items }));
   }
 );
 

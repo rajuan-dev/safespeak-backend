@@ -8,10 +8,12 @@ import {
   MICRO_EDUCATION_ACTIONS,
   MICRO_EDUCATION_ALLOWED_IMAGE_MIME_TYPES
 } from './microeducation.constants';
+import { MicroEducationCategoryModel } from './microeducation-category.model';
 import { MicroEducationModel, type MicroEducationDocument } from './microeducation.model';
 import type {
   CreateMicroEducationInput,
   MicroEducationAdminQueryInput,
+  MicroEducationPublicQueryInput,
   UpdateMicroEducationInput
 } from './microeducation.schema';
 import {
@@ -31,7 +33,21 @@ const serializeMicroEducation = async (
   item: MicroEducationDocument | Record<string, unknown>,
   options: { directS3ImageUrl?: boolean; versionProxyImagePath?: boolean } = {}
 ) => {
-  const raw = item as MicroEducationDocument & { _id: { toString: () => string } };
+  const raw = item as MicroEducationDocument & {
+    _id: { toString: () => string };
+    categoryId?: { toString: () => string } | Record<string, unknown>;
+    category?: Record<string, unknown>;
+  };
+  const populatedCategory =
+    raw.categoryId &&
+    typeof raw.categoryId === 'object' &&
+    'name' in raw.categoryId
+      ? (raw.categoryId as Record<string, unknown> & { _id?: { toString: () => string } })
+      : raw.category;
+  const categoryId =
+    raw.categoryId && typeof raw.categoryId === 'object' && 'name' in raw.categoryId
+      ? (raw.categoryId as { _id?: { toString: () => string } })._id?.toString()
+      : raw.categoryId?.toString();
   const proxyImagePath = getProxyMicroEducationImagePath(raw, options.versionProxyImagePath);
   const imagePath =
     raw.imageStorageKey && options.directS3ImageUrl
@@ -54,6 +70,22 @@ const serializeMicroEducation = async (
       'Review the guidance and choose the next safe step that fits your situation.',
     detailTakeaway: raw.detailTakeaway ?? 'Keep notes simple, factual, and stored somewhere safe.',
     imageAlt: raw.imageAlt,
+    categoryId,
+    category: populatedCategory
+      ? {
+          id:
+            (populatedCategory._id as { toString?: () => string } | undefined)?.toString?.() ??
+            categoryId,
+          name: populatedCategory.name,
+          description: populatedCategory.description,
+          backgroundColor: populatedCategory.backgroundColor,
+          textColor: populatedCategory.textColor,
+          iconName: populatedCategory.iconName,
+          imageUrl: populatedCategory.imageUrl,
+          status: populatedCategory.status,
+          sortOrder: populatedCategory.sortOrder
+        }
+      : undefined,
     tone: raw.tone,
     chips: raw.chips,
     incidentCategories: raw.incidentCategories ?? [],
@@ -124,11 +156,13 @@ const auditMicroEducationAction = async (
 };
 
 export const listPublicMicroEducation = async (
-  context: MicroEducationServiceContext
+  context: MicroEducationServiceContext,
+  query: MicroEducationPublicQueryInput = {}
 ): Promise<unknown[]> => {
   const items = await MicroEducationModel.find({
     status: 'published',
-    deletedAt: { $exists: false }
+    deletedAt: { $exists: false },
+    ...(query.categoryId ? { categoryId: query.categoryId } : {})
   })
     .sort({ sortOrder: 1, createdAt: -1 })
     .lean();
@@ -148,6 +182,7 @@ export const listAdminMicroEducation = async (
   const items = await MicroEducationModel.find({
     deletedAt: { $exists: false },
     ...(query.status ? { status: query.status } : {}),
+    ...(query.categoryId ? { categoryId: query.categoryId } : {}),
     ...(normalizedSearch
       ? {
           $or: [
@@ -175,8 +210,10 @@ export const createMicroEducation = async (
   image?: UploadedFile
 ): Promise<unknown> => {
   const storedImage = image ? await saveMicroEducationImage(image) : undefined;
+  const categoryId = await resolveMicroEducationCategoryId(input.categoryId);
   const item = await MicroEducationModel.create({
     ...input,
+    categoryId,
     ...(storedImage
       ? {
           imageStorageProvider: storedImage.storageProvider,
@@ -211,8 +248,14 @@ export const updateMicroEducation = async (
     throw new ApiError(StatusCodes.NOT_FOUND, 'Micro-education item not found');
   }
 
+  const { categoryId: inputCategoryId, ...cardInput } = input;
+  const categoryId =
+    inputCategoryId !== undefined
+      ? await resolveMicroEducationCategoryId(inputCategoryId)
+      : undefined;
   const updatePayload: Partial<MicroEducationDocument> = {
-    ...input,
+    ...cardInput,
+    ...(categoryId ? { categoryId } : {}),
     updatedBy: context.actor?.userId as never
   };
 
@@ -294,4 +337,21 @@ const saveMicroEducationImage = async (file: UploadedFile) => {
   ensureSupportedImage(file);
 
   return storeMicroEducationImage(file);
+};
+
+const resolveMicroEducationCategoryId = async (categoryId?: string) => {
+  if (!categoryId) {
+    return undefined;
+  }
+
+  const category = await MicroEducationCategoryModel.findOne({
+    _id: categoryId,
+    deletedAt: { $exists: false }
+  });
+
+  if (!category) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Micro-education category not found');
+  }
+
+  return category._id;
 };

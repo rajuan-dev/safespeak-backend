@@ -6,16 +6,31 @@ import { validate } from '@common/middleware/validate.middleware';
 import { env } from '@config/env';
 
 import {
+  adminMicroEducationCategoryCreateController,
+  adminMicroEducationCategoryDeleteController,
+  adminMicroEducationCategoryListController,
+  adminMicroEducationCategoryUpdateController,
+  publicMicroEducationCategoryListController
+} from './microeducation-category.controller';
+import {
+  createMicroEducationCategorySchema,
+  microEducationCategoryParamsSchema,
+  microEducationCategoryQuerySchema,
+  updateMicroEducationCategorySchema
+} from './microeducation-category.schema';
+import {
   adminMicroEducationCreateController,
   adminMicroEducationDeleteController,
   publicMicroEducationImageController,
   adminMicroEducationListController,
   adminMicroEducationUpdateController,
+  publicMicroEducationByCategoryController,
   publicMicroEducationController
 } from './microeducation.controller';
 import {
   createMicroEducationSchema,
   microEducationAdminQuerySchema,
+  microEducationPublicQuerySchema,
   microEducationParamsSchema,
   updateMicroEducationSchema
 } from './microeducation.schema';
@@ -31,7 +46,17 @@ const upload = multer({
   }
 });
 
-microEducationRoutes.get('/', publicMicroEducationController);
+microEducationRoutes.get(
+  '/',
+  validate({ query: microEducationPublicQuerySchema }),
+  publicMicroEducationController
+);
+microEducationRoutes.get('/categories', publicMicroEducationCategoryListController);
+microEducationRoutes.get(
+  '/categories/:id/cards',
+  validate({ params: microEducationCategoryParamsSchema }),
+  publicMicroEducationByCategoryController
+);
 microEducationRoutes.get(
   '/:id/image',
   validate({ params: microEducationParamsSchema }),
@@ -39,6 +64,29 @@ microEducationRoutes.get(
 );
 
 adminMicroEducationRoutes.use(authenticateUser, requireAdminRole('super_admin', 'content_admin'));
+adminMicroEducationRoutes.get(
+  '/categories',
+  validate({ query: microEducationCategoryQuerySchema }),
+  adminMicroEducationCategoryListController
+);
+adminMicroEducationRoutes.post(
+  '/categories',
+  validate({ body: createMicroEducationCategorySchema }),
+  adminMicroEducationCategoryCreateController
+);
+adminMicroEducationRoutes.patch(
+  '/categories/:id',
+  validate({
+    params: microEducationCategoryParamsSchema,
+    body: updateMicroEducationCategorySchema
+  }),
+  adminMicroEducationCategoryUpdateController
+);
+adminMicroEducationRoutes.delete(
+  '/categories/:id',
+  validate({ params: microEducationCategoryParamsSchema }),
+  adminMicroEducationCategoryDeleteController
+);
 adminMicroEducationRoutes.get(
   '/',
   validate({ query: microEducationAdminQuerySchema }),

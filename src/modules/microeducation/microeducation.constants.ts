@@ -1,4 +1,5 @@
 export const MICRO_EDUCATION_STATUSES = ['draft', 'published'] as const;
+export const MICRO_EDUCATION_CATEGORY_STATUSES = ['draft', 'published'] as const;
 
 export const MICRO_EDUCATION_TONES = [
   'blue',
@@ -46,5 +47,11 @@ export const MICRO_EDUCATION_ACTIONS = {
   listAdmin: 'admin.microeducation.list',
   create: 'admin.microeducation.create',
   update: 'admin.microeducation.update',
-  delete: 'admin.microeducation.delete'
+  delete: 'admin.microeducation.delete',
+  categoryListPublic: 'microeducation.categories.list_public',
+  categoryCardsPublic: 'microeducation.categories.cards_public',
+  categoryListAdmin: 'admin.microeducation.categories.list',
+  categoryCreate: 'admin.microeducation.categories.create',
+  categoryUpdate: 'admin.microeducation.categories.update',
+  categoryDelete: 'admin.microeducation.categories.delete'
 } as const;

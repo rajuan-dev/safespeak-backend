@@ -31,6 +31,7 @@ export interface MicroEducationDocument {
   detailBody: string;
   detailTakeaway: string;
   imageAlt?: string;
+  categoryId?: Types.ObjectId;
   tone: MicroEducationTone;
   chips: MicroEducationChip[];
   incidentCategories: MicroEducationIncidentCategory[];
@@ -66,6 +67,12 @@ const microEducationSchema = new Schema<MicroEducationDocument>(
     detailBody: { type: String, required: true, trim: true, default: 'Review the guidance and choose the next safe step that fits your situation.' },
     detailTakeaway: { type: String, required: true, trim: true, default: 'Keep notes simple, factual, and stored somewhere safe.' },
     imageAlt: { type: String, required: false, trim: true },
+    categoryId: {
+      type: Schema.Types.ObjectId,
+      ref: 'MicroEducationCategory',
+      required: false,
+      index: true
+    },
     tone: { type: String, enum: MICRO_EDUCATION_TONES, required: true, default: 'blue' },
     chips: { type: [String], enum: MICRO_EDUCATION_CHIPS, required: true, default: ['safety'] },
     incidentCategories: {
@@ -123,6 +130,7 @@ const microEducationSchema = new Schema<MicroEducationDocument>(
 );
 
 microEducationSchema.index({ status: 1, sortOrder: 1, createdAt: -1 });
+microEducationSchema.index({ categoryId: 1, status: 1, sortOrder: 1 });
 
 export const MicroEducationModel = model<MicroEducationDocument>(
   'MicroEducation',

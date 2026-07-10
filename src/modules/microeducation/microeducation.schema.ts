@@ -63,7 +63,12 @@ export const microEducationParamsSchema = z.object({
 
 export const microEducationAdminQuerySchema = z.object({
   search: z.string().trim().max(120).optional(),
-  status: z.enum(MICRO_EDUCATION_STATUSES).optional()
+  status: z.enum(MICRO_EDUCATION_STATUSES).optional(),
+  categoryId: objectIdSchema.optional()
+});
+
+export const microEducationPublicQuerySchema = z.object({
+  categoryId: objectIdSchema.optional()
 });
 
 export const createMicroEducationSchema = z.object({
@@ -77,6 +82,7 @@ export const createMicroEducationSchema = z.object({
   detailBody: z.string().trim().min(1).max(4000).default('Review the guidance and choose the next safe step that fits your situation.'),
   detailTakeaway: z.string().trim().min(1).max(900).default('Keep notes simple, factual, and stored somewhere safe.'),
   imageAlt: z.string().trim().max(180).optional(),
+  categoryId: objectIdSchema.optional(),
   tone: z.enum(MICRO_EDUCATION_TONES).default('blue'),
   chips: chipsSchema,
   incidentCategories: incidentCategoriesSchema,
@@ -91,5 +97,6 @@ export const createMicroEducationSchema = z.object({
 export const updateMicroEducationSchema = createMicroEducationSchema.partial();
 
 export type MicroEducationAdminQueryInput = z.infer<typeof microEducationAdminQuerySchema>;
+export type MicroEducationPublicQueryInput = z.infer<typeof microEducationPublicQuerySchema>;
 export type CreateMicroEducationInput = z.infer<typeof createMicroEducationSchema>;
 export type UpdateMicroEducationInput = z.infer<typeof updateMicroEducationSchema>;
