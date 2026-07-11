@@ -13,6 +13,7 @@ import { ApiError } from '@common/errors/ApiError';
 import { AdminDestinationModel, AdminSubmissionTemplateModel } from '@modules/admin/admin.model';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
+import { callAiAgentJson, callAiAgentVisionText } from '@modules/ai/ai-agent.client';
 import {
   buildSubmissionPayloadFromTemplate,
   executeReportDelivery,
@@ -243,38 +244,6 @@ const normalizeConfidence = (value: unknown): string => {
     : 'medium';
 };
 
-const extractOpenAiOutputText = (payload: unknown): string => {
-  const response = payload as {
-    output_text?: string;
-    output?: Array<{ content?: Array<{ text?: string }> }>;
-  };
-
-  if (typeof response.output_text === 'string' && response.output_text.trim()) {
-    return response.output_text;
-  }
-
-  return (
-    response.output
-      ?.flatMap((item) => item.content ?? [])
-      .map((item) => item.text)
-      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-      .join('\n') ?? ''
-  );
-};
-
-const normalizeJsonCandidate = (text: string): string => {
-  const trimmed = text.trim();
-
-  if (trimmed.startsWith('```')) {
-    return trimmed
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-  }
-
-  return trimmed;
-};
-
 const getFileExtension = (fileName: string): string => path.extname(fileName).toLowerCase();
 
 const isImageEvidenceFile = (file: UploadedScamShieldEvidenceFile): boolean =>
@@ -298,13 +267,6 @@ const classifyScamWithOpenAi = async (
     uploadedFiles?: Array<{ fileName?: string; mimeType?: string; extractor?: string }>;
   }
 ): Promise<ScoredScamContent> => {
-  if (!env.OPENAI_API_KEY) {
-    throw new ApiError(
-      StatusCodes.SERVICE_UNAVAILABLE,
-      'ScamShield AI classification is unavailable because OPENAI_API_KEY is not configured'
-    );
-  }
-
   const normalizedContent = content.replace(/\s+/g, ' ').trim();
   const extractedEntities = extractScamEntities(normalizedContent);
   const senderAnalysis = options?.emailInput ? analyzeSenderProfile(options.emailInput) : undefined;
@@ -316,101 +278,19 @@ const classifyScamWithOpenAi = async (
     uploadedFiles: options?.uploadedFiles
   });
 
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL,
-      input: [
-        {
-          role: 'system',
-          content: [
-            {
-              type: 'input_text',
-              text:
-                'You are a scam and phishing classifier for SafeSpeak. Return only valid JSON. ' +
-                'Your job is to decide whether the user supplied content contains an actual scam/phishing attempt, a forwarded or quoted scam example, or only benign discussion about scams. ' +
-                'Before scoring, reason silently using these categories: actual_scam_message, quoted_or_forwarded_scam_example, discussion_about_scam, benign_business_message, or formal_reference_document. ' +
-                'If the input contains quoted, pasted, forwarded, or embedded scam wording inside otherwise normal discussion, classify the embedded suspicious content rather than the wrapper conversation. ' +
-                'If the input is only a business/admin/support request asking for a sample, asking for results, or discussing how to compare tools, keep the score low unless an actual scam message is included in the text. ' +
-                'Do not treat words like scam, test, result, compare, website, or link as scam evidence by themselves when they appear in legitimate business discussion. ' +
-                'Use high scores for clear phishing, impersonation, OTP theft, credential theft, payment fraud, remote-access scams, invoice redirection, and malicious links. ' +
-                'Messages such as "your account is suspended", "verify immediately", "unauthorized login", "click this link", or requests for codes/passwords should usually land in high or critical ranges. ' +
-                'If the content is a formal law, regulation, policy, or government reference document, keep the score low unless there are concrete scam indicators. ' +
-                'Write concise plain-English output. Avoid awkward warnings for benign business messages. For benign discussion, say it appears to discuss scam review/testing rather than being a live scam attempt. ' +
-                'Return riskScore from 0 to 100, riskLevel as low|medium|high|critical, confidence as low|medium|high, and short plain-English summary, indicators, redFlags, and recommendations.'
-            }
-          ]
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: JSON.stringify({
-                analysisType: options?.analysisType ?? 'text',
-                content: normalizedContent,
-                extractedEntities,
-                senderAnalysis,
-                urlReputation,
-                documentContext: classification
-              })
-            }
-          ]
-        }
-      ],
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'scamshield_classification',
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            required: [
-              'riskScore',
-              'riskLevel',
-              'confidence',
-              'summary',
-              'indicators',
-              'redFlags',
-              'recommendations'
-            ],
-            properties: {
-              riskScore: { type: 'number' },
-              riskLevel: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
-              confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
-              summary: { type: 'string' },
-              indicators: { type: 'array', items: { type: 'string' } },
-              redFlags: { type: 'array', items: { type: 'string' } },
-              recommendations: { type: 'array', items: { type: 'string' } }
-            }
-          }
-        }
-      }
+  const parsed = await callAiAgentJson<OpenAiScamClassification>({
+    model: env.OPENAI_MODEL,
+    systemPrompt:
+      'You are a scam and phishing classifier for SafeSpeak. Return only JSON. Classify actual scam messages, quoted examples, scam discussion, benign business messages, and formal reference documents. Do not treat words like scam, test, result, compare, website, or link as evidence by themselves. Use high scores for phishing, impersonation, OTP theft, credential theft, payment fraud, remote access, invoice redirection, and malicious links. Return riskScore 0-100, riskLevel low|medium|high|critical, confidence low|medium|high, summary, indicators, redFlags, and recommendations.',
+    userPrompt: JSON.stringify({
+      analysisType: options?.analysisType ?? 'text',
+      content: normalizedContent,
+      extractedEntities,
+      senderAnalysis,
+      urlReputation,
+      documentContext: classification
     })
   });
-
-  if (!response.ok) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'ScamShield AI classification request failed');
-  }
-
-  const payload = (await response.json()) as unknown;
-  const responseText = normalizeJsonCandidate(extractOpenAiOutputText(payload));
-
-  if (!responseText) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'ScamShield AI classification response was empty');
-  }
-
-  let parsed: OpenAiScamClassification;
-
-  try {
-    parsed = JSON.parse(responseText) as OpenAiScamClassification;
-  } catch {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'ScamShield AI classification response was invalid');
-  }
 
   const riskScore = clampRiskScore(parsed.riskScore);
   const confidence = normalizeConfidence(parsed.confidence);
@@ -447,57 +327,17 @@ const extractTextFromScreenshot = async (input: AnalyzeScreenshotInput): Promise
     throw new ApiError(StatusCodes.BAD_REQUEST, 'Screenshot text or image upload is required');
   }
 
-  if (!env.OPENAI_API_KEY) {
-    throw new ApiError(
-      StatusCodes.SERVICE_UNAVAILABLE,
-      'Screenshot OCR is unavailable because OPENAI_API_KEY is not configured'
-    );
-  }
-
   const mimeType = input.mimeType ?? 'image/png';
   const imageData = input.imageBase64.startsWith('data:')
     ? input.imageBase64
     : `data:${mimeType};base64,${input.imageBase64}`;
 
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL,
-      input: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text:
-                'Extract only the visible text from this screenshot for scam risk analysis. ' +
-                'Return plain text. Do not add advice, scores, or invented content.'
-            },
-            {
-              type: 'input_image',
-              image_url: imageData
-            }
-          ]
-        }
-      ]
-    })
+  const extractedText = await callAiAgentVisionText({
+    imageData,
+    model: env.OPENAI_MODEL,
+    instruction:
+      'Extract only the visible text from this screenshot for scam risk analysis. Return plain text. Do not add advice, scores, or invented content.'
   });
-
-  if (!response.ok) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'Screenshot OCR request failed');
-  }
-
-  const payload = (await response.json()) as {
-    output_text?: string;
-    output?: Array<{ content?: Array<{ text?: string }> }>;
-  };
-  const extractedText =
-    payload.output_text ??
-    payload.output?.flatMap((item) => item.content ?? []).find((item) => item.text)?.text;
 
   if (!extractedText?.trim()) {
     throw new ApiError(StatusCodes.BAD_GATEWAY, 'Screenshot OCR response was empty');
@@ -2277,57 +2117,16 @@ const translateGeneratedCopy = async (
     draft?: string;
   }
 ) => {
-  if (!env.OPENAI_API_KEY || !language || language === 'en') {
+  if (!language || language === 'en') {
     return payload;
   }
 
   try {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: env.OPENAI_MODEL,
-        input: [
-          {
-            role: 'system',
-            content: [
-              {
-                type: 'input_text',
-                text:
-                  `Translate SafeSpeak scam-analysis copy into ${language}. Preserve JSON keys, keep meaning plain and safety-focused, and do not invent new claims.`
-              }
-            ]
-          },
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'input_text',
-                text: JSON.stringify(payload)
-              }
-            ]
-          }
-        ]
-      })
+    const translated = await callAiAgentJson<typeof payload>({
+      model: env.OPENAI_MODEL,
+      systemPrompt: `Translate SafeSpeak scam-analysis copy into ${language}. Preserve JSON keys, keep meaning plain and safety-focused, and do not invent new claims.`,
+      userPrompt: JSON.stringify(payload)
     });
-
-    if (!response.ok) {
-      return payload;
-    }
-
-    const result = (await response.json()) as {
-      output_text?: string;
-    };
-    const text = result.output_text?.trim();
-
-    if (!text) {
-      return payload;
-    }
-
-    const translated = JSON.parse(text) as typeof payload;
     return {
       summary: translated.summary ?? payload.summary,
       redFlags: Array.isArray(translated.redFlags) ? translated.redFlags : payload.redFlags,

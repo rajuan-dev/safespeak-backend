@@ -7,6 +7,12 @@ import { ApiError } from '@common/errors/ApiError';
 import { env } from '@config/env';
 import { createAuditLog } from '@modules/audit/audit.service';
 import { getCurrentConsent } from '@modules/consent/consent.service';
+
+import {
+  callAiAgentJson,
+  createAiAgentEmbeddings,
+  synthesizeWithAiAgent
+} from './ai-agent.client';
 import { transcribeAudioBuffer } from '@modules/ai/ai-transcription.service';
 import { saveTranscriptionToEvidence } from '@modules/evidence/evidence.service';
 import type { EvidenceUploadFile } from '@modules/evidence/evidence.types';
@@ -47,8 +53,6 @@ import type {
 } from './ai.types';
 import type { TranscribeAudioBodyInput } from './ai.schema';
 
-const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
-const OPENAI_SPEECH_URL = 'https://api.openai.com/v1/audio/speech';
 const MAX_SPEECH_TEXT_LENGTH = 4000;
 
 const ownerFilter = (owner: AiOwner): AiOwner => {
@@ -147,38 +151,6 @@ const reportCitation = (report: HydratedReportDocument | null): AiCitation[] =>
       ]
     : [];
 
-const extractOutputText = (payload: unknown): string => {
-  const response = payload as {
-    output_text?: string;
-    output?: Array<{ content?: Array<{ text?: string }> }>;
-  };
-
-  if (response.output_text) {
-    return response.output_text;
-  }
-
-  return (
-    response.output
-      ?.flatMap((item) => item.content ?? [])
-      .map((item) => item.text)
-      .filter(Boolean)
-      .join('\n') ?? ''
-  );
-};
-
-const normalizeJsonCandidate = (text: string): string => {
-  const trimmed = text.trim();
-
-  if (trimmed.startsWith('```')) {
-    return trimmed
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-  }
-
-  return trimmed;
-};
-
 export const createEmbedding = async (input: string): Promise<number[]> => {
   const embeddings = await createEmbeddings([input]);
 
@@ -190,78 +162,14 @@ export const createEmbeddings = async (inputs: string[]): Promise<number[][]> =>
     return [];
   }
 
-  if (!env.OPENAI_API_KEY) {
-    throw new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'OPENAI_API_KEY is not configured');
-  }
-
-  const response = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: env.OPENAI_EMBEDDING_MODEL,
-      input: inputs
-    })
-  });
-
-  if (!response.ok) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI embedding request failed');
-  }
-
-  const payload = (await response.json()) as { data?: Array<{ embedding?: number[] }> };
-  const embeddings = payload.data?.map((item) => item.embedding).filter(Array.isArray);
-
-  if (!embeddings || embeddings.length !== inputs.length) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI embedding response was empty');
-  }
-
-  return embeddings as number[][];
+  return createAiAgentEmbeddings(inputs, env.OPENAI_EMBEDDING_MODEL);
 };
 
 const callOpenAIJson = async <TOutput>(
   systemPrompt: string,
   userPrompt: string
 ): Promise<TOutput> => {
-  if (!env.OPENAI_API_KEY) {
-    throw new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'OPENAI_API_KEY is not configured');
-  }
-
-  const response = await fetch(OPENAI_RESPONSES_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL,
-      input: [
-        {
-          role: 'system',
-          content: systemPrompt
-        },
-        {
-          role: 'user',
-          content: userPrompt
-        }
-      ],
-      temperature: 0.2
-    })
-  });
-
-  if (!response.ok) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI response request failed');
-  }
-
-  const text = extractOutputText(await response.json());
-  const normalizedText = normalizeJsonCandidate(text);
-
-  try {
-    return JSON.parse(normalizedText) as TOutput;
-  } catch {
-    return { text: normalizedText } as TOutput;
-  }
+  return callAiAgentJson<TOutput>({ systemPrompt, userPrompt, model: env.OPENAI_MODEL });
 };
 
 const systemPrompt = (language: string): string => getSafeSpeakSystemPrompt(language);
@@ -1049,30 +957,8 @@ export const synthesizeSpeech = async (
     throw new ApiError(StatusCodes.BAD_REQUEST, 'text is required');
   }
 
-  if (!env.OPENAI_API_KEY) {
-    throw new ApiError(StatusCodes.SERVICE_UNAVAILABLE, 'OPENAI_API_KEY is not configured');
-  }
-
   const voice = input.voice ?? env.OPENAI_TTS_VOICE;
-  const response = await fetch(OPENAI_SPEECH_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: env.OPENAI_TTS_MODEL,
-      voice,
-      input: text,
-      response_format: 'mp3'
-    })
-  });
-
-  if (!response.ok) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI speech synthesis request failed');
-  }
-
-  const audioBuffer = Buffer.from(await response.arrayBuffer());
+  const speech = await synthesizeWithAiAgent({ text, voice });
 
   await createAuditLog({
     actorType: context.owner.userId ? 'user' : 'anonymous_session',
@@ -1083,7 +969,7 @@ export const synthesizeSpeech = async (
     ip: context.ip,
     userAgent: context.userAgent,
     metadata: {
-      model: env.OPENAI_TTS_MODEL,
+      model: speech.model,
       voice,
       textHash: hashValue({ text }),
       characterCount: text.length,
@@ -1092,10 +978,10 @@ export const synthesizeSpeech = async (
   });
 
   return {
-    audioBase64: audioBuffer.toString('base64'),
-    mimeType: 'audio/mpeg',
-    model: env.OPENAI_TTS_MODEL,
-    voice,
+    audioBase64: speech.audioBase64,
+    mimeType: speech.mimeType,
+    model: speech.model,
+    voice: speech.voice,
     temporary: true
   };
 };

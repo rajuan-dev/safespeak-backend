@@ -3314,8 +3314,9 @@ export const getKnowledgeSourceReadiness = async (
       .lean(),
     checkRagVectorIndexReadiness()
   ]);
-  const openAiApiKeyConfigured = Boolean(env.OPENAI_API_KEY);
-  const retrievalConfigurationReady = openAiApiKeyConfigured && vectorIndex.status === 'ready';
+  const aiAgentConfigured = Boolean(env.AI_AGENT_BASE_URL && env.AI_AGENT_INTERNAL_TOKEN);
+  const openAiApiKeyConfigured = aiAgentConfigured;
+  const retrievalConfigurationReady = aiAgentConfigured && vectorIndex.status === 'ready';
   const sourceIds = sources.map((source) => source._id);
   const chunkRows =
     sourceIds.length > 0

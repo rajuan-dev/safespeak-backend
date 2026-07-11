@@ -1,7 +1,6 @@
-import { StatusCodes } from 'http-status-codes';
-
-import { ApiError } from '@common/errors/ApiError';
 import { env } from '@config/env';
+
+import { callAiAgentText } from './ai-agent.client';
 
 import {
   buildCompactRetryInstruction,
@@ -101,8 +100,6 @@ export type GenerateSafeSpeakResponseOutput = {
   repairType?: RepairType;
 };
 
-const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
-
 const COMMON_MOJIBAKE_REPAIRS: Array<[RegExp, string]> = [
   [/ΓÇÖ/g, '’'],
   [/ΓÇ£/g, '“'],
@@ -120,25 +117,6 @@ const COMMON_MOJIBAKE_REPAIRS: Array<[RegExp, string]> = [
 
 export const normalizeAssistantContent = (value: string): string =>
   COMMON_MOJIBAKE_REPAIRS.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), value);
-
-const extractOutputText = (payload: unknown): string => {
-  const response = payload as {
-    output_text?: string;
-    output?: Array<{ content?: Array<{ text?: string }> }>;
-  };
-
-  if (response.output_text) {
-    return response.output_text;
-  }
-
-  return (
-    response.output
-      ?.flatMap((item) => item.content ?? [])
-      .map((item) => item.text)
-      .filter(Boolean)
-      .join('\n') ?? ''
-  );
-};
 
 const buildRagPromptSection = (ragContext: SafeSpeakRagSnippet[]): string =>
   ragContext.length === 0
@@ -351,33 +329,14 @@ const callOpenAiPrompt = async (options: {
   userPrompt: string;
   temperature: number;
 }): Promise<string> => {
-  const response = await fetch(OPENAI_RESPONSES_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
+  return normalizeAssistantContent(
+    await callAiAgentText({
+      systemPrompt: options.systemPrompt,
+      userPrompt: options.userPrompt,
       model: options.model,
-      input: [
-        {
-          role: 'system',
-          content: options.systemPrompt
-        },
-        {
-          role: 'user',
-          content: options.userPrompt
-        }
-      ],
       temperature: options.temperature
     })
-  });
-
-  if (!response.ok) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI response request failed');
-  }
-
-  return normalizeAssistantContent(extractOutputText(await response.json()).trim());
+  );
 };
 
 const TECHNICAL_FALLBACK_MESSAGE =
@@ -688,42 +647,6 @@ export const generateSafeSpeakResponse = async (
       : ragStatus === 'retrieved'
         ? 'openai_model_with_rag'
         : 'openai_model';
-
-  if (!env.OPENAI_API_KEY) {
-    const fallback = minimalFallback(input.intent);
-
-    return {
-      assistantMessage: fallback.assistantMessage,
-      nextQuestion: '',
-      readyForSubmission: false,
-      confidence: 'medium',
-      disclaimer: buildInformationOnlyDisclaimer(),
-      citations: [],
-      showSources: false,
-      sourceDisplayReason: 'hidden_support_reply',
-      rag: {
-        used: ragContext.length > 0,
-        unavailable: ragStatus === 'required_but_no_sources_found',
-        resultCount: ragContext.length
-      },
-      reviewStatus: input.intent,
-      responseMode: fallback.responseMode,
-      intent: input.intent,
-      usedModelGeneration: false,
-      guardrailStatus: 'fallback',
-      fallbackReason: 'missing_openai_key',
-      staticTemplateUsed: false,
-      consentSnapshot: input.context.consentSnapshot,
-      intentConfidence: input.intentConfidence,
-      classifierSource: input.classifierSource,
-      responseSource: fallback.responseSource,
-      model,
-      jurisdiction: 'AU',
-      ragStatus,
-      selectedResponseSource: fallback.responseSource,
-      repairType: 'fallback'
-    };
-  }
 
   try {
     let assistantMessage = await attemptModelCallTwice(() =>

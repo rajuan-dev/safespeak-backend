@@ -2295,9 +2295,9 @@ export const getAiEngineOverview = async (
   const triageTargetMet = triageCount > 0 && averageConfidence >= 0.8;
   const humanReviewRate = percent(pendingHumanReview, totalInteractions);
   const languageCount = languages.length;
-  const openAiConfigured = Boolean(env.OPENAI_API_KEY);
+  const aiAgentConfigured = Boolean(env.AI_AGENT_BASE_URL && env.AI_AGENT_INTERNAL_TOKEN);
   const ragReady = approvedKnowledgeSources > 0 && ragChunks > 0;
-  const deploymentSafetyStatus = openAiConfigured && ragReady ? 'Monitored' : 'Priority';
+  const deploymentSafetyStatus = aiAgentConfigured && ragReady ? 'Monitored' : 'Priority';
   const activeModels = models.length ? models.join(', ') : env.OPENAI_MODEL;
 
   await audit(context, ADMIN_ACTIONS.aiEngineOverview, undefined, {
@@ -2308,7 +2308,7 @@ export const getAiEngineOverview = async (
     averageConfidence,
     approvedKnowledgeSources,
     ragChunks,
-    openAiConfigured
+    aiAgentConfigured
   });
 
   return {
@@ -2344,7 +2344,7 @@ export const getAiEngineOverview = async (
       },
       {
         label: 'DEPLOYMENT SAFETY',
-        value: openAiConfigured ? 'Configured' : 'Needs key',
+        value: aiAgentConfigured ? 'Configured' : 'Needs agent configuration',
         helper: `Active model: ${env.OPENAI_MODEL}; RAG index: ${env.RAG_VECTOR_INDEX}.`
       }
     ],
@@ -2447,7 +2447,7 @@ export const getAiEngineOverview = async (
         summary: 'Control releases with A/B testing, rollback readiness, and post-release validation.',
         owner: 'AI Platform',
         cadence: 'Per deployment',
-        metric: openAiConfigured ? `Model ${env.OPENAI_MODEL}` : 'OPENAI_API_KEY is not configured',
+        metric: aiAgentConfigured ? `Agent model ${env.OPENAI_MODEL}` : 'AI agent is not configured',
         highlights: [
           `Active response model: ${activeModels}.`,
           `Embedding model: ${env.OPENAI_EMBEDDING_MODEL}; vector index: ${env.RAG_VECTOR_INDEX}.`,
@@ -2487,9 +2487,9 @@ export const getAiEngineOverview = async (
       pendingHumanReview > 0
         ? `${pendingHumanReview} AI interactions are pending human review.`
         : 'No AI interaction is currently pending human review.',
-      openAiConfigured
-        ? 'OpenAI API access is configured; keep rollback and model-change reviews active.'
-        : 'OPENAI_API_KEY is missing, so live AI generation will fail until configured.'
+      aiAgentConfigured
+        ? 'FastAPI AI agent access is configured; keep rollback and model-change reviews active.'
+        : 'AI agent URL or internal token is missing, so live AI generation will fail until configured.'
     ],
     footerNote:
       'Live values are aggregated from AI interaction records, conversation-flow triage, approved RAG knowledge sources, RAG chunks, and model configuration. Raw prompts, outputs, and secrets are not returned.'
@@ -2523,7 +2523,7 @@ export const getPlatformHealthOverview = async (
   const uptimeSeconds = Math.floor(process.uptime());
   const mongoConnectionState = getMongoConnectionLabel();
   const mongoConnected = Number(mongoose.connection.readyState) === 1;
-  const openAiConfigured = Boolean(env.OPENAI_API_KEY);
+  const aiAgentConfigured = Boolean(env.AI_AGENT_BASE_URL && env.AI_AGENT_INTERNAL_TOKEN);
   const dedicatedEvidenceKeyConfigured = Boolean(env.EVIDENCE_ENCRYPTION_KEY);
   const dedicatedAuditSigningKeyConfigured = Boolean(env.EVIDENCE_AUDIT_SIGNING_KEY);
   const s3StorageConfigured = hasS3Storage();
@@ -2644,7 +2644,7 @@ export const getPlatformHealthOverview = async (
       : env.NODE_ENV === 'production'
         ? 'needs_config'
         : 'ready';
-  const openAiStatus: PlatformHealthStatus = openAiConfigured
+  const openAiStatus: PlatformHealthStatus = aiAgentConfigured
     ? 'ready'
     : env.NODE_ENV === 'production'
       ? 'blocked'
@@ -2701,11 +2701,11 @@ export const getPlatformHealthOverview = async (
       id: 'ai-provider',
       label: 'AI Provider Configuration',
       category: 'ai',
-      status: openAiStatus,
+       status: openAiStatus,
       owner: 'AI Operations',
-      metric: openAiConfigured ? env.OPENAI_MODEL : 'OPENAI_API_KEY missing',
-      summary: openAiConfigured
-        ? 'OpenAI access is configured for live AI-assisted workflows.'
+       metric: aiAgentConfigured ? env.OPENAI_MODEL : 'AI agent configuration missing',
+       summary: aiAgentConfigured
+         ? 'FastAPI AI agent access is configured for live AI-assisted workflows.'
         : 'Live AI generation is not fully configured.',
       details: [
         `Response model: ${env.OPENAI_MODEL}.`,
@@ -2898,7 +2898,7 @@ export const getPlatformHealthOverview = async (
       },
       {
         label: 'AI/RAG',
-        value: openAiConfigured && ragReady ? 'Ready' : 'Review',
+        value: aiAgentConfigured && ragReady ? 'Ready' : 'Review',
         helper: `${formatCount(recentAiInteractions)} recent AI interactions and ${formatCount(ragChunks)} RAG chunks.`
       },
       {
@@ -2913,7 +2913,7 @@ export const getPlatformHealthOverview = async (
     counts,
     configuration: {
       mongoConnectionState,
-      openAiConfigured,
+      aiAgentConfigured,
       s3StorageConfigured,
       dedicatedEvidenceKeyConfigured,
       dedicatedAuditSigningKeyConfigured,
