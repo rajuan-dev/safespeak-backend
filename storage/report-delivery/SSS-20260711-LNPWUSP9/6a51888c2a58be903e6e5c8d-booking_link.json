@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "2026-05-report-handoff-v1",
+  "source": "safespeak",
+  "destinationKey": "scamwatch",
+  "informationOnly": true,
+  "referenceNumber": "SSS-20260711-LNPWUSP9",
+  "incidentSummary": "This appears to be a screenshot/text from a scam-checking or phishing-risk assessment interface, not a live phishing message. It discusses risk levels and phishing signs rather than attempting to steal information directly.",
+  "incidentType": "cyber_scam",
+  "severity": "low",
+  "jurisdiction": "AU",
+  "language": "en",
+  "destinationName": "Scamwatch",
+  "anonymityMode": "pseudonymous",
+  "userNotes": "ScamShield assessment: low risk (18/100), high confidence.\n\nSummary: This appears to be a screenshot/text from a scam-checking or phishing-risk assessment interface, not a live phishing message. It discusses risk levels and phishing signs rather than attempting to steal information directly.\n\nDetected signals: Meta-language about analysis: \"Is this trustworthy?\" and \"We'll look it up against reputable sources\", UI-style labels and risk meter terms: \"MED LOW HIGH\" and \"RISK LEVEL\", No direct request for credentials, payment, OTP, or personal info present in the text.\n\nSuggested protective actions: If you received an email or SMS you want assessed, paste the original message text (including sender and any links). Avoid visiting unfamiliar domains unless you can verify them independently (e.g., by typing a known official URL yourself). If this domain was presented to you in an unsolicited message, treat it as suspicious and do not enter any credentials or payment details there.",
+  "title": "SafeSpeak Scamwatch report SSS-20260711-LNPWUSP9",
+  "summary": "This appears to be a screenshot/text from a scam-checking or phishing-risk assessment interface, not a live phishing message. It discusses risk levels and phishing signs rather than attempting to steal information directly.",
+  "safespeak": {
+    "refNo": "SSS-20260711-LNPWUSP9",
+    "summary": "This appears to be a screenshot/text from a scam-checking or phishing-risk assessment interface, not a live phishing message. It discusses risk levels and phishing signs rather than attempting to steal information directly.",
+    "incidentType": "cyber_scam",
+    "severity": "low",
+    "jurisdiction": "AU",
+    "language": "en",
+    "destination": {
+      "key": "scamwatch",
+      "type": "scamwatch",
+      "name": "Scamwatch",
+      "channel": "booking_link",
+      "jurisdiction": "AU"
+    },
+    "anonymityMode": "pseudonymous",
+    "notes": "ScamShield assessment: low risk (18/100), high confidence.\n\nSummary: This appears to be a screenshot/text from a scam-checking or phishing-risk assessment interface, not a live phishing message. It discusses risk levels and phishing signs rather than attempting to steal information directly.\n\nDetected signals: Meta-language about analysis: \"Is this trustworthy?\" and \"We'll look it up against reputable sources\", UI-style labels and risk meter terms: \"MED LOW HIGH\" and \"RISK LEVEL\", No direct request for credentials, payment, OTP, or personal info present in the text.\n\nSuggested protective actions: If you received an email or SMS you want assessed, paste the original message text (including sender and any links). Avoid visiting unfamiliar domains unless you can verify them independently (e.g., by typing a known official URL yourself). If this domain was presented to you in an unsolicited message, treat it as suspicious and do not enter any credentials or payment details there.",
+    "consentFlags": [
+      "share_with_agencies"
+    ],
+    "extractedEntities": {
+      "urls": [],
+      "emailAddresses": [],
+      "phoneNumbers": [],
+      "amounts": [],
+      "paymentMethods": [],
+      "organizations": [],
+      "accountTerms": [],
+      "cryptoReferences": [],
+      "bankReferences": [],
+      "transactionIds": [],
+      "urlSignals": []
+    },
+    "recommendations": [
+      "If you received an email or SMS you want assessed, paste the original message text (including sender and any links).",
+      "Avoid visiting unfamiliar domains unless you can verify them independently (e.g., by typing a known official URL yourself).",
+      "If this domain was presented to you in an unsolicited message, treat it as suspicious and do not enter any credentials or payment details there."
+    ]
+  }
+}

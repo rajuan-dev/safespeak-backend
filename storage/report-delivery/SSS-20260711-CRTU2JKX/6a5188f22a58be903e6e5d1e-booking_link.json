@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "2026-05-report-handoff-v1",
+  "source": "safespeak",
+  "destinationKey": "scamwatch",
+  "informationOnly": true,
+  "referenceNumber": "SSS-20260711-CRTU2JKX",
+  "incidentSummary": "This looks like a phishing-risk assessment/scan result screenshot rather than a direct scam message, but it includes a suspicious-looking domain (netlify.app subdomain) often associated with phishing/clone sites.",
+  "incidentType": "cyber_scam",
+  "severity": "medium",
+  "jurisdiction": "AU",
+  "language": "en",
+  "destinationName": "Scamwatch",
+  "anonymityMode": "pseudonymous",
+  "userNotes": "ScamShield assessment: medium risk (35/100), high confidence.\n\nSummary: This looks like a phishing-risk assessment/scan result screenshot rather than a direct scam message, but it includes a suspicious-looking domain (netlify.app subdomain) often associated with phishing/clone sites.\n\nDetected signals: Content is framed as a checker/scan UI: \"Is this trustworthy? Paste a message or link\", Mentions a \"critical\" risk level and phishing signs (appears to be analysis output, not the lure itself), Suspicious domain shown: ow-jelly-d18cb1.netlify.app (disposable/hosted subdomain pattern).\n\nSuggested protective actions: Do not enter passwords, OTPs, or payment details on ow-jelly-d18cb1.netlify.app unless you can independently verify it belongs to the real organization If you reached it via an email/SMS, navigate via the official website/app instead of the link Use a URL reputation check (Google Safe Browsing/VirusTotal) and confirm the domain/owner before interacting",
+  "title": "SafeSpeak Scamwatch report SSS-20260711-CRTU2JKX",
+  "summary": "This looks like a phishing-risk assessment/scan result screenshot rather than a direct scam message, but it includes a suspicious-looking domain (netlify.app subdomain) often associated with phishing/clone sites.",
+  "safespeak": {
+    "refNo": "SSS-20260711-CRTU2JKX",
+    "summary": "This looks like a phishing-risk assessment/scan result screenshot rather than a direct scam message, but it includes a suspicious-looking domain (netlify.app subdomain) often associated with phishing/clone sites.",
+    "incidentType": "cyber_scam",
+    "severity": "medium",
+    "jurisdiction": "AU",
+    "language": "en",
+    "destination": {
+      "key": "scamwatch",
+      "type": "scamwatch",
+      "name": "Scamwatch",
+      "channel": "booking_link",
+      "jurisdiction": "AU"
+    },
+    "anonymityMode": "pseudonymous",
+    "notes": "ScamShield assessment: medium risk (35/100), high confidence.\n\nSummary: This looks like a phishing-risk assessment/scan result screenshot rather than a direct scam message, but it includes a suspicious-looking domain (netlify.app subdomain) often associated with phishing/clone sites.\n\nDetected signals: Content is framed as a checker/scan UI: \"Is this trustworthy? Paste a message or link\", Mentions a \"critical\" risk level and phishing signs (appears to be analysis output, not the lure itself), Suspicious domain shown: ow-jelly-d18cb1.netlify.app (disposable/hosted subdomain pattern).\n\nSuggested protective actions: Do not enter passwords, OTPs, or payment details on ow-jelly-d18cb1.netlify.app unless you can independently verify it belongs to the real organization If you reached it via an email/SMS, navigate via the official website/app instead of the link Use a URL reputation check (Google Safe Browsing/VirusTotal) and confirm the domain/owner before interacting",
+    "consentFlags": [
+      "share_with_agencies"
+    ],
+    "extractedEntities": {
+      "urls": [],
+      "emailAddresses": [],
+      "phoneNumbers": [],
+      "amounts": [],
+      "paymentMethods": [],
+      "organizations": [],
+      "accountTerms": [],
+      "cryptoReferences": [],
+      "bankReferences": [],
+      "transactionIds": [],
+      "urlSignals": []
+    },
+    "recommendations": [
+      "Do not enter passwords, OTPs, or payment details on ow-jelly-d18cb1.netlify.app unless you can independently verify it belongs to the real organization",
+      "If you reached it via an email/SMS, navigate via the official website/app instead of the link",
+      "Use a URL reputation check (Google Safe Browsing/VirusTotal) and confirm the domain/owner before interacting",
+      "If you already interacted, change affected passwords and enable MFA; monitor accounts for unusual activity"
+    ]
+  }
+}
