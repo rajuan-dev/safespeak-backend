@@ -3,6 +3,7 @@ import { StatusCodes } from 'http-status-codes';
 import { ApiError } from '@common/errors/ApiError';
 import { env } from '@config/env';
 import { createAuditLog } from '@modules/audit/audit.service';
+import { callAiAgentJson } from '@modules/ai/ai-agent.client';
 
 import {
   MICRO_EDUCATION_ACTIONS,
@@ -12,6 +13,7 @@ import { MicroEducationCategoryModel } from './microeducation-category.model';
 import { MicroEducationModel, type MicroEducationDocument } from './microeducation.model';
 import type {
   CreateMicroEducationInput,
+  GenerateMicroEducationInput,
   MicroEducationAdminQueryInput,
   MicroEducationPublicQueryInput,
   UpdateMicroEducationInput
@@ -28,6 +30,21 @@ import type { MicroEducationServiceContext } from './microeducation.types';
 type UploadedFile = Express.Multer.File;
 
 const allowedImageMimeTypes = new Set<string>(MICRO_EDUCATION_ALLOWED_IMAGE_MIME_TYPES);
+
+const generatedCardDefaults = {
+  readTimeLabel: '4 min read',
+  tag: 'Safety',
+  cta: 'Start Now',
+  tone: 'blue' as const,
+  chips: ['safety'] as const,
+  incidentCategories: [] as string[],
+  matchKeywords: [] as string[],
+  duration: 'quick' as const,
+  format: 'guide' as const,
+  status: 'draft' as const,
+  sortOrder: 0,
+  views: 0
+};
 
 const serializeMicroEducation = async (
   item: MicroEducationDocument | Record<string, unknown>,
@@ -202,6 +219,69 @@ export const listAdminMicroEducation = async (
   });
 
   return Promise.all(items.map(item => serializeMicroEducation(item, { versionProxyImagePath: true })));
+};
+
+export const generateMicroEducationCard = async (
+  context: MicroEducationServiceContext,
+  input: GenerateMicroEducationInput
+): Promise<Record<string, unknown>> => {
+  const generated = await callAiAgentJson<Record<string, unknown>>({
+    model: env.OPENAI_MODEL,
+    systemPrompt: [
+      'You create one SafeSpeak micro-education card for people seeking safety guidance.',
+      'Return only JSON with title, summary, detailHeading, detailSummary, detailBody, detailTakeaway, tag, cta, readTimeLabel, chips, incidentCategories, matchKeywords, duration, format, and tone.',
+      'Use plain, trauma-aware, non-judgmental language. Do not provide legal conclusions, invent services, or include unsupported statistics.',
+      'Keep the summary under 240 characters, detailSummary under 500 characters, detailBody under 1800 characters, and detailTakeaway under 240 characters.',
+      'Use chips from harassment, rights, safety, mentalHealth; duration quick or deep; format guide, interactive, or video; tone blue, orange, green, amber, violet, or teal.'
+    ].join(' '),
+    userPrompt: JSON.stringify({ topic: input.topic, audience: input.audience, language: input.language })
+  });
+
+  const text = (key: string, fallback: string): string =>
+    typeof generated[key] === 'string' && generated[key].trim()
+      ? generated[key].trim()
+      : fallback;
+  const list = (key: string, fallback: readonly string[], max: number): string[] => {
+    const value = generated[key];
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).slice(0, max)
+      : [...fallback];
+  };
+  const allowedChips = new Set(['harassment', 'rights', 'safety', 'mentalHealth']);
+  const chips = list('chips', generatedCardDefaults.chips, 4).filter(chip => allowedChips.has(chip));
+
+  const card = {
+    ...generatedCardDefaults,
+    title: text('title', input.topic),
+    summary: text('summary', `Practical guidance about ${input.topic}.`),
+    detailHeading: text('detailHeading', text('title', input.topic)),
+    detailSummary: text('detailSummary', text('summary', `Practical guidance about ${input.topic}.`)),
+    detailBody: text('detailBody', `Learn about ${input.topic}, consider what feels safe for you, and choose one practical next step.`),
+    detailTakeaway: text('detailTakeaway', 'Choose the next step that feels safest and most manageable right now.'),
+    tag: text('tag', generatedCardDefaults.tag),
+    cta: text('cta', generatedCardDefaults.cta),
+    readTimeLabel: text('readTimeLabel', generatedCardDefaults.readTimeLabel),
+    chips: chips.length ? chips : [...generatedCardDefaults.chips],
+    incidentCategories: list('incidentCategories', generatedCardDefaults.incidentCategories, 5),
+    matchKeywords: list('matchKeywords', [input.topic], 12),
+    duration: generated.duration === 'deep' ? 'deep' : generatedCardDefaults.duration,
+    format:
+      generated.format === 'interactive' || generated.format === 'video'
+        ? generated.format
+        : generatedCardDefaults.format,
+    tone:
+      ['blue', 'orange', 'green', 'amber', 'violet', 'teal'].includes(generated.tone as string)
+        ? (generated.tone as typeof input.tone)
+        : input.tone,
+    categoryId: input.categoryId
+  };
+
+  await auditMicroEducationAction(context, 'microeducation.generate', undefined, {
+    topic: input.topic,
+    language: input.language
+  });
+
+  return card;
 };
 
 export const createMicroEducation = async (

@@ -21,6 +21,7 @@ import {
 import {
   adminMicroEducationCreateController,
   adminMicroEducationDeleteController,
+  adminMicroEducationGenerateController,
   publicMicroEducationImageController,
   adminMicroEducationListController,
   adminMicroEducationUpdateController,
@@ -29,6 +30,7 @@ import {
 } from './microeducation.controller';
 import {
   createMicroEducationSchema,
+  generateMicroEducationSchema,
   microEducationAdminQuerySchema,
   microEducationPublicQuerySchema,
   microEducationParamsSchema,
@@ -68,6 +70,11 @@ adminMicroEducationRoutes.get(
   '/categories',
   validate({ query: microEducationCategoryQuerySchema }),
   adminMicroEducationCategoryListController
+);
+adminMicroEducationRoutes.post(
+  '/generate',
+  validate({ body: generateMicroEducationSchema }),
+  adminMicroEducationGenerateController
 );
 adminMicroEducationRoutes.post(
   '/categories',

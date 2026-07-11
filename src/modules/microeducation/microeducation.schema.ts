@@ -71,6 +71,14 @@ export const microEducationPublicQuerySchema = z.object({
   categoryId: objectIdSchema.optional()
 });
 
+export const generateMicroEducationSchema = z.object({
+  topic: z.string().trim().min(3).max(240),
+  audience: z.string().trim().max(160).default('people seeking practical safety guidance'),
+  language: z.string().trim().min(2).max(40).default('en'),
+  tone: z.enum(MICRO_EDUCATION_TONES).default('blue'),
+  categoryId: objectIdSchema.optional()
+});
+
 export const createMicroEducationSchema = z.object({
   title: z.string().trim().min(1).max(160),
   summary: z.string().trim().min(1).max(900),
@@ -98,5 +106,6 @@ export const updateMicroEducationSchema = createMicroEducationSchema.partial();
 
 export type MicroEducationAdminQueryInput = z.infer<typeof microEducationAdminQuerySchema>;
 export type MicroEducationPublicQueryInput = z.infer<typeof microEducationPublicQuerySchema>;
+export type GenerateMicroEducationInput = z.infer<typeof generateMicroEducationSchema>;
 export type CreateMicroEducationInput = z.infer<typeof createMicroEducationSchema>;
 export type UpdateMicroEducationInput = z.infer<typeof updateMicroEducationSchema>;

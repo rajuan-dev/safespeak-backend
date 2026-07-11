@@ -2302,14 +2302,29 @@ export const buildScamReportDraft = async (
     }
   };
   const rawDraft = draftLines.join('\n\n');
+  let professionalDraft = rawDraft;
+  try {
+    const generatedDraft = await callAiAgentJson<{ draft?: unknown }>({
+      model: env.OPENAI_MODEL,
+      systemPrompt:
+        'You are SafeSpeak report-draft editor. Return JSON with one draft string only. Rewrite the supplied factual draft into clear, professional, trauma-aware reporting language. Preserve every fact, number, risk level, entity, URL, recommendation, destination, and uncertainty exactly. Do not add facts, legal conclusions, accusations, or instructions that are not present. Keep it information-only and suitable for human review before submission.',
+      userPrompt: JSON.stringify({ draft: rawDraft, language: getAnalysisLanguage(analysis) })
+    });
+
+    if (typeof generatedDraft.draft === 'string' && generatedDraft.draft.trim()) {
+      professionalDraft = generatedDraft.draft.trim();
+    }
+  } catch {
+    professionalDraft = rawDraft;
+  }
   const localizedDraft = await translateGeneratedCopy(getAnalysisLanguage(analysis), {
-    draft: rawDraft,
+    draft: professionalDraft,
     redFlags: [],
     recommendations: []
   });
   const draftText = options?.autoRedactPII
-    ? redactDraftValue(localizedDraft.draft ?? rawDraft, redactionMode) ?? rawDraft
-    : localizedDraft.draft ?? rawDraft;
+    ? redactDraftValue(localizedDraft.draft ?? professionalDraft, redactionMode) ?? professionalDraft
+    : localizedDraft.draft ?? professionalDraft;
 
   return {
     source: 'scamshield',

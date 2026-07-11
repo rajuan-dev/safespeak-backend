@@ -6,12 +6,14 @@ import { successResponse } from '@common/responses/api-response';
 
 import type {
   CreateMicroEducationInput,
+  GenerateMicroEducationInput,
   UpdateMicroEducationInput
 } from './microeducation.schema';
 import {
   createMicroEducation,
   deleteMicroEducation,
   getMicroEducationImage,
+  generateMicroEducationCard,
   listAdminMicroEducation,
   listPublicMicroEducation,
   updateMicroEducation
@@ -83,6 +85,17 @@ export const adminMicroEducationCreateController = asyncHandler(
     );
 
     res.status(StatusCodes.CREATED).json(successResponse('Micro-education item created', { item }));
+  }
+);
+
+export const adminMicroEducationGenerateController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const card = await generateMicroEducationCard(
+      getContext(req),
+      req.body as GenerateMicroEducationInput
+    );
+
+    res.status(StatusCodes.OK).json(successResponse('Micro-education card generated', { card }));
   }
 );
 
