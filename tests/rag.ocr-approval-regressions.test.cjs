@@ -486,7 +486,7 @@ test('approveKnowledgeSource syncs legalReviewed to embedded chunks and Pinecone
     ocrStatus: 'not_required',
     ingestionStatus: 'embedded',
     status: 'draft',
-    legalReviewed: false,
+    legalReviewed: true,
     officialUrl: 'https://www.legislation.gov.au/C2004A00416/latest/text',
     url: 'https://www.legislation.gov.au/C2004A00416/latest/text',
     metadata: {
@@ -516,7 +516,7 @@ test('approveKnowledgeSource syncs legalReviewed to embedded chunks and Pinecone
       legalDomain: 'online_safety',
       topic: 'online_safety',
       sourceType: 'legislation',
-      legalReviewed: false,
+      legalReviewed: true,
       active: true,
       citationLabel: 'Online Safety Act OCR Source [chunk 1]',
       citationUrl: 'https://www.legislation.gov.au/C2004A00416/latest/text',
@@ -526,7 +526,7 @@ test('approveKnowledgeSource syncs legalReviewed to embedded chunks and Pinecone
         sourceAuthority: 'Commonwealth of Australia',
         sourceType: 'legislation',
         sourceCategory: 'official_legal_source',
-        legalReviewed: false,
+        legalReviewed: true,
       },
     },
   ]);

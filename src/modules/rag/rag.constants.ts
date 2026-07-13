@@ -146,6 +146,7 @@ export const RAG_OFFICIAL_SOURCE_HOSTS = [
   'fairwork.gov.au',
   'fwc.gov.au',
   'homeaffairs.gov.au',
+  'education.gov.au',
   'nsw.gov.au',
   'agd.nsw.gov.au',
   'police.nsw.gov.au',
