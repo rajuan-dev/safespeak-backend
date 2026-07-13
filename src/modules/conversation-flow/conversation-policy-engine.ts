@@ -69,7 +69,7 @@ const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ')
 export const requiresGroundedFactualAnswer = (query: string): boolean => {
   const normalized = collapseWhitespace(query);
   const sourceConstrained =
-    /\b(according to|aihw|uploaded\s+(?:document|report|source)|(?:this|the)\s+(?:document|report|source|act|legislation)|cite|citation|page\s+number|section\s+[0-9a-z])\b/i.test(
+    /\b(according to|aihw|uploaded\s+(?:document|report|source)|(?:this|the)\s+(?:document|report|source|guidance|guideline|act|legislation)|cite|citation|page\s+number|section\s+[0-9a-z]|national code|higher education guidance)\b/i.test(
       normalized
     );
   const factualRequest =

@@ -1,5 +1,5 @@
 export const SOURCE_GROUNDED_TOPIC_PATTERN =
-  /\b(?:acts?|regulations?|laws?|legal|rights|sections?|citations?|cite|sources?|reports?|reporting|complaints?|complain|agenc(?:y|ies)|ombudsman|commission|tribunal|court|police|privacy|anti-discrimination|discrimination|fair work|esafety|oaic|ahrc|scamwatch|legal aid|legislation)\b/i;
+  /\b(?:acts?|regulations?|laws?|legal|rights|sections?|citations?|cite|sources?|reports?|reporting|complaints?|complain|agenc(?:y|ies)|ombudsman|commission|tribunal|court|police|privacy|anti-discrimination|discrimination|fair work|esafety|oaic|ahrc|scamwatch|legal aid|legislation|guidance|guideline|national code|higher education|provider|providers|student accommodation|affiliated environments|uploaded document|uploaded source)\b/i;
 
 export const HIGH_IMPACT_LEGAL_PATTERN =
   /\b(?:sue|lawsuit|court|tribunal|police report|report to police|protective order|avo|ivo|dvo|visa|immigration|deport|deported|custody|child protection|evidence|recording|surveillance|litigation)\b/i;

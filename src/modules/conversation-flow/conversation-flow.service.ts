@@ -5,6 +5,7 @@ import { ApiError } from '@common/errors/ApiError';
 import { logger } from '@common/utils/logger';
 import { env } from '@config/env';
 import { buildInformationOnlyDisclaimer } from '@modules/ai/ai-guardrails';
+import { callAiAgentRagSearch } from '@modules/ai/ai-agent.client';
 import {
   classifySafeSpeakIntent,
   classifySafeSpeakIntentDetails
@@ -37,6 +38,7 @@ import {
   resolveSearchJurisdictions,
   searchRag
 } from '@modules/rag/rag.service';
+import type { RagSearchResult } from '@modules/rag/rag.types';
 import { SupportServiceModel } from '@modules/support/support.model';
 
 import { CONVERSATION_FLOW_ACTIONS, CONVERSATION_FLOW_CATEGORIES } from './conversation-flow.constants';
@@ -738,10 +740,13 @@ const looksLikeLegalLookupMessage = (message: string): boolean => {
   const trimmedMessage = collapseWhitespace(message);
 
   return (
-    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|this act|that act|the act|this document|this report|uploaded (?:source|document|report)|aihw|covered by the legislation|can you cite the source|what does (?:the|this) (?:act|document|report|source) say|cite)\b/i.test(
+    /\b(according to|privacy act|what section|which section|section\s+[0-9a-z]|schedule\s+\d+|australian privacy principles|personal information|interference with privacy|serious interference with privacy|what law covers this|under the act|this act|that act|the act|this document|this report|this guidance|this guideline|uploaded (?:source|document|report)|aihw|covered by the legislation|can you cite the source|what does (?:the|this) (?:act|document|report|source|guidance|guideline) say|cite|higher education guidance|national code)\b/i.test(
       trimmedMessage
-    ) &&
-    (/\?/.test(trimmedMessage) || trimmedMessage.split(' ').length <= 10)
+    ) ||
+    ((/\b(what|does|how|which)\b/i.test(trimmedMessage) && /\?/.test(trimmedMessage)) &&
+      /\b(guidance|guideline|national code|higher education|provider|providers|student accommodation|affiliated environments)\b/i.test(
+        trimmedMessage
+      ))
   );
 };
 
@@ -950,6 +955,48 @@ export const buildConversationAssistantResponseMeta = (input: {
   const citations = Array.isArray(input.assistantPayload.citations)
     ? input.assistantPayload.citations
     : [];
+  const dedupedCitations = citations.filter((citation, index, collection) => {
+    if (!citation || typeof citation !== 'object') {
+      return index === collection.findIndex((item) => item === citation);
+    }
+
+    const safeCitation = citation as Record<string, unknown>;
+    const key = [
+      typeof safeCitation.sourceId === 'string' ? safeCitation.sourceId : '',
+      typeof safeCitation.title === 'string' ? safeCitation.title : '',
+      typeof safeCitation.sectionRef === 'string' ? safeCitation.sectionRef : '',
+      typeof safeCitation.url === 'string' ? safeCitation.url : '',
+      typeof safeCitation.page === 'number'
+        ? String(safeCitation.page)
+        : typeof safeCitation.pageStart === 'number'
+          ? String(safeCitation.pageStart)
+          : ''
+    ].join('|');
+
+    return (
+      index ===
+      collection.findIndex((item) => {
+        if (!item || typeof item !== 'object') {
+          return false;
+        }
+
+        const compareCitation = item as Record<string, unknown>;
+        const compareKey = [
+          typeof compareCitation.sourceId === 'string' ? compareCitation.sourceId : '',
+          typeof compareCitation.title === 'string' ? compareCitation.title : '',
+          typeof compareCitation.sectionRef === 'string' ? compareCitation.sectionRef : '',
+          typeof compareCitation.url === 'string' ? compareCitation.url : '',
+          typeof compareCitation.page === 'number'
+            ? String(compareCitation.page)
+            : typeof compareCitation.pageStart === 'number'
+              ? String(compareCitation.pageStart)
+              : ''
+        ].join('|');
+
+        return compareKey === key;
+      })
+    );
+  });
   const triageReady =
     Boolean(input.assistantPayload.triageReady) ||
     input.assistantPayload.nextAction === 'show_triage_button' ||
@@ -959,7 +1006,7 @@ export const buildConversationAssistantResponseMeta = (input: {
       typeof input.assistantPayload.assistantMessage === 'string'
         ? input.assistantPayload.assistantMessage
         : '',
-    citations: citations.map((citation) => {
+    citations: dedupedCitations.map((citation) => {
       if (!citation || typeof citation !== 'object') {
         return {};
       }
@@ -999,7 +1046,7 @@ export const buildConversationAssistantResponseMeta = (input: {
       turnPolicyDecision?.disclaimerRequired ?? true
         ? buildInformationOnlyDisclaimer()
         : '',
-    citations: citations.map((citation) => {
+    citations: dedupedCitations.map((citation) => {
       const safeCitation =
         citation && typeof citation === 'object'
           ? (citation as Record<string, unknown>)
@@ -1794,7 +1841,7 @@ const toRagSnippets = (results: Array<{
   citationUrl?: string;
   sectionRef?: string;
   sectionTitle?: string;
-  lastUpdated?: Date;
+  lastUpdated?: Date | string;
   text: string;
   metadata?: Record<string, unknown>;
 }>): SafeSpeakRagSnippet[] =>
@@ -1809,6 +1856,12 @@ const toRagSnippets = (results: Array<{
       typeof result.metadata?.commencementDate === 'string'
         ? result.metadata.commencementDate
         : undefined;
+    const lastUpdated =
+      result.lastUpdated instanceof Date
+        ? result.lastUpdated.toISOString()
+        : typeof result.lastUpdated === 'string'
+          ? result.lastUpdated
+          : undefined;
 
   return {
     sourceId: result.sourceId,
@@ -1823,7 +1876,7 @@ const toRagSnippets = (results: Array<{
       pathwayCategory: result.pathwayCategory,
       sourceType: result.sourceType,
       url: result.citationUrl,
-      lastUpdated: result.lastUpdated?.toISOString(),
+      lastUpdated,
       sectionNumber: result.sectionRef,
       sectionTitle: result.sectionTitle,
       page: pageStart,
@@ -1863,7 +1916,8 @@ const resolveGroundedLegalSourceFromResults = (
     citationUrl?: string;
   }>
 ): GroundedLegalSource | undefined => {
-  const topLegalResult = results.find((result) => result.sourceCategory === 'official_legal_source');
+  const topLegalResult =
+    results.find((result) => result.sourceCategory === 'official_legal_source') ?? results[0];
 
   if (!topLegalResult) {
     return undefined;
@@ -1875,6 +1929,44 @@ const resolveGroundedLegalSourceFromResults = (
     legislationName: topLegalResult.legislationName,
     citationUrl: topLegalResult.citationUrl
   };
+};
+
+const searchConversationFlowRag = async (input: {
+  query: string;
+  topK: number;
+  language: SupportedConversationLanguage;
+  jurisdiction:
+    | 'Cth'
+    | 'NSW'
+    | 'VIC'
+    | 'QLD'
+    | 'SA'
+    | 'WA'
+    | 'TAS'
+    | 'NT'
+    | 'ACT'
+    | 'AU'
+    | 'Global'
+    | 'Internal';
+  sourceCategory?: string;
+  sourceIds?: string[];
+  topic?: string;
+  legalDomain?: string;
+  pathwayCategory?: string;
+}): Promise<RagSearchResult[]> => {
+  const data = await callAiAgentRagSearch<{ results: RagSearchResult[] }>({
+    query: input.query,
+    topK: input.topK,
+    language: input.language,
+    jurisdiction: input.jurisdiction,
+    ...(input.sourceCategory ? { sourceCategory: input.sourceCategory } : {}),
+    ...(input.sourceIds?.length ? { sourceIds: input.sourceIds } : {}),
+    ...(input.topic ? { topic: input.topic } : {}),
+    ...(input.legalDomain ? { legalDomain: input.legalDomain } : {}),
+    ...(input.pathwayCategory ? { pathwayCategory: input.pathwayCategory } : {})
+  });
+
+  return Array.isArray(data.results) ? data.results : [];
 };
 
 export const resolvePriorGroundedLegalSource = (
@@ -2001,6 +2093,9 @@ const retrieveConversationFlowRag = async (input: {
     query: input.query,
     priorNamedLegislationReference: input.priorNamedLegislationReference
   });
+  const supportGuidanceFocusedQuery = /\b(guidance|guideline|higher education|provider|providers|national code|student accommodation|affiliated environments|uploaded (?:document|source|report))\b/i.test(
+    effectiveQuery
+  );
   const hasActFollowUp = hasContextualActReference(input.query);
 
   if (hasActFollowUp && input.priorGroundedLegalSource?.sourceId) {
@@ -2021,7 +2116,7 @@ const retrieveConversationFlowRag = async (input: {
     );
 
     for (const pinnedQuery of pinnedQueries) {
-      const pinnedResults = await searchRag(input.context, {
+      const pinnedResults = await searchConversationFlowRag({
         query: pinnedQuery,
         topK: 4,
         language: input.language,
@@ -2044,7 +2139,7 @@ const retrieveConversationFlowRag = async (input: {
   });
 
   if (explicitlyMatchedSourceIds.length > 0) {
-    return searchRag(input.context, {
+    return searchConversationFlowRag({
       query: effectiveQuery,
       topK: 4,
       language: input.language,
@@ -2054,13 +2149,27 @@ const retrieveConversationFlowRag = async (input: {
     });
   }
 
+  if (supportGuidanceFocusedQuery) {
+    const supportResults = await searchConversationFlowRag({
+      query: effectiveQuery,
+      topK: 4,
+      language: input.language,
+      jurisdiction: input.jurisdiction,
+      sourceCategory: 'official_support_source'
+    });
+
+    if (supportResults.length > 0) {
+      return supportResults;
+    }
+  }
+
   const searchPlan = buildConversationFlowRagSearchPlan({
     intent: input.intent,
     detectedCategory: input.detectedCategory
   });
 
   for (const attempt of searchPlan) {
-    const results = await searchRag(input.context, {
+    const results = await searchConversationFlowRag({
       query: effectiveQuery,
       topK: 4,
       language: input.language,
@@ -2086,7 +2195,7 @@ const retrieveConversationFlowRag = async (input: {
     });
 
     if (targetedSourceIds.length > 0) {
-      return searchRag(input.context, {
+      return searchConversationFlowRag({
         query: effectiveQuery,
         topK: 4,
         language: input.language,
