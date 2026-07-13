@@ -249,6 +249,9 @@ export const updateAdvocateRequestSchema = z.object({
   status: z.enum(ADVOCATE_REQUEST_STATUSES).optional(),
   assignedAdvocateProfileId: objectIdSchema.optional(),
   note: z.string().trim().max(1000).optional().or(z.literal('')),
+  noteAction: z
+    .enum(['assign', 'reassign', 'contact_initiated', 'decline', 'close'])
+    .optional(),
   reasonCode: z.string().trim().max(80).optional().or(z.literal(''))
 });
 

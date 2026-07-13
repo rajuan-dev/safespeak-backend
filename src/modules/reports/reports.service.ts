@@ -53,6 +53,16 @@ const generateRefNo = (): string =>
     .slice(2, 10)
     .toUpperCase()}`;
 
+const ACTIVE_DUPLICATE_SUBMISSION_STATUSES = [
+  'queued',
+  'submitted',
+  'acknowledged',
+  'requires_manual_action',
+  'config_missing'
+] as const;
+
+const NON_SUBMITTABLE_REPORT_STATUSES = ['withdrawn', 'closed', 'deleted'] as const;
+
 const createStatusHistory = (status: ReportStatus, reason?: string) => [
   {
     status,
@@ -265,6 +275,24 @@ const getDestinationMetadata = (
           ? metadata.reason
           : undefined
   };
+};
+
+const assertDestinationSupportsReport = (
+  report: HydratedDocument<ReportDocument>,
+  destination: AdminDestinationDocument
+): void => {
+  const { incidentTypes } = getDestinationMetadata(destination);
+
+  if (!incidentTypes.length) {
+    return;
+  }
+
+  if (!report.incidentType || !incidentTypes.includes(report.incidentType)) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Destination does not support this report incident type'
+    );
+  }
 };
 
 const buildDestinationReason = (
@@ -735,6 +763,11 @@ export const submitReportToDestination = async (
   userAgent?: string
 ): Promise<unknown> => {
   const report = await getOwnedReport(owner, reportId);
+
+  if (NON_SUBMITTABLE_REPORT_STATUSES.includes(report.status as never)) {
+    throw new ApiError(StatusCodes.CONFLICT, 'Report cannot be submitted in its current status');
+  }
+
   const destination = await AdminDestinationModel.findOne({
     _id: input.destinationId,
     isActive: true
@@ -743,6 +776,8 @@ export const submitReportToDestination = async (
   if (!destination) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Destination not found');
   }
+
+  assertDestinationSupportsReport(report, destination);
 
   const preview = await buildDestinationPreview(report, destination);
 
@@ -766,6 +801,18 @@ export const submitReportToDestination = async (
     }
   }
 
+  const existingSubmission = await ReportSubmissionModel.findOne({
+    reportId: report._id,
+    destinationId: destination._id,
+    ...ownerFilter(owner),
+    status: { $in: [...ACTIVE_DUPLICATE_SUBMISSION_STATUSES] },
+    deletedAt: { $exists: false }
+  }).sort({ createdAt: -1 });
+
+  if (existingSubmission) {
+    return toSafeSubmission(existingSubmission.toObject());
+  }
+
   const now = new Date();
   const submissionId = new Types.ObjectId();
   const evidenceSnapshot = preview.payloadPreview.evidence;
@@ -781,45 +828,70 @@ export const submitReportToDestination = async (
     payload: submissionPayload
   });
 
-  const submission = await ReportSubmissionModel.create({
-    _id: submissionId,
-    ...ownerFilter(owner),
-    reportId: report._id,
-    ownerType: owner.userId ? 'user' : 'anonymous',
-    destinationId: destination._id,
-    templateId: template?._id,
-    templateKey: template?.key,
-    destinationKey: destination.key,
-    destinationType: destination.type,
-    destinationName: destination.name,
-    channel: destination.channel,
-    jurisdiction: destination.jurisdiction,
-    languages: destination.languages,
-    status: deliveryResult.status,
-    anonymityMode: input.anonymityMode,
-    minimumRequiredInfo: preview.minimumRequiredInfo,
-    missingRequiredInfo: preview.missingRequiredInfo,
-    requiredConsentFlags: preview.requiredConsentFlags,
-    expectedNextSteps: preview.expectedNextSteps,
-    notes: input.notes,
-    endpoint: destination.endpoint,
-    contactEmail: destination.contactEmail,
-    contactPhone: destination.contactPhone,
-    payloadSnapshot: submissionPayload,
-    evidenceSnapshot,
-    consentSnapshot,
-    deliveryArtifacts: deliveryResult.deliveryArtifacts ?? [],
-    deliveryMessage: deliveryResult.message,
-    deliveryMode: deliveryResult.deliveryMode,
-    deliveryConfigurationStatus: deliveryResult.deliveryConfigurationStatus,
-    deliveryConfigurationIssues: deliveryResult.deliveryConfigurationIssues,
-    actuallySent: deliveryResult.actuallySent,
-    externalReference: deliveryResult.externalReference,
-    acknowledgementPayload: deliveryResult.acknowledgementPayload,
-    previewGeneratedAt: now,
-    submittedAt: deliveryResult.actuallySent ? now : undefined,
-    lastAttemptAt: now
-  });
+  let submission: HydratedDocument<ReportSubmissionDocument>;
+
+  try {
+    submission = await ReportSubmissionModel.create({
+      _id: submissionId,
+      ...ownerFilter(owner),
+      reportId: report._id,
+      ownerType: owner.userId ? 'user' : 'anonymous',
+      destinationId: destination._id,
+      templateId: template?._id,
+      templateKey: template?.key,
+      destinationKey: destination.key,
+      destinationType: destination.type,
+      destinationName: destination.name,
+      channel: destination.channel,
+      jurisdiction: destination.jurisdiction,
+      languages: destination.languages,
+      status: deliveryResult.status,
+      anonymityMode: input.anonymityMode,
+      minimumRequiredInfo: preview.minimumRequiredInfo,
+      missingRequiredInfo: preview.missingRequiredInfo,
+      requiredConsentFlags: preview.requiredConsentFlags,
+      expectedNextSteps: preview.expectedNextSteps,
+      notes: input.notes,
+      endpoint: destination.endpoint,
+      contactEmail: destination.contactEmail,
+      contactPhone: destination.contactPhone,
+      payloadSnapshot: submissionPayload,
+      evidenceSnapshot,
+      consentSnapshot,
+      deliveryArtifacts: deliveryResult.deliveryArtifacts ?? [],
+      deliveryMessage: deliveryResult.message,
+      deliveryMode: deliveryResult.deliveryMode,
+      deliveryConfigurationStatus: deliveryResult.deliveryConfigurationStatus,
+      deliveryConfigurationIssues: deliveryResult.deliveryConfigurationIssues,
+      actuallySent: deliveryResult.actuallySent,
+      externalReference: deliveryResult.externalReference,
+      acknowledgementPayload: deliveryResult.acknowledgementPayload,
+      previewGeneratedAt: now,
+      submittedAt: deliveryResult.actuallySent ? now : undefined,
+      lastAttemptAt: now
+    });
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 11000
+    ) {
+      const duplicateSubmission = await ReportSubmissionModel.findOne({
+        reportId: report._id,
+        destinationId: destination._id,
+        ...ownerFilter(owner),
+        status: { $in: [...ACTIVE_DUPLICATE_SUBMISSION_STATUSES] },
+        deletedAt: { $exists: false }
+      }).sort({ createdAt: -1 });
+
+      if (duplicateSubmission) {
+        return toSafeSubmission(duplicateSubmission.toObject());
+      }
+    }
+
+    throw error;
+  }
 
   report.status =
     deliveryResult.status === 'acknowledged'

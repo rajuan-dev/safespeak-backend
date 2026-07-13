@@ -1302,6 +1302,19 @@ export const updateAdvocateRequest = async (
   }
 
   const nextStatus = (updates.status as string | undefined) ?? existing.status;
+  const inferredNoteAction =
+    input.noteAction ??
+    (input.assignedAdvocateProfileId
+      ? existing.assignedAdvocateProfileId
+        ? 'reassign'
+        : 'assign'
+      : nextStatus === 'contact_initiated'
+        ? 'contact_initiated'
+        : nextStatus === 'declined'
+          ? 'decline'
+          : nextStatus === 'closed'
+            ? 'close'
+            : undefined);
   const historyUpdate =
     nextStatus !== existing.status
       ? {
@@ -1320,6 +1333,7 @@ export const updateAdvocateRequest = async (
     input.note && input.note.trim()
       ? {
           adminNotes: {
+            action: inferredNoteAction,
             note: input.note.trim(),
             createdAt: new Date(),
             createdBy: context.adminUserId
