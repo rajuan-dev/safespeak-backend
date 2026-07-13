@@ -75,6 +75,11 @@ import type {
 type HydratedConversationFlowSessionDocument = HydratedDocument<ConversationFlowSessionDocument>;
 
 const ACTIONABLE_TRIAGE_CONFIDENCE_THRESHOLD = 0.45;
+const TRIAGE_MIN_USER_TURNS = 5;
+const TRIAGE_EARLY_USER_TURNS = 4;
+const TRIAGE_MIN_TOTAL_MESSAGES = 10;
+const TRIAGE_MIN_TIMELINE_FIELDS = 3;
+const TRIAGE_EARLY_MIN_TIMELINE_FIELDS = 4;
 
 const ownerFilter = (owner: ConversationFlowContext['owner']) => {
   if (!owner.userId && !owner.sessionId) {
@@ -2648,19 +2653,25 @@ export const extractStructuredTriageFacts = (input: {
     ]) || employerHealthPrivacy;
   const protectedAttributes = extractProtectedAttributes(combinedText);
   const protectedAttribute = protectedAttributes.length > 0;
+  const accentTargeting =
+    workplaceContext &&
+    /\baccent\b/i.test(combinedText) &&
+    matchesAny(combinedText, [
+      /\b(mock(?:ed|ing)?|made fun of|jok(?:e|es)|laugh(?:ed|ing)? at|imitat(?:ed|ing)?)\b/i
+    ]);
   const racismOrHate = matchesAny(combinedText, [
-    /\b(racist|racism|racial abuse|racial slur|hate speech|racial hatred|vilification|go back to where you came from)\b/i
+    /\b(racist|racism|racial abuse|racial slur|hate speech|racial hatred|vilification|go back to where you came from|mock(?:ing)? my accent|accent jokes|made fun of my accent|because of my accent)\b/i
   ]);
   const workplaceDiscrimination =
     workplaceContext &&
-    (protectedAttribute || racismOrHate) &&
+    (protectedAttribute || racismOrHate || accentTargeting || /\baccent\b/i.test(combinedText)) &&
     matchesAny(combinedText, [
-      /\b(because of|due to|treated me differently|refused|excluded|humiliat|underpaid|cut my shifts|fired|dismissed|wouldn.t hire|wouldn't hire|racist abuse|racial abuse|racial slur|hate speech)\b/i
+      /\b(because of|due to|treated me differently|refused|excluded|humiliat|underpaid|cut my shifts|fired|dismissed|wouldn.t hire|wouldn't hire|racist abuse|racial abuse|racial slur|hate speech|mock(?:ed|ing)? my accent|made fun of my accent|accent jokes)\b/i
     ]);
   const workplaceBullying =
     workplaceContext &&
     matchesAny(combinedText, [
-      /\b(workplace bullying|bullying at work|manager humiliat|coworkers? harass|co-?workers? harass|workplace pressure|unsafe at work|boss .*harass|supervisor .*harass|repeatedly humiliate|constantly put me down)\b/i
+      /\b(workplace bullying|bullying at work|manager humiliat|coworkers? harass|co-?workers? harass|workplace pressure|unsafe at work|boss .*harass|supervisor .*harass|repeatedly humiliate|constantly put me down|manager .*mock(?:ed|ing)? my accent|mock(?:ed|ing)? my accent at work|made fun of my accent in meetings)\b/i
     ]) &&
     !workplaceDiscrimination;
   const migrationOrVisaThreat = matchesAny(combinedText, [
@@ -2723,6 +2734,7 @@ export const extractStructuredTriageFacts = (input: {
     workplaceContext,
     racismDiscrimination:
       racismOrHate ||
+      accentTargeting ||
       workplaceDiscrimination ||
       (protectedAttribute &&
         (housingOrServiceContext || schoolContext) &&
@@ -3511,6 +3523,13 @@ export const detectCategory = (input: {
     structuredFacts.workplaceDiscrimination,
     structuredFacts.employerHealthPrivacy
   ].filter(Boolean).length;
+  const workplaceAccentTargeting =
+    structuredFacts.workplaceContext &&
+    structuredFacts.employerInvolved &&
+    structuredFacts.evidenceAvailable &&
+    /\baccent\b/i.test(input.text) &&
+    /\b(manager|boss|supervisor|coworker|co-worker|team meeting|office|work)\b/i.test(input.text) &&
+    /\b(mock(?:ed|ing)?|made fun of|jok(?:e|es)|laughed at|imitat(?:ed|ing)?)\b/i.test(input.text);
   const scores: Record<ConversationFlowCategory, number> = {
     domestic_violence:
       baseScores.domestic_violence +
@@ -3562,6 +3581,11 @@ export const detectCategory = (input: {
       baseScores.mental_health_distress + (structuredFacts.selfHarmOrSuicidal ? 6 : 0),
     general_support: 0
   };
+
+  if (workplaceAccentTargeting) {
+    scores.racism_discrimination += 9;
+    scores.workplace_bullying += 7;
+  }
 
   const matches = (Object.entries(scores) as Array<[ConversationFlowCategory, number]>)
     .map(([category, score]) => ({
@@ -3866,7 +3890,9 @@ export const buildTurnHandlingPlan = (input: {
     input.selectedIntent === 'format_preference_set' ||
     input.selectedIntent === 'legal_general_information';
   const evidenceWithoutIncident =
-    input.selectedIntent === 'evidence_upload' && !activeIncidentExists;
+    input.selectedIntent === 'evidence_upload' &&
+    !activeIncidentExists &&
+    input.session.userTurnCount < TRIAGE_EARLY_USER_TURNS;
   const nonIncidentTurn = nonIncidentIntent || evidenceWithoutIncident;
   const triageUpdated = !nonIncidentTurn;
   const evidenceOnlyUpdate = input.selectedIntent === 'evidence_upload' && activeIncidentExists;
@@ -3914,7 +3940,17 @@ const hasEnoughContextForTriageAssessment = (
     (key) => timeline[key]?.trim()
   ).length;
 
-  return session.userTurnCount >= 4 && (usefulTimelineFields >= 3 || session.messageCount >= 8);
+  if (session.userTurnCount >= TRIAGE_MIN_USER_TURNS) {
+    return (
+      usefulTimelineFields >= TRIAGE_MIN_TIMELINE_FIELDS ||
+      session.messageCount >= TRIAGE_MIN_TOTAL_MESSAGES
+    );
+  }
+
+  return (
+    session.userTurnCount >= TRIAGE_EARLY_USER_TURNS &&
+    (usefulTimelineFields >= TRIAGE_EARLY_MIN_TIMELINE_FIELDS || session.messageCount >= 8)
+  );
 };
 
 const shouldBlockTriage = (triage: {
@@ -3923,8 +3959,7 @@ const shouldBlockTriage = (triage: {
   canProceedToRecommendations: boolean;
 }) =>
   triage.likelyCategory === 'general_support' ||
-  triage.confidenceScore < ACTIONABLE_TRIAGE_CONFIDENCE_THRESHOLD ||
-  !triage.canProceedToRecommendations;
+  triage.confidenceScore < ACTIONABLE_TRIAGE_CONFIDENCE_THRESHOLD;
 
 const buildConsentGovernanceRecord = (): ConsentGovernanceRecord => ({
   nothingSharedAutomatically: true,
