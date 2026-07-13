@@ -3,10 +3,15 @@ import { StatusCodes } from 'http-status-codes';
 
 import { asyncHandler } from '@common/errors/asyncHandler';
 import { successResponse } from '@common/responses/api-response';
+import {
+  callAiAgentRagAnswer,
+  callAiAgentRagSearch,
+  callAiAgentTimelineAssistant
+} from '@modules/ai/ai-agent.client';
 import { canAccessAdmin } from '@modules/rbac/rbac.utils';
 
+import { assertRagAiConsent } from './rag.consent';
 import {
-  answerRag,
   approveKnowledgeSource,
   approveOcrKnowledgeSource,
   createKnowledgeSource,
@@ -23,8 +28,6 @@ import {
   reindexKnowledgeSource,
   refreshKnowledgeSource,
   runKnowledgeSourceOcr,
-  runTimelineAssistant,
-  searchRag,
   uploadKnowledgeSourceDocument,
   updateKnowledgeSource
 } from './rag.service';
@@ -56,12 +59,13 @@ const getContext = (req: Request): RagServiceContext => ({
 });
 
 export const searchRagController = asyncHandler(async (req: Request, res: Response) => {
-  const results = await searchRag(getContext(req), req.body as RagSearchInput);
+  await assertRagAiConsent(getContext(req).owner);
+  const data = await callAiAgentRagSearch<{ results: unknown[] }>(req.body as RagSearchInput);
 
   res.status(StatusCodes.OK).json(
     successResponse(
       'RAG search completed',
-      { results },
+      data,
       {
         informationOnly: true,
         citationsRequired: true
@@ -71,13 +75,17 @@ export const searchRagController = asyncHandler(async (req: Request, res: Respon
 });
 
 export const answerRagController = asyncHandler(async (req: Request, res: Response) => {
-  const result = await answerRag(getContext(req), req.body as RagAnswerInput);
+  await assertRagAiConsent(getContext(req).owner);
+  const result = await callAiAgentRagAnswer<Record<string, unknown>>(req.body as RagAnswerInput);
 
   res.status(StatusCodes.OK).json(successResponse('RAG answer generated', result, { informationOnly: true }));
 });
 
 export const timelineAssistantController = asyncHandler(async (req: Request, res: Response) => {
-  const result = await runTimelineAssistant(getContext(req), req.body as RagTimelineAssistantInput);
+  await assertRagAiConsent(getContext(req).owner);
+  const result = await callAiAgentTimelineAssistant<Record<string, unknown>>(
+    req.body as RagTimelineAssistantInput
+  );
 
   res
     .status(StatusCodes.OK)

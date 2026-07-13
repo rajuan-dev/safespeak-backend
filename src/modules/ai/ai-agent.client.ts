@@ -161,3 +161,13 @@ export const callAiAgentVisionText = async (input: {
   const result = await callAgent<{ text?: string }>('/internal/ai/vision-text', input);
   return result.text?.trim() ?? '';
 };
+
+export const callAiAgentRagSearch = async <T>(input: Record<string, unknown>): Promise<T> =>
+  callAgent<T>('/internal/rag/search', input);
+
+export const callAiAgentRagAnswer = async <T>(input: Record<string, unknown>): Promise<T> =>
+  callAgent<T>('/internal/rag/answer', input);
+
+export const callAiAgentTimelineAssistant = async <T>(
+  input: Record<string, unknown>
+): Promise<T> => callAgent<T>('/internal/rag/timeline-assistant', input);
