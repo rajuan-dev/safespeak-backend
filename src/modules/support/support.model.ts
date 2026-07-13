@@ -92,6 +92,7 @@ export interface AdvocateRequestDocument extends SupportOwnedDocument {
   assignedAt?: Date;
   assignedBy?: Types.ObjectId;
   adminNotes?: Array<{
+    action?: 'assign' | 'reassign' | 'contact_initiated' | 'decline' | 'close';
     note: string;
     createdAt: Date;
     createdBy?: Types.ObjectId;
@@ -439,6 +440,11 @@ const advocateRequestSchema = new Schema<AdvocateRequestDocument>(
     adminNotes: {
       type: [
         {
+          action: {
+            type: String,
+            enum: ['assign', 'reassign', 'contact_initiated', 'decline', 'close'],
+            required: false
+          },
           note: { type: String, required: true, trim: true },
           createdAt: { type: Date, default: Date.now, required: true },
           createdBy: { type: Schema.Types.ObjectId, required: false }

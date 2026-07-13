@@ -14,6 +14,14 @@ import type {
   ReportSubmissionStatus
 } from './reports.types';
 
+const ACTIVE_REPORT_SUBMISSION_STATUSES = [
+  'queued',
+  'submitted',
+  'acknowledged',
+  'requires_manual_action',
+  'config_missing'
+] as const;
+
 export interface ReportStatusHistoryItem {
   status: ReportStatus;
   changedAt: Date;
@@ -416,6 +424,17 @@ reportSubmissionSchema.index({ sessionId: 1, reportId: 1, createdAt: -1 });
 reportSubmissionSchema.index(
   { reportId: 1, destinationId: 1, status: 1 },
   { partialFilterExpression: { deletedAt: { $exists: false } } }
+);
+reportSubmissionSchema.index(
+  { reportId: 1, destinationId: 1 },
+  {
+    name: 'unique_active_report_destination_submission',
+    unique: true,
+    partialFilterExpression: {
+      deletedAt: { $exists: false },
+      status: { $in: [...ACTIVE_REPORT_SUBMISSION_STATUSES] }
+    }
+  }
 );
 
 export const ReportModel = model<ReportDocument>('Report', reportSchema);

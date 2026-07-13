@@ -82,11 +82,20 @@ test('admin request updates are limited to assignment, status, and short note', 
     status: 'closed',
     assignedAdvocateProfileId: '0123456789abcdef01234567',
     note: 'Closed after admin review.',
+    noteAction: 'close',
     safeContactPreference: 'phone'
   });
 
   assert.equal(result.success, true);
+  assert.equal(result.data.noteAction, 'close');
   assert.equal(result.data.safeContactPreference, undefined);
+
+  const excessiveNote = updateAdvocateRequestSchema.safeParse({
+    note: 'x'.repeat(1001),
+    noteAction: 'assign'
+  });
+
+  assert.equal(excessiveNote.success, false);
 });
 
 test('owned advocate request query and cancellation schemas are bounded', () => {
