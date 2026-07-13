@@ -8,6 +8,53 @@ type AgentEnvelope<T> = { success?: boolean; message?: string; data?: T };
 const agentUrl = (path: string): string =>
   `${env.AI_AGENT_BASE_URL.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
 
+const createDirectOpenAiEmbeddings = async (
+  texts: string[],
+  model?: string
+): Promise<number[][]> => {
+  if (!env.OPENAI_API_KEY) {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'SafeSpeak AI agent request failed');
+  }
+
+  const response = await fetch('https://api.openai.com/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      input: texts,
+      model
+    })
+  }).catch(() => {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI embeddings request failed');
+  });
+
+  const payload = (await response.json().catch(() => null)) as
+    | {
+        data?: Array<{ embedding?: number[] }>;
+        error?: { message?: string };
+      }
+    | null;
+
+  if (!response.ok) {
+    throw new ApiError(
+      response.status >= 500 ? StatusCodes.BAD_GATEWAY : response.status,
+      payload?.error?.message ?? 'OpenAI embeddings request failed'
+    );
+  }
+
+  const embeddings = Array.isArray(payload?.data)
+    ? payload.data.map((item) => item.embedding).filter((value): value is number[] => Array.isArray(value))
+    : [];
+
+  if (embeddings.length !== texts.length) {
+    throw new ApiError(StatusCodes.BAD_GATEWAY, 'OpenAI returned invalid embeddings');
+  }
+
+  return embeddings;
+};
+
 const callAgent = async <T>(path: string, body: unknown): Promise<T> => {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (env.AI_AGENT_INTERNAL_TOKEN) headers['X-AI-Agent-Token'] = env.AI_AGENT_INTERNAL_TOKEN;
@@ -72,11 +119,20 @@ export const callAiAgentJson = async <T>(input: {
 
 export const createAiAgentEmbeddings = async (texts: string[], model?: string): Promise<number[][]> => {
   if (texts.length === 0) return [];
-  const result = await callAgent<{ embeddings?: number[][] }>('/internal/ai/embeddings', { texts, model });
-  if (!result.embeddings || result.embeddings.length !== texts.length) {
-    throw new ApiError(StatusCodes.BAD_GATEWAY, 'SafeSpeak AI agent returned invalid embeddings');
+
+  try {
+    const result = await callAgent<{ embeddings?: number[][] }>('/internal/ai/embeddings', { texts, model });
+    if (!result.embeddings || result.embeddings.length !== texts.length) {
+      throw new ApiError(StatusCodes.BAD_GATEWAY, 'SafeSpeak AI agent returned invalid embeddings');
+    }
+    return result.embeddings;
+  } catch (error) {
+    if (!env.OPENAI_API_KEY) {
+      throw error;
+    }
+
+    return createDirectOpenAiEmbeddings(texts, model ?? env.OPENAI_EMBEDDING_MODEL);
   }
-  return result.embeddings;
 };
 
 export const transcribeWithAiAgent = async (input: {

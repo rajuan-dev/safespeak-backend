@@ -61,6 +61,7 @@ const envSchema = z
     MEDIA_ASSET_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(2097152),
     AI_AGENT_BASE_URL: z.string().url().default('http://localhost:8000/api/v1'),
     AI_AGENT_INTERNAL_TOKEN: optionalString(z.string().min(1)),
+    OPENAI_API_KEY: optionalString(z.string().min(1)),
     OPENAI_MODEL: z.string().min(1).default('gpt-5.2'),
     SCAMSHIELD_URLHAUS_AUTH_KEY: optionalString(z.string().min(1)),
     SCAMSHIELD_SAFE_BROWSING_API_KEY: optionalString(z.string().min(1)),

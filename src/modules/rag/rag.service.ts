@@ -492,6 +492,26 @@ export const getKnowledgeSourceApprovalBlocker = (
     };
   }
 
+  if (source.nextReviewAt && source.nextReviewAt.getTime() <= now.getTime()) {
+    return {
+      code: 'review_expired',
+      statusCode: StatusCodes.CONFLICT,
+      message: 'Knowledge source review date has expired; refresh before approval'
+    };
+  }
+
+  if (
+    isGovernedKnowledgeSource(source.sourceCategory) &&
+    source.nextRefreshAt &&
+    source.nextRefreshAt.getTime() <= now.getTime()
+  ) {
+    return {
+      code: 'refresh_expired',
+      statusCode: StatusCodes.CONFLICT,
+      message: 'Knowledge source refresh date has expired; refresh before approval'
+    };
+  }
+
   if (source.ingestionStatus === 'failed' || source.ingestionStatus === 'partial_index_failed') {
     return {
       code: 'ingestion_failed',
@@ -513,26 +533,6 @@ export const getKnowledgeSourceApprovalBlocker = (
       code: 'legal_review_missing',
       statusCode: StatusCodes.FORBIDDEN,
       message: 'Legal knowledge sources require legalReviewed=true before approval'
-    };
-  }
-
-  if (source.nextReviewAt && source.nextReviewAt.getTime() <= now.getTime()) {
-    return {
-      code: 'review_expired',
-      statusCode: StatusCodes.CONFLICT,
-      message: 'Knowledge source review date has expired; refresh before approval'
-    };
-  }
-
-  if (
-    isGovernedKnowledgeSource(source.sourceCategory) &&
-    source.nextRefreshAt &&
-    source.nextRefreshAt.getTime() <= now.getTime()
-  ) {
-    return {
-      code: 'refresh_expired',
-      statusCode: StatusCodes.CONFLICT,
-      message: 'Knowledge source refresh date has expired; refresh before approval'
     };
   }
 
@@ -4453,29 +4453,23 @@ export const approveKnowledgeSource = async (
   const source = await getSource(sourceId);
   assertMergedKnowledgeSourceGovernance(source, {});
 
-  const isAdminDirectApproval = context.actorType === 'admin' && Boolean(context.owner.userId);
-  const approvalBlocker = isAdminDirectApproval ? undefined : getKnowledgeSourceApprovalBlocker(source);
+  const approvalBlocker = getKnowledgeSourceApprovalBlocker(source);
 
   if (approvalBlocker) {
     throw new ApiError(approvalBlocker.statusCode, approvalBlocker.message);
   }
 
-  if (isAdminDirectApproval && source.sourceCategory === 'official_legal_source' && !source.legalReviewed) {
-    source.legalReviewed = true;
-    source.legalReviewedAt = new Date();
-    source.legalReviewedBy = context.owner.userId as never;
+  if (source.ingestionStatus !== 'embedded') {
+    throw new ApiError(
+      StatusCodes.CONFLICT,
+      'Knowledge sources must finish extraction and indexing before approval'
+    );
   }
+
   const shouldSyncChunksForApproval =
     source.sourceCategory === 'official_legal_source' &&
     source.ingestionStatus === 'embedded' &&
     source.legalReviewed;
-
-  if (isAdminDirectApproval && source.ocrReviewRequired) {
-    source.ocrReviewRequired = false;
-    source.ocrReviewedAt = new Date();
-    source.ocrReviewedBy = context.owner.userId as never;
-    source.ocrStatus = 'reviewed';
-  }
 
   source.status = 'approved';
   source.approvedBy = context.owner.userId as never;
@@ -6294,8 +6288,8 @@ export const buildGroundedSectionAnswer = (
       : sectionSubject;
 
   return [
-    `Compared with what you asked, ${sourceTitle} addresses ${sectionSubject} in ${sectionRef}.`,
-    `In practical terms, if your situation is about ${simpleTopic}, this is the part of the law that applies to it.`
+    `Yes — under ${sourceTitle}, ${sectionRef} deals with ${sectionSubject}.`,
+    `In simple terms, this section is about ${simpleTopic}.`
   ].join('\n\n');
 };
 
@@ -6333,8 +6327,8 @@ export const buildGroundedDefinitionAnswer = (
   const sourceTitle = /^the\s+/i.test(topResult.title) ? topResult.title : `the ${topResult.title}`;
 
   return [
-    `Compared with your question, ${sourceTitle} uses ${sectionRef} to define ${focusedQuery.toLowerCase()}.`,
-    `In practical terms, that means ${normalizedDefinitionText}`
+    `Under ${sourceTitle}, ${sectionRef} says ${focusedQuery.toLowerCase()} means ${normalizedDefinitionText}`,
+    'In simple terms, this is the definition the source gives for that term.'
   ].join('\n\n');
 };
 
