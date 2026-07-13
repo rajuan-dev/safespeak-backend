@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
 import {
+  ADVOCATE_AVAILABILITIES,
+  ADVOCATE_OPT_IN_STATUSES,
+  ADVOCATE_REQUEST_STATUSES,
+  ADVOCATE_VETTING_STATUSES,
   SUPPORT_ISSUE_TYPES,
   SUPPORT_RESOURCE_RISK_LEVELS,
   SUPPORT_RESOURCE_TYPES,
@@ -13,6 +17,14 @@ import {
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
 const optionalUrlSchema = z.string().trim().url().max(500).optional().or(z.literal(''));
 const stringListSchema = z.array(z.string().trim().min(1).max(160)).default([]);
+const keySchema = z.string().trim().toLowerCase().min(2).max(120).regex(/^[a-z][a-z0-9_]*$/);
+const languageIdSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(2)
+  .max(12)
+  .regex(/^[a-z]{2,3}(?:-[a-z]{2})?$/, 'Use a canonical language id such as en or en-us');
 
 export const serviceParamsSchema = z.object({
   id: z.string().trim().min(1).max(120)
@@ -23,6 +35,18 @@ export const safetyPlanParamsSchema = z.object({
 });
 
 export const adminSupportServiceParamsSchema = z.object({
+  id: objectIdSchema
+});
+
+export const adminAdvocateProfileParamsSchema = z.object({
+  id: objectIdSchema
+});
+
+export const adminAdvocateRequestParamsSchema = z.object({
+  id: objectIdSchema
+});
+
+export const advocateRequestParamsSchema = z.object({
   id: objectIdSchema
 });
 
@@ -46,6 +70,36 @@ export const adminWarmReferralQuerySchema = z.object({
   status: z.enum(SUPPORT_REQUEST_STATUSES).optional(),
   serviceId: z.string().trim().max(120).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+export const advocateQuerySchema = z.object({
+  language: languageIdSchema.optional(),
+  region: z.string().trim().max(120).optional(),
+  issueType: z.enum(SUPPORT_ISSUE_TYPES).optional(),
+  culturalProfile: z.string().trim().max(160).optional(),
+  faithProfile: z.string().trim().max(160).optional(),
+  availability: z.enum(ADVOCATE_AVAILABILITIES).optional()
+});
+
+export const adminAdvocateProfileQuerySchema = advocateQuerySchema.extend({
+  isPublished: z.coerce.boolean().optional(),
+  isActive: z.coerce.boolean().optional(),
+  vettingStatus: z.enum(ADVOCATE_VETTING_STATUSES).optional(),
+  optInStatus: z.enum(ADVOCATE_OPT_IN_STATUSES).optional(),
+  includeDeleted: z.coerce.boolean().optional()
+});
+
+export const adminAdvocateRequestQuerySchema = z.object({
+  status: z.enum(ADVOCATE_REQUEST_STATUSES).optional(),
+  advocateProfileId: objectIdSchema.optional(),
+  advocateKey: z.string().trim().toLowerCase().max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+export const ownedAdvocateRequestQuerySchema = z.object({
+  status: z.enum(ADVOCATE_REQUEST_STATUSES).optional(),
+  activeOnly: z.coerce.boolean().optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20)
 });
 
 export const updateWarmReferralStatusSchema = z.object({
@@ -143,14 +197,63 @@ export const warmReferralSchema = z.object({
 
 export const advocateRequestSchema = z.object({
   advocateType: z.string().trim().min(1).max(120),
-  language: z.string().trim().min(2).max(12).default('en'),
-  issueType: z.string().trim().max(120).optional(),
+  advocateProfileId: objectIdSchema.optional(),
+  advocateKey: z.string().trim().toLowerCase().max(120).optional(),
+  language: languageIdSchema.default('en'),
+  issueType: z.enum(SUPPORT_ISSUE_TYPES).optional(),
   region: z.string().trim().max(120).optional(),
   safeContactPreference: z
     .enum(['phone', 'email', 'in_app', 'no_direct_contact'])
     .default('in_app'),
   notes: z.string().trim().max(4000).optional(),
   confirmationCopy: z.string().trim().max(1000).optional()
+});
+
+export const advocateTrainingCredentialSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  provider: z.string().trim().max(200).optional().or(z.literal('')),
+  completedAt: z.coerce.date().optional(),
+  expiresAt: z.coerce.date().optional(),
+  verificationSummary: z.string().trim().max(1000).optional().or(z.literal(''))
+});
+
+export const advocateProfileSchema = z.object({
+  key: keySchema,
+  displayName: z.string().trim().min(1).max(200),
+  publicBio: z.string().trim().max(2000).optional().or(z.literal('')),
+  languages: z.array(languageIdSchema).min(1).default(['en']),
+  regions: stringListSchema.default(['national']),
+  issueTypes: z.array(z.enum(SUPPORT_ISSUE_TYPES)).min(1).default(['general_support']),
+  culturalProfiles: stringListSchema,
+  faithProfiles: stringListSchema,
+  availability: z.enum(ADVOCATE_AVAILABILITIES).default('request_based'),
+  isActive: z.boolean().default(true),
+  isPublished: z.boolean().default(false),
+  optInStatus: z.enum(ADVOCATE_OPT_IN_STATUSES).default('pending'),
+  vetting: z
+    .object({
+      status: z.enum(ADVOCATE_VETTING_STATUSES).default('pending'),
+      reviewedAt: z.coerce.date().optional(),
+      notes: z.string().trim().max(2000).optional().or(z.literal(''))
+    })
+    .default({ status: 'pending' }),
+  trainingCredentials: z.array(advocateTrainingCredentialSchema).max(24).default([]),
+  internalContactReference: z.string().trim().max(300).optional().or(z.literal('')),
+  privateEmail: z.string().trim().email().max(320).optional().or(z.literal('')),
+  privatePhone: z.string().trim().max(80).optional().or(z.literal(''))
+});
+
+export const updateAdvocateProfileSchema = advocateProfileSchema.partial();
+
+export const updateAdvocateRequestSchema = z.object({
+  status: z.enum(ADVOCATE_REQUEST_STATUSES).optional(),
+  assignedAdvocateProfileId: objectIdSchema.optional(),
+  note: z.string().trim().max(1000).optional().or(z.literal('')),
+  reasonCode: z.string().trim().max(80).optional().or(z.literal(''))
+});
+
+export const cancelAdvocateRequestSchema = z.object({
+  reasonCode: z.string().trim().max(80).default('user_cancelled')
 });
 
 export const helpSupportRequestSchema = z.object({
@@ -173,12 +276,20 @@ export const updateSafetyPlanSchema = safetyPlanSchema.partial();
 export type ServicesQueryInput = z.infer<typeof servicesQuerySchema>;
 export type AdminServicesQueryInput = z.infer<typeof adminServicesQuerySchema>;
 export type AdminWarmReferralQueryInput = z.infer<typeof adminWarmReferralQuerySchema>;
+export type AdvocateQueryInput = z.infer<typeof advocateQuerySchema>;
+export type AdminAdvocateProfileQueryInput = z.infer<typeof adminAdvocateProfileQuerySchema>;
+export type AdminAdvocateRequestQueryInput = z.infer<typeof adminAdvocateRequestQuerySchema>;
+export type OwnedAdvocateRequestQueryInput = z.infer<typeof ownedAdvocateRequestQuerySchema>;
 export type UpdateWarmReferralStatusInput = z.infer<typeof updateWarmReferralStatusSchema>;
 export type SupportServiceInput = z.infer<typeof supportServiceSchema>;
 export type UpdateSupportServiceInput = z.infer<typeof updateSupportServiceSchema>;
 export type RecommendationsInput = z.infer<typeof recommendationsSchema>;
 export type WarmReferralInput = z.infer<typeof warmReferralSchema>;
 export type AdvocateRequestInput = z.infer<typeof advocateRequestSchema>;
+export type AdvocateProfileInput = z.infer<typeof advocateProfileSchema>;
+export type UpdateAdvocateProfileInput = z.infer<typeof updateAdvocateProfileSchema>;
+export type UpdateAdvocateRequestInput = z.infer<typeof updateAdvocateRequestSchema>;
+export type CancelAdvocateRequestInput = z.infer<typeof cancelAdvocateRequestSchema>;
 export type HelpSupportRequestInput = z.infer<typeof helpSupportRequestSchema>;
 export type SafetyPlanInput = z.infer<typeof safetyPlanSchema>;
 export type UpdateSafetyPlanInput = z.infer<typeof updateSafetyPlanSchema>;

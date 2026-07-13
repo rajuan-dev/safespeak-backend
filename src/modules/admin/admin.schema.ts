@@ -15,6 +15,15 @@ import {
 } from './admin.constants';
 
 const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
+const taxonomyKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(120)
+  .regex(/^[a-z0-9]+(?:_[a-z0-9]+)*$/, {
+    message:
+      'Taxonomy key must use lowercase letters, numbers, and single underscores only'
+  });
 const optionalClearedStringSchema = (max: number) =>
   z
     .union([z.string().trim().max(max), z.literal(null)])
@@ -56,14 +65,21 @@ export const taxonomyQuerySchema = z.object({
 
 export const taxonomySchema = z.object({
   type: z.enum(ADMIN_TAXONOMY_TYPES),
-  key: z.string().trim().min(1).max(120),
+  key: taxonomyKeySchema,
   label: z.string().trim().min(1).max(200),
   description: z.string().trim().max(1000).optional(),
   isActive: z.boolean().default(true),
   metadata: z.record(z.unknown()).default({})
 });
 
-export const updateTaxonomySchema = taxonomySchema.partial();
+export const updateTaxonomySchema = z
+  .object({
+    label: z.string().trim().min(1).max(200).optional(),
+    description: z.string().trim().max(1000).optional(),
+    isActive: z.boolean().optional(),
+    metadata: z.record(z.unknown()).optional()
+  })
+  .strict();
 
 export const culturalProfileQuerySchema = z.object({
   communityType: z.enum(ADMIN_CULTURAL_PROFILE_TYPES).optional(),

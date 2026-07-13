@@ -7,6 +7,7 @@ import {
   seedDefaultSubmissionTemplates,
   seedDefaultSuperAdmin
 } from './modules/admin/admin.seed';
+import { seedDefaultSupportData } from './modules/support/support.service';
 import { seedDefaultTaxonomies } from './modules/taxonomies/taxonomies.seed';
 
 let bootstrapPromise: Promise<void> | null = null;
@@ -20,6 +21,7 @@ const initializeApp = async (): Promise<void> => {
   await seedDefaultReportDestinations();
   await seedDefaultSubmissionTemplates();
   await seedDefaultTaxonomies();
+  await seedDefaultSupportData();
 };
 
 export const bootstrapApp = async (): Promise<void> => {
