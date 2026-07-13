@@ -20,6 +20,7 @@ import {
   adminPrivacyRequestsController,
   adminReportDeliveriesController,
   adminSubmissionTemplatesController,
+  adminTaxonomyDependenciesController,
   adminTaxonomyController,
   adminTaxonomiesController,
   adminUsersController,
@@ -117,6 +118,12 @@ adminRoutes.get(
   requireAdminRole('super_admin', 'content_admin'),
   validate({ query: taxonomyQuerySchema }),
   adminTaxonomiesController
+);
+adminRoutes.get(
+  '/taxonomies/:id/dependencies',
+  requireAdminRole('super_admin', 'content_admin'),
+  validate({ params: adminParamsSchema }),
+  adminTaxonomyDependenciesController
 );
 adminRoutes.get(
   '/taxonomies/:id',

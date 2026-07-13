@@ -14,6 +14,7 @@ export const ADMIN_ACTIONS = {
   taxonomyCreate: 'admin.taxonomies.create',
   taxonomyUpdate: 'admin.taxonomies.update',
   taxonomyDelete: 'admin.taxonomies.delete',
+  taxonomyDependencies: 'admin.taxonomies.dependencies',
   destinationsList: 'admin.destinations.list',
   destinationCreate: 'admin.destinations.create',
   destinationUpdate: 'admin.destinations.update',

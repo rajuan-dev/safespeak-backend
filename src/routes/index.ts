@@ -32,7 +32,11 @@ import { reportsRoutes } from '@modules/reports/reports.routes';
 import { scamShieldRoutes } from '@modules/scamshield/scamshield.routes';
 import { sessionsRoutes } from '@modules/sessions/sessions.routes';
 import { scopeRoutes } from '@modules/scope/scope.routes';
-import { adminSupportServiceRoutes, supportRoutes } from '@modules/support/support.routes';
+import {
+  adminAdvocateRoutes,
+  adminSupportServiceRoutes,
+  supportRoutes
+} from '@modules/support/support.routes';
 
 export const apiRouter = Router();
 
@@ -65,6 +69,7 @@ apiRouter.use('/scamshield', scamShieldRoutes);
 apiRouter.use('/support', supportRoutes);
 apiRouter.use('/feedback', feedbackRoutes);
 apiRouter.use('/notifications', notificationsRoutes);
+apiRouter.use('/admin/advocates', adminAdvocateRoutes);
 apiRouter.use('/admin/support-services', adminSupportServiceRoutes);
 apiRouter.use('/admin/feedback', adminFeedbackRoutes);
 apiRouter.use('/scope', scopeRoutes);

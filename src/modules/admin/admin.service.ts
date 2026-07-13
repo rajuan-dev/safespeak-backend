@@ -33,6 +33,7 @@ import { getDestinationDeliveryReadiness } from '@modules/reports/reports-delive
 import { ReportModel, ReportSubmissionModel } from '@modules/reports/reports.model';
 import {
   HelpSupportRequestModel,
+  SupportServiceModel,
   WarmReferralModel
 } from '@modules/support/support.model';
 import {
@@ -73,7 +74,26 @@ import type {
   UpdateTaxonomyInput,
   UsersQueryInput
 } from './admin.schema';
-import type { AdminServiceContext } from './admin.types';
+import type { AdminServiceContext, AdminTaxonomyType } from './admin.types';
+
+export interface TaxonomyDependencyItem {
+  id: string;
+  label: string;
+  count: number;
+  blocking: boolean;
+  detail: string;
+}
+
+export interface TaxonomyDependencyCheck {
+  taxonomyId: string;
+  type: AdminTaxonomyType;
+  key: string;
+  label: string;
+  hasBlockingDependencies: boolean;
+  hasHistoricalDependencies: boolean;
+  items: TaxonomyDependencyItem[];
+  warning: string;
+}
 
 const audit = async (
   context: AdminServiceContext,
@@ -822,6 +842,155 @@ export const getTaxonomy = async (
   return taxonomy;
 };
 
+const getExistingTaxonomy = async (id: string) => {
+  const taxonomy = await AdminTaxonomyModel.findOne({
+    _id: id,
+    deletedAt: { $exists: false }
+  });
+
+  if (!taxonomy) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Taxonomy not found');
+  }
+
+  return taxonomy;
+};
+
+const activeDestinationDependencyCount = async (
+  type: AdminTaxonomyType,
+  key: string
+): Promise<number> => {
+  if (type !== 'incident_type') {
+    return 0;
+  }
+
+  return AdminDestinationModel.countDocuments({
+    isActive: true,
+    'metadata.incidentTypes': key
+  });
+};
+
+const supportServiceDependencyCount = async (
+  type: AdminTaxonomyType,
+  key: string
+): Promise<number> => {
+  if (type !== 'support_need') {
+    return 0;
+  }
+
+  return SupportServiceModel.countDocuments({
+    isActive: true,
+    issueTypes: key
+  });
+};
+
+export const getTaxonomyDependencies = async (
+  context: AdminServiceContext,
+  id: string
+): Promise<TaxonomyDependencyCheck> => {
+  const taxonomy = await getExistingTaxonomy(id);
+  const [reportCount, destinationCount, triageCount, supportServiceCount] = await Promise.all([
+    taxonomy.type === 'incident_type'
+      ? ReportModel.countDocuments({ incidentType: taxonomy.key, deletedAt: { $exists: false } })
+      : Promise.resolve(0),
+    activeDestinationDependencyCount(taxonomy.type, taxonomy.key),
+    taxonomy.type === 'incident_type'
+      ? ConversationFlowTriageModel.countDocuments({ likelyCategory: taxonomy.key })
+      : Promise.resolve(0),
+    supportServiceDependencyCount(taxonomy.type, taxonomy.key)
+  ]);
+  const items: TaxonomyDependencyItem[] = [
+    ...(reportCount > 0
+      ? [
+          {
+            id: 'reports',
+            label: 'Existing reports',
+            count: reportCount,
+            blocking: false,
+            detail:
+              'Historical reports store this key as plain text and will remain unchanged.'
+          }
+        ]
+      : []),
+    ...(destinationCount > 0
+      ? [
+          {
+            id: 'destinations',
+            label: 'Active destination matching rules',
+            count: destinationCount,
+            blocking: true,
+            detail:
+              'Active destinations use this incident type for matching, so removing it could affect routing.'
+          }
+        ]
+      : []),
+    ...(triageCount > 0
+      ? [
+          {
+            id: 'triage',
+            label: 'Existing triage records',
+            count: triageCount,
+            blocking: false,
+            detail:
+              'Historical triage records store this key and will continue to load unchanged.'
+          }
+        ]
+      : []),
+    ...(supportServiceCount > 0
+      ? [
+          {
+            id: 'supportServices',
+            label: 'Active support service matching rules',
+            count: supportServiceCount,
+            blocking: true,
+            detail:
+              'Active support services use this triage label for recommendations, so removing it could affect matching.'
+          }
+        ]
+      : [])
+  ];
+  const hasBlockingDependencies = items.some((item) => item.blocking);
+  const hasHistoricalDependencies = items.some((item) => !item.blocking);
+
+  await audit(context, ADMIN_ACTIONS.taxonomyDependencies, taxonomy._id.toString(), {
+    type: taxonomy.type,
+    key: taxonomy.key,
+    hasBlockingDependencies,
+    hasHistoricalDependencies
+  });
+
+  return {
+    taxonomyId: taxonomy._id.toString(),
+    type: taxonomy.type,
+    key: taxonomy.key,
+    label: taxonomy.label,
+    hasBlockingDependencies,
+    hasHistoricalDependencies,
+    items,
+    warning: hasBlockingDependencies
+      ? 'This taxonomy is used by active matching rules. Update those dependencies before deactivating or deleting it.'
+      : hasHistoricalDependencies
+        ? 'This taxonomy appears in historical records. Those records will remain unchanged, but the taxonomy will stop appearing in future active catalogs.'
+        : 'No existing references were found. It can be safely deactivated or deleted.'
+  };
+};
+
+const assertTaxonomyCanBeRemovedFromActiveCatalog = async (
+  context: AdminServiceContext,
+  taxonomyId: string
+): Promise<TaxonomyDependencyCheck> => {
+  const dependencies = await getTaxonomyDependencies(context, taxonomyId);
+
+  if (dependencies.hasBlockingDependencies) {
+    throw new ApiError(
+      StatusCodes.CONFLICT,
+      dependencies.warning,
+      dependencies.items.filter((item) => item.blocking)
+    );
+  }
+
+  return dependencies;
+};
+
 export const createTaxonomy = async (
   context: AdminServiceContext,
   input: TaxonomyInput
@@ -883,19 +1052,17 @@ export const updateTaxonomy = async (
   id: string,
   input: UpdateTaxonomyInput
 ): Promise<unknown> => {
-  const taxonomy = await AdminTaxonomyModel.findOne({
-    _id: id,
-    deletedAt: { $exists: false }
-  });
+  const taxonomy = await getExistingTaxonomy(id);
+  const previousLabel = taxonomy.label;
+  const previousDescription = taxonomy.description;
+  const previousStatus = taxonomy.isActive;
 
-  if (!taxonomy) {
-    throw new ApiError(StatusCodes.NOT_FOUND, 'Taxonomy not found');
+  if (input.isActive === false && taxonomy.isActive) {
+    await assertTaxonomyCanBeRemovedFromActiveCatalog(context, id);
   }
 
   const shouldRefreshMetadata =
     input.metadata !== undefined
-    || input.type !== undefined
-    || input.key !== undefined
     || input.label !== undefined
     || input.description !== undefined
     || Object.keys(taxonomy.metadata ?? {}).length === 0;
@@ -905,8 +1072,8 @@ export const updateTaxonomy = async (
     ...(shouldRefreshMetadata
       ? {
           metadata: buildTaxonomyMetadata({
-            type: input.type ?? taxonomy.type,
-            key: input.key ?? taxonomy.key,
+            type: taxonomy.type,
+            key: taxonomy.key,
             label: input.label ?? taxonomy.label,
             description: input.description ?? taxonomy.description,
             metadata: {
@@ -919,7 +1086,15 @@ export const updateTaxonomy = async (
   });
   await taxonomy.save();
   await audit(context, ADMIN_ACTIONS.taxonomyUpdate, taxonomy._id.toString(), {
-    changedFields: Object.keys(input)
+    type: taxonomy.type,
+    key: taxonomy.key,
+    changedFields: Object.keys(input),
+    previousStatus,
+    newStatus: taxonomy.isActive,
+    previousLabel,
+    newLabel: taxonomy.label,
+    previousDescription,
+    newDescription: taxonomy.description
   });
 
   return taxonomy;
@@ -929,14 +1104,9 @@ export const deleteTaxonomy = async (
   context: AdminServiceContext,
   id: string
 ): Promise<unknown> => {
-  const taxonomy = await AdminTaxonomyModel.findOne({
-    _id: id,
-    deletedAt: { $exists: false }
-  });
+  const taxonomy = await getExistingTaxonomy(id);
 
-  if (!taxonomy) {
-    throw new ApiError(StatusCodes.NOT_FOUND, 'Taxonomy not found');
-  }
+  await assertTaxonomyCanBeRemovedFromActiveCatalog(context, id);
 
   taxonomy.isActive = false;
   taxonomy.deletedAt = new Date();

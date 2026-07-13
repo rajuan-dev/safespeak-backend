@@ -43,6 +43,7 @@ import {
   getLanguagePacksOverview,
   getPlatformHealthOverview,
   getTaxonomy,
+  getTaxonomyDependencies,
   listAuditLogs,
   listDestinations,
   listCulturalProfiles,
@@ -152,6 +153,16 @@ export const adminTaxonomyController = asyncHandler(async (req: Request, res: Re
 
   res.status(StatusCodes.OK).json(successResponse('Admin taxonomy retrieved', { taxonomy }));
 });
+
+export const adminTaxonomyDependenciesController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const dependencies = await getTaxonomyDependencies(getContext(req), req.params.id);
+
+    res
+      .status(StatusCodes.OK)
+      .json(successResponse('Admin taxonomy dependencies retrieved', { dependencies }));
+  }
+);
 
 export const createAdminTaxonomyController = asyncHandler(async (req: Request, res: Response) => {
   const taxonomy = await createTaxonomy(getContext(req), req.body as TaxonomyInput);

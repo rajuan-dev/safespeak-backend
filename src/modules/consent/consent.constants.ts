@@ -7,7 +7,8 @@ export const CONSENT_FLAGS = [
   'transcribe_audio',
   'translate_content',
   'retain_evidence',
-  'warm_referral'
+  'warm_referral',
+  'advocate_request'
 ] as const;
 
 export const DEFAULT_CONSENT_FLAGS = {
@@ -19,5 +20,6 @@ export const DEFAULT_CONSENT_FLAGS = {
   transcribe_audio: false,
   translate_content: false,
   retain_evidence: false,
-  warm_referral: false
+  warm_referral: false,
+  advocate_request: false
 } as const;

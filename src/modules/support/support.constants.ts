@@ -3,6 +3,13 @@ export const SUPPORT_ACTIONS = {
   adminServiceCreate: 'support.admin.services.create',
   adminServiceUpdate: 'support.admin.services.update',
   adminServiceDelete: 'support.admin.services.delete',
+  adminAdvocateProfilesList: 'support.admin.advocates.profiles.list',
+  adminAdvocateProfileCreate: 'support.admin.advocates.profiles.create',
+  adminAdvocateProfileUpdate: 'support.admin.advocates.profiles.update',
+  adminAdvocateProfileDelete: 'support.admin.advocates.profiles.delete',
+  adminAdvocateProfileDependencies: 'support.admin.advocates.profiles.dependencies',
+  adminAdvocateRequestsList: 'support.admin.advocates.requests.list',
+  adminAdvocateRequestUpdate: 'support.admin.advocates.requests.update',
   adminWarmReferralsList: 'support.admin.warm_referrals.list',
   adminWarmReferralUpdate: 'support.admin.warm_referrals.update',
   servicesList: 'support.services.list',
@@ -50,6 +57,9 @@ export const SUPPORT_ISSUE_TYPES = [
   'racism_discrimination',
   'online_abuse',
   'scam_fraud',
+  'racial_abuse',
+  'migrant_challenges',
+  'cyber_scam',
   'theft_property',
   'harassment',
   'mental_health_distress',
@@ -85,6 +95,79 @@ export const SUPPORT_SERVICE_OVERLAY_TONES = [
 ] as const;
 
 export const SUPPORT_REQUEST_STATUSES = ['pending', 'accepted', 'completed', 'cancelled'] as const;
+
+export const ADVOCATE_REQUEST_STATUSES = [
+  'pending',
+  'matched',
+  'contact_initiated',
+  'closed',
+  'declined',
+  'accepted',
+  'completed',
+  'cancelled'
+] as const;
+
+export const ADVOCATE_VETTING_STATUSES = ['pending', 'approved', 'rejected', 'expired'] as const;
+export const ADVOCATE_OPT_IN_STATUSES = ['pending', 'opted_in', 'opted_out'] as const;
+export const ADVOCATE_AVAILABILITIES = ['request_based', 'limited', 'unavailable'] as const;
+
+export interface AdvocateProfileDefinition {
+  key: string;
+  displayName: string;
+  publicBio?: string;
+  languages: readonly string[];
+  regions: readonly string[];
+  issueTypes: readonly (typeof SUPPORT_ISSUE_TYPES)[number][];
+  culturalProfiles?: readonly string[];
+  faithProfiles?: readonly string[];
+  availability: (typeof ADVOCATE_AVAILABILITIES)[number];
+  isActive: boolean;
+  isPublished: boolean;
+  optInStatus: (typeof ADVOCATE_OPT_IN_STATUSES)[number];
+  vettingStatus: (typeof ADVOCATE_VETTING_STATUSES)[number];
+  trainingCredentials?: readonly {
+    title: string;
+    provider?: string;
+    completedAt?: Date;
+    expiresAt?: Date;
+    verificationSummary?: string;
+  }[];
+}
+
+export const LEGACY_ADVOCATE_PROFILES: readonly AdvocateProfileDefinition[] = [
+  {
+    key: 'general_support',
+    displayName: 'General support advocate',
+    publicBio: 'Information-only advocate request pathway for general SafeSpeak support navigation.',
+    languages: ['en'],
+    issueTypes: ['general_support', 'domestic_violence', 'racial_abuse', 'migrant_challenges', 'cyber_scam'],
+    regions: ['AU', 'national'],
+    culturalProfiles: [],
+    faithProfiles: [],
+    availability: 'request_based',
+    isActive: true,
+    isPublished: false,
+    optInStatus: 'pending',
+    vettingStatus: 'pending',
+    trainingCredentials: []
+  },
+  {
+    key: 'multilingual_support',
+    displayName: 'Multilingual support advocate',
+    publicBio: 'Information-only advocate request pathway for multilingual SafeSpeak support navigation.',
+    languages: ['en', 'ar', 'es'],
+    issueTypes: ['general_support', 'migrant_challenges', 'racial_abuse'],
+    regions: ['AU', 'national'],
+    culturalProfiles: [],
+    faithProfiles: [],
+    availability: 'request_based',
+    isActive: true,
+    isPublished: false,
+    optInStatus: 'pending',
+    vettingStatus: 'pending',
+    trainingCredentials: []
+  }
+];
 
 export interface SupportServiceDefinition {
   id: string;

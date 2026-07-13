@@ -1,6 +1,10 @@
 import { Schema, model, type Types } from 'mongoose';
 
 import {
+  ADVOCATE_AVAILABILITIES,
+  ADVOCATE_OPT_IN_STATUSES,
+  ADVOCATE_REQUEST_STATUSES,
+  ADVOCATE_VETTING_STATUSES,
   SUPPORT_ISSUE_TYPES,
   SUPPORT_RESOURCE_RISK_LEVELS,
   SUPPORT_RESOURCE_TYPES,
@@ -16,7 +20,11 @@ import type {
   SupportServiceType,
   SupportResourceRiskLevel,
   SupportResourceType,
-  SupportIssueType
+  SupportIssueType,
+  AdvocateAvailability,
+  AdvocateOptInStatus,
+  AdvocateRequestStatus,
+  AdvocateVettingStatus
 } from './support.types';
 
 interface SupportOwnedDocument {
@@ -53,14 +61,50 @@ export interface WarmReferralDocument extends SupportOwnedDocument {
 }
 
 export interface AdvocateRequestDocument extends SupportOwnedDocument {
+  reference?: string;
   advocateType: string;
+  advocateProfileId?: Types.ObjectId;
+  advocateKey?: string;
+  advocateSnapshot?: {
+    key: string;
+    displayName: string;
+    publicBio?: string;
+    languages: string[];
+    issueTypes: string[];
+    regions: string[];
+    culturalProfiles: string[];
+    faithProfiles: string[];
+    availability: AdvocateAvailability;
+  };
   language: string;
   issueType?: string;
   region?: string;
   safeContactPreference: 'phone' | 'email' | 'in_app' | 'no_direct_contact';
   notes?: string;
   confirmationCopy?: string;
-  status: SupportRequestStatus;
+  consentSnapshot?: {
+    advocate_request: boolean;
+    capturedAt: Date;
+  };
+  assignedAdvocateProfileId?: Types.ObjectId;
+  assignedAdvocateKey?: string;
+  assignedAdvocateSnapshot?: AdvocateRequestDocument['advocateSnapshot'];
+  assignedAt?: Date;
+  assignedBy?: Types.ObjectId;
+  adminNotes?: Array<{
+    note: string;
+    createdAt: Date;
+    createdBy?: Types.ObjectId;
+  }>;
+  statusHistory?: Array<{
+    previousStatus?: AdvocateRequestStatus;
+    status: AdvocateRequestStatus;
+    actorType: 'user' | 'admin' | 'system' | 'anonymous_session';
+    actorId?: Types.ObjectId;
+    reasonCode?: string;
+    createdAt: Date;
+  }>;
+  status: AdvocateRequestStatus;
 }
 
 export interface HelpSupportRequestDocument extends SupportOwnedDocument {
@@ -116,8 +160,45 @@ export interface SupportServiceDocument {
   languageSupportNotes?: string;
   isPublished: boolean;
   isActive: boolean;
+  deletedAt?: Date;
   sortOrder: number;
   metadata?: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface AdvocateProfileDocument {
+  key: string;
+  displayName: string;
+  publicBio?: string;
+  languages: string[];
+  regions: string[];
+  issueTypes: SupportIssueType[];
+  culturalProfiles: string[];
+  faithProfiles: string[];
+  availability: AdvocateAvailability;
+  isActive: boolean;
+  isPublished: boolean;
+  optInStatus: AdvocateOptInStatus;
+  vetting: {
+    status: AdvocateVettingStatus;
+    reviewedAt?: Date;
+    reviewedBy?: Types.ObjectId;
+    notes?: string;
+  };
+  trainingCredentials: Array<{
+    title: string;
+    provider?: string;
+    completedAt?: Date;
+    expiresAt?: Date;
+    verificationSummary?: string;
+  }>;
+  internalContactReference?: string;
+  privateEmail?: string;
+  privatePhone?: string;
+  createdBy?: Types.ObjectId;
+  updatedBy?: Types.ObjectId;
+  deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -245,10 +326,43 @@ const warmReferralSchema = new Schema<WarmReferralDocument>(
 const advocateRequestSchema = new Schema<AdvocateRequestDocument>(
   {
     ...ownerFields,
+    reference: {
+      type: String,
+      required: false,
+      trim: true,
+      uppercase: true,
+      unique: true,
+      sparse: true,
+      index: true
+    },
     advocateType: {
       type: String,
       required: true,
       trim: true
+    },
+    advocateProfileId: {
+      type: Schema.Types.ObjectId,
+      ref: 'AdvocateProfile',
+      required: false,
+      index: true
+    },
+    advocateKey: {
+      type: String,
+      required: false,
+      trim: true,
+      lowercase: true,
+      index: true
+    },
+    advocateSnapshot: {
+      key: { type: String, required: false, trim: true },
+      displayName: { type: String, required: false, trim: true },
+      publicBio: { type: String, required: false, trim: true },
+      languages: { type: [String], default: [] },
+      issueTypes: { type: [String], default: [] },
+      regions: { type: [String], default: [] },
+      culturalProfiles: { type: [String], default: [] },
+      faithProfiles: { type: [String], default: [] },
+      availability: { type: String, enum: ADVOCATE_AVAILABILITIES, required: false }
     },
     language: {
       type: String,
@@ -279,9 +393,79 @@ const advocateRequestSchema = new Schema<AdvocateRequestDocument>(
       type: String,
       required: false
     },
+    consentSnapshot: {
+      advocate_request: {
+        type: Boolean,
+        default: true,
+        required: true
+      },
+      capturedAt: {
+        type: Date,
+        default: Date.now,
+        required: true
+      }
+    },
+    assignedAdvocateProfileId: {
+      type: Schema.Types.ObjectId,
+      ref: 'AdvocateProfile',
+      required: false,
+      index: true
+    },
+    assignedAdvocateKey: {
+      type: String,
+      required: false,
+      trim: true,
+      lowercase: true
+    },
+    assignedAdvocateSnapshot: {
+      key: { type: String, required: false, trim: true },
+      displayName: { type: String, required: false, trim: true },
+      publicBio: { type: String, required: false, trim: true },
+      languages: { type: [String], default: [] },
+      issueTypes: { type: [String], default: [] },
+      regions: { type: [String], default: [] },
+      culturalProfiles: { type: [String], default: [] },
+      faithProfiles: { type: [String], default: [] },
+      availability: { type: String, enum: ADVOCATE_AVAILABILITIES, required: false }
+    },
+    assignedAt: {
+      type: Date,
+      required: false
+    },
+    assignedBy: {
+      type: Schema.Types.ObjectId,
+      required: false
+    },
+    adminNotes: {
+      type: [
+        {
+          note: { type: String, required: true, trim: true },
+          createdAt: { type: Date, default: Date.now, required: true },
+          createdBy: { type: Schema.Types.ObjectId, required: false }
+        }
+      ],
+      default: []
+    },
+    statusHistory: {
+      type: [
+        {
+          previousStatus: { type: String, enum: ADVOCATE_REQUEST_STATUSES, required: false },
+          status: { type: String, enum: ADVOCATE_REQUEST_STATUSES, required: true },
+          actorType: {
+            type: String,
+            enum: ['user', 'admin', 'system', 'anonymous_session'],
+            required: true
+          },
+          actorId: { type: Schema.Types.ObjectId, required: false },
+          reasonCode: { type: String, required: false, trim: true },
+          createdAt: { type: Date, default: Date.now, required: true }
+        }
+      ],
+      default: []
+    },
     status: {
       type: String,
-      enum: SUPPORT_REQUEST_STATUSES,
+      enum: ADVOCATE_REQUEST_STATUSES,
       default: 'pending',
       required: true,
       index: true
@@ -534,6 +718,11 @@ const supportServiceSchema = new Schema<SupportServiceDocument>(
       default: true,
       index: true
     },
+    deletedAt: {
+      type: Date,
+      required: false,
+      index: true
+    },
     sortOrder: {
       type: Number,
       default: 0
@@ -555,10 +744,161 @@ supportServiceSchema.index({
 });
 supportServiceSchema.index({ sortOrder: 1, name: 1 });
 
+const advocateProfileSchema = new Schema<AdvocateProfileDocument>(
+  {
+    key: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+      unique: true,
+      index: true
+    },
+    displayName: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    publicBio: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    languages: {
+      type: [String],
+      default: ['en'],
+      index: true
+    },
+    regions: {
+      type: [String],
+      default: ['national'],
+      index: true
+    },
+    issueTypes: {
+      type: [String],
+      enum: SUPPORT_ISSUE_TYPES,
+      default: ['general_support'],
+      index: true
+    },
+    culturalProfiles: {
+      type: [String],
+      default: [],
+      index: true
+    },
+    faithProfiles: {
+      type: [String],
+      default: [],
+      index: true
+    },
+    availability: {
+      type: String,
+      enum: ADVOCATE_AVAILABILITIES,
+      default: 'request_based',
+      required: true,
+      index: true
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true
+    },
+    isPublished: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+    optInStatus: {
+      type: String,
+      enum: ADVOCATE_OPT_IN_STATUSES,
+      default: 'pending',
+      required: true,
+      index: true
+    },
+    vetting: {
+      status: {
+        type: String,
+        enum: ADVOCATE_VETTING_STATUSES,
+        default: 'pending',
+        required: true,
+        index: true
+      },
+      reviewedAt: {
+        type: Date,
+        required: false
+      },
+      reviewedBy: {
+        type: Schema.Types.ObjectId,
+        required: false
+      },
+      notes: {
+        type: String,
+        required: false,
+        trim: true
+      }
+    },
+    trainingCredentials: {
+      type: [
+        {
+          title: { type: String, required: true, trim: true },
+          provider: { type: String, required: false, trim: true },
+          completedAt: { type: Date, required: false },
+          expiresAt: { type: Date, required: false },
+          verificationSummary: { type: String, required: false, trim: true }
+        }
+      ],
+      default: []
+    },
+    internalContactReference: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    privateEmail: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    privatePhone: {
+      type: String,
+      required: false,
+      trim: true
+    },
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      required: false
+    },
+    updatedBy: {
+      type: Schema.Types.ObjectId,
+      required: false
+    },
+    deletedAt: {
+      type: Date,
+      required: false,
+      index: true
+    }
+  },
+  { timestamps: true }
+);
+
+advocateProfileSchema.index({
+  isPublished: 1,
+  isActive: 1,
+  optInStatus: 1,
+  'vetting.status': 1,
+  availability: 1
+});
+advocateProfileSchema.index({ displayName: 1 });
+advocateRequestSchema.index({ status: 1, createdAt: -1 });
+advocateRequestSchema.index({ advocateProfileId: 1, status: 1 });
+
 export const WarmReferralModel = model<WarmReferralDocument>('WarmReferral', warmReferralSchema);
 export const AdvocateRequestModel = model<AdvocateRequestDocument>(
   'AdvocateRequest',
   advocateRequestSchema
+);
+export const AdvocateProfileModel = model<AdvocateProfileDocument>(
+  'AdvocateProfile',
+  advocateProfileSchema
 );
 export const HelpSupportRequestModel = model<HelpSupportRequestDocument>(
   'HelpSupportRequest',
