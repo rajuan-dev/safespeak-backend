@@ -6,6 +6,7 @@ import { ApiResponse } from '@common/responses/api-response';
 import {
   acknowledgeReportSubmission,
   createReport,
+  createOrUpdateReportFromConversation,
   getReportById,
   getReportDestinationPreviews,
   getReportSubmissionPayloadPreviews,
@@ -22,6 +23,7 @@ import {
 } from './reports.service';
 import type {
   AcknowledgeSubmissionInput,
+  CreateReportFromConversationInput,
   CreateReportInput,
   ReportDestinationPreviewQueryInput,
   SubmissionPreviewInput,
@@ -40,6 +42,21 @@ export const createReportController = asyncHandler(async (req: Request, res: Res
 
   ApiResponse.created(res, 'Report created', { report });
 });
+
+export const createReportFromConversationController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const input = req.body as unknown as CreateReportFromConversationInput;
+    const result = await createOrUpdateReportFromConversation(
+      getOwner(req),
+      req.params.conversationSessionId,
+      input,
+      req.ip,
+      req.get('user-agent')
+    );
+
+    ApiResponse.created(res, 'Report draft created from conversation', result);
+  }
+);
 
 export const listReportsController = asyncHandler(async (req: Request, res: Response) => {
   const reports = await listReports(getOwner(req));

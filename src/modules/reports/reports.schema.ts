@@ -13,6 +13,10 @@ export const reportParamsSchema = z.object({
   id: objectIdSchema
 });
 
+export const conversationSessionParamsSchema = z.object({
+  conversationSessionId: objectIdSchema
+});
+
 const structuredFieldsSchema = z
   .object({
     who: z.string().max(2000).optional(),
@@ -44,6 +48,12 @@ export const createReportSchema = z
   .strict();
 
 export const updateReportSchema = createReportSchema.partial();
+
+export const createReportFromConversationSchema = z
+  .object({
+    reportId: objectIdSchema.optional()
+  })
+  .strict();
 
 export const reportDestinationPreviewQuerySchema = z
   .object({
@@ -87,6 +97,9 @@ export const acknowledgeSubmissionSchema = z
 
 export type CreateReportInput = z.infer<typeof createReportSchema>;
 export type UpdateReportInput = z.infer<typeof updateReportSchema>;
+export type CreateReportFromConversationInput = z.infer<
+  typeof createReportFromConversationSchema
+>;
 export type ReportDestinationPreviewQueryInput = z.infer<
   typeof reportDestinationPreviewQuerySchema
 >;
