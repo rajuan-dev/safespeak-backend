@@ -6,6 +6,7 @@ import { validate } from '@common/middleware/validate.middleware';
 import {
   acknowledgeReportSubmissionController,
   createReportController,
+  createReportFromConversationController,
   deleteReportController,
   getReportDestinationPreviewsController,
   getReportController,
@@ -22,6 +23,8 @@ import {
 } from './reports.controller';
 import {
   acknowledgeSubmissionSchema,
+  conversationSessionParamsSchema,
+  createReportFromConversationSchema,
   createReportSchema,
   reportDestinationPreviewQuerySchema,
   reportParamsSchema,
@@ -34,6 +37,14 @@ import {
 export const reportsRoutes = Router();
 
 reportsRoutes.use(authenticateSessionOrUser);
+reportsRoutes.post(
+  '/from-conversation/:conversationSessionId',
+  validate({
+    params: conversationSessionParamsSchema,
+    body: createReportFromConversationSchema
+  }),
+  createReportFromConversationController
+);
 reportsRoutes.post('/', validate({ body: createReportSchema }), createReportController);
 reportsRoutes.get('/', listReportsController);
 reportsRoutes.get('/:id', validate({ params: reportParamsSchema }), getReportController);
