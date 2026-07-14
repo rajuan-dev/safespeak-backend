@@ -8,8 +8,6 @@ build/
 out/
 
 # Environment files
-.env
-.env.*
 !.env.example
 
 # Logs
@@ -41,7 +39,6 @@ Desktop.ini
 
 # IDE files
 .idea/
-.vscode/
 *.swp
 *.swo
 
@@ -58,3 +55,4 @@ generated/
 branch_structure.json
 temp_auto_push.bat
 temp_interactive_push.bat
+config.bat
