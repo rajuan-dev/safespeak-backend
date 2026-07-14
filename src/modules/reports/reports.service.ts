@@ -11,6 +11,12 @@ import {
   type AdminSubmissionTemplateDocument
 } from '@modules/admin/admin.model';
 import { getCurrentConsent } from '@modules/consent/consent.service';
+import {
+  ConversationFlowFactsModel,
+  ConversationFlowMessageModel,
+  ConversationFlowSessionModel,
+  ConversationFlowTriageModel
+} from '@modules/conversation-flow/conversation-flow.model';
 import { EvidenceModel } from '@modules/evidence/evidence.model';
 import { UserProfileModel } from '@modules/profile/profile.model';
 import { AnonymousSessionModel } from '@modules/sessions/sessions.model';
@@ -26,6 +32,7 @@ import { ReportModel, ReportSubmissionModel } from './reports.model';
 import type { ReportDocument, ReportSubmissionDocument } from './reports.model';
 import type {
   AcknowledgeSubmissionInput,
+  CreateReportFromConversationInput,
   CreateReportInput,
   ReportDestinationPreviewQueryInput,
   SubmissionPreviewInput,
@@ -117,6 +124,148 @@ const getOwnerLocaleDefaults = async (
     language: session?.language,
     jurisdiction: session?.jurisdiction
   };
+};
+
+const firstNonEmptyString = (...values: unknown[]): string | undefined => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+};
+
+const buildNarrativeFromConversationMessages = (
+  messages: Array<{ role?: string; content?: string }>
+): string | undefined => {
+  const narrative = messages
+    .filter((message) => message.role === 'user')
+    .map((message) => (typeof message.content === 'string' ? message.content.trim() : ''))
+    .filter(Boolean)
+    .join('\n\n');
+
+  return narrative || undefined;
+};
+
+const inferRepeatedIncidents = (input: {
+  timeline?: Record<string, unknown>;
+  whatHappened?: string;
+  extractedEvents?: string[];
+  fallbackNarrative?: string;
+}): boolean | undefined => {
+  const timelineValue = input.timeline?.repeatedIncidents;
+
+  if (typeof timelineValue === 'boolean') {
+    return timelineValue;
+  }
+
+  if (typeof timelineValue === 'string') {
+    const normalized = timelineValue.trim().toLowerCase();
+
+    if (['yes', 'true', 'ongoing', 'repeated'].includes(normalized)) {
+      return true;
+    }
+
+    if (['no', 'false', 'once', 'single'].includes(normalized)) {
+      return false;
+    }
+  }
+
+  if ((input.extractedEvents?.length ?? 0) > 1) {
+    return true;
+  }
+
+  const combinedText = [input.fallbackNarrative, input.whatHappened]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join(' ')
+    .toLowerCase();
+
+  if (!combinedText) {
+    return undefined;
+  }
+
+  if (
+    /\b(again|ongoing|repeated|multiple times|keeps happening|every day|every night|for \d+\s+(?:day|days|week|weeks|month|months|year|years))\b/.test(
+      combinedText
+    )
+  ) {
+    return true;
+  }
+
+  return undefined;
+};
+
+const extractWhoFromNarrative = (narrative?: string): string | undefined => {
+  if (!narrative) {
+    return undefined;
+  }
+
+  const match = narrative.match(
+    /\b(my manager|manager|my boss|boss|my supervisor|supervisor|coworker|co-worker|colleague|partner|ex[- ]partner|husband|wife|teacher|student|landlord|doctor)\b/i
+  );
+
+  return match?.[1]?.trim();
+};
+
+const extractWhenFromNarrative = (narrative?: string): string | undefined => {
+  if (!narrative) {
+    return undefined;
+  }
+
+  const match = narrative.match(
+    /\b(for \d+\s+(?:day|days|week|weeks|month|months|year|years)|today|yesterday|tonight|last night|last week|this morning|this afternoon|this evening|ongoing|repeatedly)\b/i
+  );
+
+  return match?.[1]?.trim();
+};
+
+const extractWhereFromNarrative = (narrative?: string): string | undefined => {
+  if (!narrative) {
+    return undefined;
+  }
+
+  const match = narrative.match(
+    /\b(?:in|at|on)\s+([^.!?\n]+?(?:office|workplace|campus|class|classroom|meeting|meetings|home|house|school|university|college|hospital|clinic|street|train|bus|slack|email|instagram|facebook|discord|online))\b/i
+  );
+
+  return match?.[1]?.trim();
+};
+
+const resolveReportDateFromWhen = (whenValue?: string): string => {
+  if (!whenValue?.trim()) {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  const normalized = whenValue.trim();
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return normalized;
+  }
+
+  const slashDateMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+
+  if (slashDateMatch) {
+    const [, month, day, year] = slashDateMatch;
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+
+  return new Date().toISOString().slice(0, 10);
+};
+
+const toIncidentReportTitle = (incidentType?: string): string => {
+  if (!incidentType?.trim()) {
+    return 'Incident report';
+  }
+
+  const label = incidentType
+    .replace(/[_-]+/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+
+  return `${label} incident report`;
 };
 
 const normalizeReportRequiredFields = async (
@@ -539,6 +688,131 @@ export const createReport = async (
   });
 
   return report;
+};
+
+export const createOrUpdateReportFromConversation = async (
+  owner: ReportOwner,
+  conversationSessionId: string,
+  input: CreateReportFromConversationInput,
+  ip?: string,
+  userAgent?: string
+): Promise<{
+  report: unknown;
+  prefill: {
+    title: string;
+    date: string;
+    location: string;
+    summary: string;
+    incidentType?: string;
+    language: string;
+    jurisdiction: string;
+    structuredFields: Record<string, unknown>;
+    conversationSessionId: string;
+  };
+}> => {
+  const filter = ownerFilter(owner);
+  const session = await ConversationFlowSessionModel.findOne({
+    _id: conversationSessionId,
+    ...filter
+  }).lean();
+
+  if (!session) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Conversation session not found');
+  }
+
+  const [facts, messages, triage, localeDefaults] = await Promise.all([
+    ConversationFlowFactsModel.findOne({
+      conversationSessionId: session._id
+    }).lean(),
+    ConversationFlowMessageModel.find({
+      conversationSessionId: session._id
+    })
+      .sort({ turnNumber: 1 })
+      .lean(),
+    ConversationFlowTriageModel.findOne({
+      conversationSessionId: session._id
+    }).lean(),
+    getOwnerLocaleDefaults(owner)
+  ]);
+
+  const timeline =
+    facts?.timeline && typeof facts.timeline === 'object'
+      ? (facts.timeline as Record<string, unknown>)
+      : {};
+  const narrative = firstNonEmptyString(
+    typeof timeline.what === 'string' ? timeline.what : undefined,
+    facts?.whatHappened,
+    buildNarrativeFromConversationMessages(messages)
+  );
+  const inferredWho = extractWhoFromNarrative(narrative);
+  const inferredWhen = extractWhenFromNarrative(narrative);
+  const inferredWhere = extractWhereFromNarrative(narrative);
+  const repeatedIncidents = inferRepeatedIncidents({
+    timeline,
+    whatHappened: facts?.whatHappened,
+    extractedEvents: facts?.extractedEvents,
+    fallbackNarrative: narrative
+  });
+  const structuredFields = {
+    ...(firstNonEmptyString(timeline.who, facts?.peopleInvolved, inferredWho)
+      ? { who: firstNonEmptyString(timeline.who, facts?.peopleInvolved, inferredWho) }
+      : {}),
+    ...(narrative ? { what: narrative } : {}),
+    ...(firstNonEmptyString(timeline.when, facts?.whenHappened, inferredWhen)
+      ? { when: firstNonEmptyString(timeline.when, facts?.whenHappened, inferredWhen) }
+      : {}),
+    ...(firstNonEmptyString(timeline.where, facts?.whereHappened, inferredWhere)
+      ? { where: firstNonEmptyString(timeline.where, facts?.whereHappened, inferredWhere) }
+      : {}),
+    ...(firstNonEmptyString(timeline.how)
+      ? { how: firstNonEmptyString(timeline.how) }
+      : {}),
+    ...(firstNonEmptyString(timeline.witnesses)
+      ? { witnesses: firstNonEmptyString(timeline.witnesses) }
+      : {}),
+    ...(firstNonEmptyString(timeline.injuries)
+      ? { injuries: firstNonEmptyString(timeline.injuries) }
+      : {}),
+    ...(typeof repeatedIncidents === 'boolean'
+      ? { repeatedIncidents }
+      : {})
+  } satisfies Record<string, unknown>;
+  const incidentType = triage?.likelyCategory ?? session.detectedCategory ?? undefined;
+  const language = session.detectedLanguage ?? localeDefaults.language ?? 'en';
+  const jurisdiction = session.jurisdiction ?? localeDefaults.jurisdiction ?? 'NSW';
+  const date = resolveReportDateFromWhen(
+    firstNonEmptyString(structuredFields.when)
+  );
+  const location = firstNonEmptyString(structuredFields.where) ?? '';
+  const title = toIncidentReportTitle(incidentType);
+  const createOrUpdatePayload: CreateReportInput = {
+    language,
+    jurisdiction,
+    context: title,
+    originalNarrative: narrative,
+    incidentType,
+    structuredFields,
+    status: 'draft'
+  };
+
+  const report = input.reportId
+    ? await updateReport(owner, input.reportId, createOrUpdatePayload, ip, userAgent)
+    : await createReport(owner, createOrUpdatePayload, ip, userAgent);
+
+  return {
+    report,
+    prefill: {
+      title,
+      date,
+      location,
+      summary: narrative ?? '',
+      incidentType,
+      language,
+      jurisdiction,
+      structuredFields,
+      conversationSessionId
+    }
+  };
 };
 
 export const listReports = async (owner: ReportOwner): Promise<unknown[]> =>
